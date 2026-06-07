@@ -23,6 +23,12 @@
   <a href="docs/instructions.html">Visual Guide</a>
 </p>
 
+<p>
+  <a href="https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=idevgames%40gmail.com&item_name=Support%20Drive%20Dupe%20Destroyer&currency_code=USD">
+    <img src="https://www.paypalobjects.com/en_US/i/btn/btn_donate_LG.gif" alt="Donate with PayPal">
+  </a>
+</p>
+
 </div>
 
 ---
