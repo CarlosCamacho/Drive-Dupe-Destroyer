@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Drive Dupe Destroyer — Instructions</title>
+  <style>
+    :root{--ink:#162033;--muted:#64748b;--blue:#2563eb;--bg:#eef2f8;--card:#fff;--line:#d8e0ea;}
+    body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;}
+    .hero{padding:56px 24px 34px;background:linear-gradient(135deg,#0f172a,#1d4ed8);color:#fff;}
+    .wrap{max-width:1100px;margin:0 auto;}
+    h1{font-size:44px;line-height:1.05;margin:0 0 12px;} h2{margin-top:42px;font-size:28px;} h3{margin-top:28px;}
+    .subtitle{font-size:20px;color:#dbeafe;max-width:760px;}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:18px;margin:24px auto;padding:26px;box-shadow:0 16px 42px rgba(15,23,42,.08);}
+    img{max-width:100%;border-radius:16px;border:1px solid var(--line);box-shadow:0 16px 36px rgba(15,23,42,.12);}
+    table{border-collapse:collapse;width:100%;margin:16px 0;background:#fff;} th,td{border:1px solid var(--line);padding:10px 12px;text-align:left;} th{background:#f8fafc;}
+    code,pre{background:#f8fafc;border:1px solid var(--line);border-radius:10px;} code{padding:2px 5px;} pre{padding:14px;overflow:auto;}
+    .note{border-left:5px solid var(--blue);background:#eff6ff;padding:14px 16px;border-radius:10px;color:#1e3a8a;}
+    .footer{color:var(--muted);padding:24px 0 60px;}
+  </style>
+</head>
+<body>
+  <section class="hero"><div class="wrap"><h1>Drive Dupe Destroyer Instructions</h1><p class="subtitle">A visual guide for signing in, selecting Google Drive folders, scanning for duplicate images, comparing results, and safely moving unwanted files to Trash.</p></div></section>
+  <main class="wrap">
+    <section class="card"><p class="note"><strong>Important:</strong> Drive Dupe Destroyer moves files to <strong>Google Drive Trash</strong>. It does not permanently delete files.</p><h2>1. Open the app</h2><p>Run the app locally with <code>python serve_secure.py</code>, then open <code>http://localhost:8080</code>, or open your hosted GitHub Pages URL.</p><img src="screenshots/01-home-ready.png" alt="Home screen"></section>
+    <section class="card"><h2>2. Sign in with Google</h2><p>Click <strong>Sign In</strong> and enter your Google OAuth Client ID. The Client ID usually ends with <code>.apps.googleusercontent.com</code>.</p><img src="screenshots/02-sign-in-oauth.png" alt="OAuth sign-in dialog"></section>
+    <section class="card"><h2>3. Select folders to scan</h2><p>Click <strong>Browse Folders…</strong>, select one or more folders, then click <strong>Done</strong>. Turn on recursive scanning to include subfolders.</p><img src="screenshots/03-select-folders.png" alt="Folder picker"></section>
+    <section class="card"><h2>4. Review scan results</h2><p>After the scan, use the results table to review duplicate groups, similarity scores, folders, dimensions, and file sizes.</p><img src="screenshots/04-review-results.png" alt="Duplicate results table"></section>
+    <section class="card"><h2>5. Compare before trashing</h2><p>Click <strong>Compare</strong> to review suspected duplicates side by side. Use the metadata and KEEP badge to decide which file should remain.</p><img src="screenshots/05-compare-images.png" alt="Side-by-side comparison modal"></section>
+    <section class="card"><h2>Recommended settings</h2><table><tr><th>Setting</th><th>Recommended value</th><th>Why</th></tr><tr><td>Recursive</td><td>Yes</td><td>Includes images inside subfolders.</td></tr><tr><td>Match Mode</td><td>Similar images</td><td>Finds resized, compressed, renamed, or lightly edited copies.</td></tr><tr><td>Sensitivity</td><td>3</td><td>Balanced starting point.</td></tr><tr><td>Cache</td><td>On</td><td>Speeds up repeat scans.</td></tr></table><h2>Keyboard shortcuts</h2><table><tr><th>Key</th><th>Action</th></tr><tr><td>1</td><td>Delete left image</td></tr><tr><td>2</td><td>Delete right image</td></tr><tr><td>3</td><td>Delete both images</td></tr><tr><td>4</td><td>Ignore this pair</td></tr><tr><td>← / →</td><td>Previous or next comparison</td></tr></table></section>
+    <section class="card"><h2>Troubleshooting</h2><table><tr><th>Issue</th><th>What to check</th></tr><tr><td>Sign-in fails</td><td>Confirm OAuth Client ID and authorized JavaScript origin.</td></tr><tr><td>Folder picker is empty</td><td>Confirm Google Drive API is enabled and Drive access was granted.</td></tr><tr><td>Scan is slow</td><td>Lower max images, use cache, or scan fewer folders.</td></tr><tr><td>Too many false matches</td><td>Increase sensitivity or disable loose matching options.</td></tr><tr><td>Deleted wrong file</td><td>Use Undo immediately or restore from Google Drive Trash.</td></tr></table></section>
+    <p class="footer">Generated documentation for Drive Dupe Destroyer v12.7.</p>
+  </main>
+</body>
+</html>
