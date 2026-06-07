@@ -5,10 +5,11 @@
 ### A browser-based Google Drive duplicate image finder with safe review, side-by-side comparison, export, and undo support.
 
 <p>
-  <img alt="Version" src="https://img.shields.io/badge/version-12.7-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-14.0-blue">
   <img alt="App Type" src="https://img.shields.io/badge/app-static%20web%20app-brightgreen">
   <img alt="Google Drive" src="https://img.shields.io/badge/API-Google%20Drive-orange">
   <img alt="Privacy" src="https://img.shields.io/badge/privacy-browser%20local-lightgrey">
+  <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
   <a href="https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=idevgames%40gmail.com&item_name=Support%20Drive%20Dupe%20Destroyer&currency_code=USD">
     <img alt="Donate with PayPal" src="https://img.shields.io/badge/Donate-PayPal-00457C?logo=paypal&logoColor=white">
   </a>
@@ -59,8 +60,13 @@ Google Drive makes it easy to accumulate duplicate images across folders, backup
 - **Exact duplicate detection** using Google Drive MD5 checksums.
 - **Similar image detection** using browser-based perceptual hashing.
 - **Advanced matching options** including dHash, pHash, color/edge matching, crop detection, rotation variants, flip variants, aspect-ratio filtering, and LSH candidate matching.
+- **Wide format support:** JPEG, PNG, GIF, WebP, BMP, TIFF, SVG, HEIC/HEIF, AVIF, ICO, JPEG 2000, JPEG XL, Netpbm (PPM/PGM/PBM), RAW camera files, and the design/legacy formats **PSD, TGA, IFF/ILBM, and PCX**.
+- **Per-format scan selection** — an Image Types panel lets you include or exclude specific formats from a scan.
 - **Folder-based scanning** with optional recursive traversal.
 - **Side-by-side compare modal** for reviewing duplicate candidates before trashing files.
+- **Download or delete any image** directly from the results table — including the keep file (with confirmation).
+- **Clickable File Location** — open the file's containing Google Drive folder in a new tab from the table or the compare modal.
+- **Graceful image placeholders** instead of broken-image icons while thumbnails load or if an image fails to load.
 - **Undo delete support** for recently trashed files.
 - **False-positive rejection memory** so ignored pairs are not repeatedly shown.
 - **Delta scan support** for scanning changed Drive files after a previous scan.
@@ -139,7 +145,7 @@ Paste your Google OAuth Client ID when prompted. The Client ID normally ends wit
 
 ### 5. Select folders and scan
 
-Choose one or more Google Drive folders, set your scan options, then click **Start Scan**.
+Choose one or more Google Drive folders, set your scan options (optionally narrow the formats in the **Image Types** panel), then click **Start Scan**.
 
 ---
 
@@ -238,6 +244,7 @@ Image thumbnails are processed in the browser to create visual fingerprints. DDD
 | Setting | Recommended value | Why |
 |---|---:|---|
 | Recursive | Yes | Includes images inside subfolders. |
+| Image Types | All | Start broad; narrow later if you only care about certain formats. |
 | Match Mode | Similar images | Finds renamed, resized, compressed, or slightly edited copies. |
 | Sensitivity | 3 | Balanced starting point. |
 | Cache | On | Speeds up repeat scans. |
@@ -253,14 +260,14 @@ When scan results appear, review duplicate groups before trashing anything.
 | Column | Meaning |
 |---|---|
 | Compare | Opens side-by-side image comparison. |
-| Thumb | Shows a preview thumbnail. |
+| Thumb | Shows a preview thumbnail (a placeholder appears until it loads). |
 | Name | Shows file name and keep/delete recommendation. |
-| Folder | Shows the Google Drive folder location. |
+| Folder | **File Location** — click to open the containing Google Drive folder in a new tab. |
 | Dims | Shows image dimensions. |
 | Size | Shows file size. |
 | Sim | Shows similarity score. |
-| Grp | Shows duplicate group number. |
-| Action | Lets you trash a specific file. |
+| Group / Match | Shows the duplicate group number and a similarity band badge (identical / near / similar / loose). |
+| Action | **Download** or **Trash** this specific file. The keep file can also be downloaded or deleted (deletion asks for confirmation). |
 
 Keyboard shortcuts in the comparison view:
 
@@ -269,8 +276,10 @@ Keyboard shortcuts in the comparison view:
 | 1 | Delete left image. |
 | 2 | Delete right image. |
 | 3 | Delete both images. |
-| 4 | Ignore this pair. |
+| 4 | Ignore this pair (mark as not a duplicate; suppressed in future scans). |
 | ← / → | Move to previous or next comparison. |
+
+After you delete or ignore a pair, it is removed from the results list so you never review it twice.
 
 ---
 
@@ -281,7 +290,7 @@ Because DDD is a static web app, it can be hosted on GitHub Pages.
 1. Push the project to GitHub.
 2. Go to **Settings → Pages**.
 3. Select your branch, usually `main`.
-4. Select the folder to publish.
+4. Select the folder to publish (the repository root).
 5. Save the Pages configuration.
 6. Add your GitHub Pages origin to your Google OAuth Client ID.
 7. Confirm `privacy.html` and `terms.html` are publicly accessible.
@@ -294,7 +303,9 @@ https://YOUR-USERNAME.github.io/drive-dupe-destroyer/privacy.html
 https://YOUR-USERNAME.github.io/drive-dupe-destroyer/terms.html
 ```
 
-For a more polished documentation page, publish the `/docs` folder and link to:
+> **Note on `serve_secure.py`:** GitHub Pages cannot send the COOP/COEP headers that enable the SharedArrayBuffer zero-copy path, so that optimization is local-server only. The app works correctly on Pages without it — just slightly slower on very large scans.
+
+For a more polished documentation page, link to:
 
 ```text
 docs/instructions.html
@@ -318,26 +329,25 @@ For more detail, see:
 
 - [`privacy.html`](privacy.html)
 - [`terms.html`](terms.html)
-- [`OAUTH_VERIFICATION_GUIDE.md`](OAUTH_VERIFICATION_GUIDE.md)
+- [`docs/OAUTH_VERIFICATION_GUIDE.md`](docs/OAUTH_VERIFICATION_GUIDE.md)
 
 ---
 
 ## Project Structure
 
 ```text
-Drive_Dupe_Destroyer_v12.7/
+drive-dupe-destroyer/
 ├── index.html                  # Main application UI
 ├── styles.css                  # App styling
 ├── sw.js                       # Service worker and security-header fallback
 ├── serve_secure.py             # Local development server with security headers
-├── privacy.html                # Privacy policy page for OAuth verification
-├── terms.html                  # Terms of service page for OAuth verification
-├── OAUTH_VERIFICATION_GUIDE.md # Google OAuth verification notes
-├── docs/
-│   ├── instructions.html       # Polished visual instructions page
-│   ├── INSTRUCTIONS.md         # Markdown user guide
-│   └── screenshots/            # README and guide screenshots
-├── js/
+├── privacy.html                # Privacy policy page (OAuth verification + Pages)
+├── terms.html                  # Terms of service page (OAuth verification + Pages)
+├── README.md                   # This file
+├── CHANGELOG.md                # Consolidated changelog (newest first)
+├── LICENSE                     # MIT license
+├── .gitignore
+├── js/                         # Application modules (32 files)
 │   ├── app.js                  # Main application wiring
 │   ├── auth.js                 # Google OAuth flow
 │   ├── drive.js                # Google Drive API calls
@@ -351,8 +361,17 @@ Drive_Dupe_Destroyer_v12.7/
 │   ├── settings.js             # Persistent scan settings
 │   ├── telemetry.js            # Performance overlay
 │   ├── undo.js                 # Restore recently trashed files
-│   └── ...
-└── CHANGELOG-v12.7.md          # Latest changelog
+│   └── …                       # auth/security/lsh/phash/queue/… and more
+├── docs/
+│   ├── DDD-v14-Manual.docx     # Full user manual (v14)
+│   ├── OAUTH_VERIFICATION_GUIDE.md
+│   ├── instructions.html       # Polished visual instructions page
+│   ├── INSTRUCTIONS.md         # Markdown user guide
+│   ├── screenshots/            # README and guide screenshots
+│   ├── changelog/              # Original per-version changelog notes (archive)
+│   └── dev-notes/              # Internal patch / refactor notes
+└── tools/
+    └── patch_decimator.py      # Developer utility script
 ```
 
 ---
@@ -363,6 +382,7 @@ Drive_Dupe_Destroyer_v12.7/
 |---|---|
 | Sign-in fails | Confirm the OAuth Client ID and authorized JavaScript origin. |
 | Folder picker is empty | Confirm Google Drive API is enabled and the user granted Drive access. |
+| Scan finds 0 images | Confirm the folder has images; check the Min/Max size filters; check the **Image Types** panel (use *Select all* if you unchecked formats). |
 | Scan is slow | Scan fewer folders, keep cache enabled, or lower scan limits. |
 | Too many false matches | Increase sensitivity or disable loose matching options. |
 | Too few matches | Lower sensitivity or enable crop, rotation, or pHash options. |
@@ -376,6 +396,7 @@ A full visual walkthrough is available here:
 
 - [`docs/INSTRUCTIONS.md`](docs/INSTRUCTIONS.md)
 - [`docs/instructions.html`](docs/instructions.html)
+- [`docs/DDD-v14-Manual.docx`](docs/DDD-v14-Manual.docx) — full user manual
 
 ---
 
@@ -397,5 +418,6 @@ Drive Dupe Destroyer is shared as a useful tool for people who need a safer way 
 
 ## License
 
-Add your license information here.
+Released under the **MIT License**. See [`LICENSE`](LICENSE) for the full text.
 
+Copyright © 2025 Carlos Camacho.

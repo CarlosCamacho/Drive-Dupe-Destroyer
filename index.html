@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<!--
+  Drive Dupe Destroyer (DDD) v14.0 — index.html
+  
+  Copyright (c) 2025 Carlos Camacho
+  SPDX-License-Identifier: MIT
+  
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+  
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+  
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+-->
+<html lang="en">
+<head>
+  <!-- Security meta tags: defence-in-depth alongside service worker headers -->
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta http-equiv="X-Content-Type-Options" content="nosniff">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <!-- CSP and Permissions-Policy injected by security.js at runtime (SW provides headers when served) -->
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Drive Dupe Destroyer (DDD) v14.0</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="noopener noreferrer" integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+  <div class="app">
+    <!-- Header -->
+    <header class="header">
+      <div class="headerLeft">
+        <h1>Drive Dupe Destroyer <span class="muted" id="appVersion">v14.0</span></h1>
+        <p class="subtitle">Google Drive Similar Image Finder — ©<span id="copyrightYear">2026</span> Carlos Camacho</p>
+      </div>
+      <div class="headerRight">
+        <button type="button" id="btnTheme" class="btnGhost btnTheme" title="Toggle dark/light mode">🌙</button>
+        <button type="button" id="btnAuth" class="btnBlue">Sign In</button>
+        <span id="clientIdDisplay" class="clientIdDisplay" style="display:none;"></span>
+      </div>
+    </header>
+
+    <!-- Main Layout -->
+    <div class="main">
+      <!-- Left Panel - Settings (scrollable) -->
+      <aside class="leftPanel">
+        <!-- Folder Selection -->
+        <div class="section">
+          <div class="sectionHeader">
+            <span>📁 Folders</span>
+            <span class="badge" id="includedCount">0</span>
+          </div>
+          <div class="sectionBody">
+            <div id="foldersSummary" class="muted">None selected</div>
+            <div id="includedChips" class="chipsWrap"></div>
+            <button type="button" id="btnPickFolders" class="btnGhost fullWidth" disabled>Browse Folders…</button>
+          </div>
+        </div>
+
+        <!-- Scan Settings -->
+        <div class="section">
+          <div class="sectionHeader">
+            <span>⚙️ Scan Settings</span>
+          </div>
+          <div class="sectionBody">
+            <div class="formRow">
+              <label for="recursiveMode">Recursive <span class="helpIcon" data-help="recursiveMode">?</span></label>
+              <select id="recursiveMode">
+                <option value="yes" selected>Yes – include subfolders</option>
+                <option value="no">No – top level only</option>
+              </select>
+            </div>
+            <div class="formRow">
+              <label for="maxItems">Max images <span class="helpIcon" data-help="maxItems">?</span></label>
+              <input type="range" id="maxItems" min="0" max="6" value="6" list="maxItemsSteps">
+              <span id="maxItemsVal" class="sliderVal">∞</span>
+              <datalist id="maxItemsSteps">
+                <option value="0">500</option>
+                <option value="1">1000</option>
+                <option value="2">2500</option>
+                <option value="3">5000</option>
+                <option value="4">10000</option>
+                <option value="5">15000</option>
+                <option value="6">∞</option>
+              </datalist>
+            </div>
+            <div class="formRow">
+              <label for="pageSize">Page size <span class="helpIcon" data-help="pageSize">?</span></label>
+              <input type="range" id="pageSize" min="0" max="4" value="2">
+              <span id="pageSizeVal" class="sliderVal">500</span>
+            </div>
+            <div class="formRow">
+              <label>Min image size <span class="helpIcon" data-help="imgMinSize">?</span></label>
+              <div class="sizeInputGroup">
+                <input type="number" id="imgMinSize" value="0" min="0" step="1">
+                <select id="imgMinUnit">
+                  <option value="KB">KB</option>
+                  <option value="MB" selected>MB</option>
+                </select>
+              </div>
+            </div>
+            <div class="formRow">
+              <label>Max image size <span class="helpIcon" data-help="imgMaxSize">?</span></label>
+              <div class="sizeInputGroup">
+                <input type="number" id="imgMaxSize" value="999" min="0" step="1">
+                <select id="imgMaxUnit">
+                  <option value="KB">KB</option>
+                  <option value="MB" selected>MB</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+
+
+        <!-- Image Types (v14) -->
+        <div class="section">
+          <div class="sectionHeader">
+            <span>🖼️ Image Types</span>
+            <span class="badge" id="imgTypeCount">18</span>
+          </div>
+          <div class="sectionBody">
+            <div class="muted" style="margin-bottom:6px;">Only the checked formats are included in a scan.</div>
+            <label class="imgTypeRow imgTypeAll"><input type="checkbox" id="imgTypeAll" checked> <strong>Select all</strong></label>
+            <div class="imgTypeGrid" id="imgTypeGrid">
+              <label class="imgTypeRow"><input type="checkbox" class="imgTypeToggle" data-exts=".jpg,.jpeg,.jpe" checked> JPEG</label>
+              <label class="imgTypeRow"><input type="checkbox" class="imgTypeToggle" data-exts=".png" checked> PNG</label>
+              <label class="imgTypeRow"><input type="checkbox" class="imgTypeToggle" data-exts=".gif" checked> GIF</label>
+              <label class="imgTypeRow"><input type="checkbox" class="imgTypeToggle" data-exts=".webp" checked> WebP</label>
+              <label class="imgTypeRow"><input type="checkbox" class="imgTypeToggle" data-exts=".bmp,.dib" checked> BMP</label>
+              <label class="imgTypeRow"><input type="checkbox" class="imgTypeToggle" data-exts=".tif,.tiff" checked> TIFF</label>
+              <label class="imgTypeRow"><input type="checkbox" class="imgTypeToggle" data-exts=".svg" checked> SVG</label>
+              <label class="imgTypeRow"><input type="checkbox" class="imgTypeToggle" data-exts=".heic,.heif" checked> HEIC / HEIF</label>
+              <label class="imgTypeRow"><input type="checkbox" class="imgTypeToggle" data-exts=".avif" checked> AVIF</label>
+              <label class="imgTypeRow"><input type="checkbox" class="imgTypeToggle" data-exts=".ico" checked> ICO</label>
+              <label class="imgTypeRow"><input type="checkbox" class="imgTypeToggle" data-exts=".jp2,.jpx" checked> JPEG 2000</label>
+              <label class="imgTypeRow"><input type="checkbox" class="imgTypeToggle" data-exts=".jxl" checked> JPEG XL</label>
+              <label class="imgTypeRow"><input type="checkbox" class="imgTypeToggle" data-exts=".ppm,.pgm,.pbm" checked> Netpbm (PPM/PGM/PBM)</label>
+              <label class="imgTypeRow"><input type="checkbox" class="imgTypeToggle" data-exts=".cr2,.crw,.nef,.arw,.raw,.orf,.raf,.dng" checked> RAW (camera)</label>
+              <label class="imgTypeRow"><input type="checkbox" class="imgTypeToggle" data-exts=".psd" checked> PSD (Photoshop)</label>
+              <label class="imgTypeRow"><input type="checkbox" class="imgTypeToggle" data-exts=".tga,.targa" checked> TGA / Targa</label>
+              <label class="imgTypeRow"><input type="checkbox" class="imgTypeToggle" data-exts=".iff,.ilbm,.lbm" checked> IFF / ILBM</label>
+              <label class="imgTypeRow"><input type="checkbox" class="imgTypeToggle" data-exts=".pcx" checked> PCX</label>
+            </div>
+          </div>
+        </div>
+
+        <!-- Matching Mode (Combined Quick Scan + Matching) -->
+        <div class="section">
+          <div class="sectionHeader">
+            <span>🎯 Matching Mode</span>
+          </div>
+          <div class="sectionBody">
+            <div class="radioGroup matchModeGroup">
+              <label class="matchModeOption">
+                <input type="radio" name="matchMode" value="exact" id="matchExact">
+                <span class="matchModeLabel">
+                  <strong>Exact Copies</strong>
+                  <small>Find files with identical MD5 hash (fastest)</small>
+                </span>
+              </label>
+              <label class="matchModeOption">
+                <input type="radio" name="matchMode" value="similar" id="matchSimilar" checked>
+                <span class="matchModeLabel">
+                  <strong>Similar Images</strong>
+                  <small>Find visually similar images using perceptual hashing</small>
+                </span>
+              </label>
+            </div>
+            
+            <!-- Similar Images Options (shown when matchSimilar selected) -->
+            <div id="similarOptions">
+              <div class="formRow">
+                <label for="sensitivityLevel">Sensitivity <span class="helpIcon" data-help="sensitivityLevel">?</span></label>
+                <input type="range" id="sensitivityLevel" min="1" max="5" value="3">
+                <span id="sensitivityVal" class="sliderVal">3</span>
+              </div>
+              <div class="hint">1 = Loose (more matches) → 5 = Strict (fewer matches)</div>
+              
+              <details class="advancedOptions">
+                <summary>Advanced Options</summary>
+                <div class="formRow">
+                  <label for="dhashSize">Hash size <span class="helpIcon" data-help="dhashSize">?</span></label>
+                  <select id="dhashSize">
+                    <option value="8">8×8 (64-bit, faster)</option>
+                    <option value="12" selected>12×12 (144-bit, more accurate)</option>
+                  </select>
+                </div>
+                <div class="formRow">
+                  <label for="hamThresh">Hamming threshold <span class="helpIcon" data-help="hamThresh">?</span></label>
+                  <input type="range" id="hamThresh" min="0" max="20" value="2">
+                  <span id="hamThreshVal" class="sliderVal">2</span>
+                </div>
+                <div class="formRow">
+                  <label for="checkVariants">Flip variants <span class="helpIcon" data-help="checkVariants">?</span></label>
+                  <input type="checkbox" id="checkVariants">
+                </div>
+                <div class="formRow">
+                  <label for="rotationVariants">Rotation variants (90°/180°/270°) <span class="helpIcon" data-help="rotationVariants">?</span></label>
+                  <input type="checkbox" id="rotationVariants">
+                </div>
+                <div class="formRow">
+                  <label for="cropDetect">Crop detection <span class="helpIcon" data-help="cropDetect">?</span></label>
+                  <input type="checkbox" id="cropDetect">
+                </div>
+                <div class="formRow">
+                  <label for="colorMatch">Color + edge match <span class="helpIcon" data-help="colorMatch">?</span></label>
+                  <input type="checkbox" id="colorMatch">
+                </div>
+                <div class="formRow">
+                  <label for="pHashMode">pHash (DCT frequency hash) <span class="helpIcon" data-help="pHashMode">?</span></label>
+                  <input type="checkbox" id="pHashMode">
+                </div>
+                <div class="formRow">
+                  <label for="aspectFilter">Aspect ratio pre-filter <span class="helpIcon" data-help="aspectFilter">?</span></label>
+                  <input type="checkbox" id="aspectFilter" checked>
+                </div>
+                <div class="formRow">
+                  <label for="aspectTolerance">Aspect tolerance %</label>
+                  <input type="range" id="aspectTolerance" min="0" max="50" value="20">
+                  <span id="aspectToleranceVal" class="sliderVal">20</span>
+                </div>
+                <div class="formRow">
+                  <label for="lshMode">LSH band mode <span class="helpIcon" data-help="lshMode">?</span></label>
+                  <select id="lshMode">
+                    <option value="auto" selected>Auto-tune (recommended)</option>
+                    <option value="loose">Loose (more candidates)</option>
+                    <option value="normal">Normal</option>
+                    <option value="strict">Strict (fewer candidates)</option>
+                  </select>
+                </div>
+                <div class="formRow">
+                  <label for="useDeltaScan">Delta scan (changes only) <span class="helpIcon" data-help="useDeltaScan">?</span></label>
+                  <input type="checkbox" id="useDeltaScan">
+                </div>
+              </details>
+            </div>
+          </div>
+        </div>
+
+        <!-- Keep Rules -->
+        <div class="section">
+          <div class="sectionHeader">
+            <span>🏆 Keep Rule</span>
+          </div>
+          <div class="sectionBody">
+            <div class="formRow">
+              <label for="keepRule">Auto-keep <span class="helpIcon" data-help="keepRule">?</span></label>
+              <select id="keepRule">
+                <option value="hires" selected>Highest resolution</option>
+                <option value="newest">Newest modified</option>
+                <option value="oldest">Oldest modified</option>
+                <option value="largest">Largest file</option>
+                <option value="smallest">Smallest file</option>
+                <option value="folderPriority">Folder priority</option>
+              </select>
+            </div>
+            <div class="formRow" id="folderPriorityRow" style="display:none;">
+              <label for="folderPriority">Priority folders</label>
+              <input type="text" id="folderPriority" placeholder="folder_id_1, folder_id_2">
+            </div>
+          </div>
+        </div>
+
+        <!-- Cache -->
+        <div class="section">
+          <div class="sectionHeader">
+            <span>💾 Cache</span>
+          </div>
+          <div class="sectionBody">
+            <div class="formRow">
+              <label for="useDb">Use cache <span class="helpIcon" data-help="useDb">?</span></label>
+              <select id="useDb">
+                <option value="yes" selected>Yes – reuse saved hashes</option>
+                <option value="no">No – download &amp; hash again</option>
+              </select>
+            </div>
+            <div class="formRow">
+              <span class="muted">Cached: <span id="dbCount">0</span> images</span>
+            </div>
+            <div class="btnRow">
+              <button type="button" id="btnDbClear" class="btnDanger btnSmall">🔄 Clear & Reload</button>
+              <button type="button" id="btnDbExport" class="btnGhost btnSmall">Export</button>
+              <button type="button" id="btnDbImport" class="btnGhost btnSmall">Import</button>
+              <input type="file" id="dbImportFile" accept=".json" style="display:none;">
+            </div>
+            <div class="hint cacheHint">
+              <b>Tip:</b> Export cache after scanning large folders. Import on future sessions to avoid re-hashing.
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Right Panel - Results -->
+      <main class="rightPanel">
+        <!-- Sticky Top Section -->
+        <div class="stickyTop">
+          <!-- Scan Controls - Now at top -->
+          <div class="scanControlsTop">
+            <button type="button" id="btnTelemetry" class="btn btn-sm" title="Show scan telemetry">⚡</button>
+          <button type="button" id="btnUndo" class="btn btn-sm" disabled title="Undo last delete">↩ Undo</button>
+          <button type="button" id="btnScan" class="btnBlue btnScanMain" disabled>🔍 Start Scan</button>
+            <button type="button" id="btnStop" class="btnDanger btnScanMain" style="display:none;">⏹ Stop Scan</button>
+          </div>
+
+          <!-- Progress -->
+          <div class="progressBar">
+            <progress id="progress" value="0" max="100"></progress>
+            <div class="progressInfo">
+              <span id="phaseLine">Phase: —</span>
+              <span id="etaLine" class="etaInfo" style="display:none;"></span>
+            </div>
+          </div>
+
+          <!-- Status -->
+          <div class="statusBar">
+            <span id="spinner" class="spinner" style="display:none;"></span>
+            <span id="collectingSpinner" class="collecting-spinner" style="display:none;" title="Collecting files from Google Drive…">
+              <span class="collecting-dot"></span>
+              <span class="collecting-dot"></span>
+              <span class="collecting-dot"></span>
+            </span>
+            <span id="status">Ready. Sign in to start.</span>
+            <span id="searchSummary" class="muted"></span>
+            <button type="button" id="btnViewErrors" class="btnGhost btnSmall btnErrors" style="display:none;">View Errors</button>
+          </div>
+
+          <!-- Stats -->
+          <div class="statsBar">
+            <span>Groups: <b id="statGroups">0</b></span>
+            <span>Files: <b id="statFiles">0</b></span>
+            <span>Size: <b id="statSize">—</b></span>
+            <span>Cache hit: <b id="statCacheHit">—</b></span>
+            <span>Duration: <b id="statDuration">—</b></span>
+          </div>
+
+          <!-- Toolbar -->
+          <div class="toolbar">
+            <div class="toolbarLeft">
+              <button type="button" id="btnSelectAll" class="btnGhost" disabled>Select All</button>
+              <button type="button" id="btnSelectNone" class="btnGhost" disabled>Select None</button>
+            </div>
+            <div class="toolbarRight">
+              <select id="filterMode" aria-label="Filter results">
+                <option value="all">All</option>
+                <option value="pct90">≥90% similar</option>
+                <option value="pct75">≥75% similar</option>
+                <option value="pct50">≥50% similar</option>
+              </select>
+              <span id="filterStats" class="filterStats"></span>
+              <button type="button" id="btnTrashNow" class="btnDanger" disabled>🗑️ Trash Selected</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Results Table (scrollable) -->
+        <div class="tableWrap">
+          <table id="resultsTable" class="resultsTable">
+            <thead>
+              <tr>
+                <th width="30"></th>
+                <th width="70">Compare</th>
+                <th width="60">Thumb</th>
+                <th>Name</th>
+                <th>Folder</th>
+                <th width="80">Dims</th>
+                <th width="70">Size</th>
+                <th width="60">Sim</th>
+                <th width="140">Group / Match</th>
+                <th width="70">Action</th>
+              </tr>
+            </thead>
+            <tbody id="resultsTbody"></tbody>
+          </table>
+          
+          <!-- Empty State -->
+          <div id="emptyState" class="emptyState">
+            <div class="emptyIcon">🖼️</div>
+            <h3>No duplicates found</h3>
+            <p>Select folders and start a scan to find similar images.</p>
+          </div>
+        </div>
+
+        <!-- Export & Actions -->
+        <div class="bottomBar">
+          <div class="bottomBarItem">
+            <button type="button" id="btnExportCsv" class="btn btn-sm" title="Export as CSV spreadsheet">CSV</button>
+                  <button type="button" id="btnExportJson" class="btnGhost">📥 Export Results</button>
+            <span class="helpIcon" data-help="exportResults">?</span>
+          </div>
+          <div class="bottomBarItem">
+            <button type="button" id="btnQueueOpen" class="btnGhost">📋 Queue (<span id="queueCount">0</span>)</button>
+            <span class="helpIcon" data-help="queue">?</span>
+          </div>
+        </div>
+        
+        <!-- Scroll to top -->
+        <button type="button" id="btnScrollTop" class="btnScrollTop" style="display:none;" aria-label="Scroll to top">↑</button>
+      </main>
+    </div>
+  </div>
+
+  <!-- Auth Modal -->
+  <div id="authModal" class="modal" style="display:none;">
+    <div class="modalContent modalSmall">
+      <div class="modalHeader">
+        <h2>Sign In with Google</h2>
+        <button type="button" id="authModalCancel" class="btnClose" aria-label="Close">✕</button>
+      </div>
+      <div class="modalBody">
+        <p>Enter your Google OAuth Client ID to connect to Google Drive.</p>
+        <p class="hint">Create one at <a href="https://console.cloud.google.com/apis/credentials" rel="noopener noreferrer" target="_blank" rel="noopener">Google Cloud Console</a></p>
+        <div class="formRow">
+          <label for="authClientIdInput">OAuth Client ID</label>
+          <input type="text" id="authClientIdInput" autocomplete="off" spellcheck="false" placeholder="123456789.apps.googleusercontent.com" autocomplete="off">
+        </div>
+        <div id="authModalError" class="errorText"></div>
+      </div>
+      <div class="modalFooter">
+        <button type="button" id="authModalSubmit" class="btnBlue">Connect</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Folder Picker Modal -->
+  <div id="folderModal" class="modal" style="display:none;">
+    <div class="modalContent modalLarge">
+      <div class="modalHeader">
+        <h2>Select Folders</h2>
+        <button type="button" id="btnFolderClose" class="btnClose" aria-label="Close">✕</button>
+      </div>
+      <div class="modalBody folderModalBody">
+        <div class="folderNav">
+          <button type="button" id="btnFolderUp" class="btnGhost">⬆️ Up</button>
+          <input type="text" id="folderCurrentName" readonly class="folderPath">
+        </div>
+        <div class="folderCrumbs" id="folderCrumbs">My Drive</div>
+        <div class="folderSearch">
+          <input type="text" id="folderSearch" placeholder="Search folders…" autocomplete="off">
+        </div>
+        <div id="folderList" class="folderList"></div>
+        <div class="folderIncluded">
+          <h4>Selected Folders</h4>
+          <div id="includedChipsModal" class="chipsWrap"></div>
+        </div>
+      </div>
+      <div class="modalFooter">
+        <button type="button" id="btnIncludeThis" class="btnGhost">+ Add Current Folder</button>
+        <button type="button" id="btnIncludeAll" class="btnGhost btnIncludeAll" title="Include all folders visible in the list">✓ Include All</button>
+        <button type="button" id="btnExcludeAll" class="btnGhost btnExcludeAll" title="Exclude all folders visible in the list">✗ Exclude All</button>
+        <button type="button" id="btnClearAll" class="btnGhost">Clear All</button>
+        <button type="button" id="btnFolderDone" class="btnBlue">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Compare Modal -->
+  <div id="compareModal" class="modal" style="display:none;">
+    <div class="modalContent modalCompare">
+      <div class="modalHeader compareModalHeader">
+        <button type="button" id="btnComparePrev" class="btnGhost btnCompareNav" style="display:none;">← Prev</button>
+        <span class="keyboardHint">Keys: 1=Del Left, 2=Del Right, 3=Del Both, 4=Ignore, ←→=Nav</span>
+        <div class="modalHeaderRight">
+          <button type="button" id="btnCompareNext" class="btnGhost btnCompareNav" style="display:none;">Next →</button>
+          <button type="button" id="btnCompareClose" class="btnClose" aria-label="Close">✕</button>
+        </div>
+      </div>
+      <div class="modalBody compareBody">
+        <div class="comparePane" id="comparePaneLeft">
+          <div class="comparePaneHeader">
+            <h4 id="compareLeftTitle">Image A</h4>
+          </div>
+          <div id="compareLeftPath" class="comparePathBreadcrumb"></div>
+          <div class="compareImgWrap">
+            <img id="compareLeftImg" class="compareImg" alt="Image A">
+          </div>
+          <div id="compareLeftMeta" class="compareMeta"></div>
+          <div class="compareActions">
+            <span id="compareLeftKeep" class="keepBadge" style="display:none;">KEEP</span>
+            <button type="button" id="btnCompareLeftDelete" class="btnMiniDanger" data-side="left"><i class="fa-solid fa-trash"></i> Delete</button>
+            <button type="button" id="btnCompareLeftEdit" class="btnIcon" title="Crop/Edit"><i class="fa-solid fa-crop"></i></button>
+            <a id="compareLeftLink" href="#" target="_blank" rel="noopener" class="btnIcon" title="Open in Drive"><i class="fa-solid fa-external-link"></i></a>
+            <a id="btnCompareLeftDownload" href="#" class="btnIcon" title="Download"><i class="fa-solid fa-download"></i></a>
+          </div>
+        </div>
+        <div class="compareDivider"></div>
+        <div class="comparePane" id="comparePaneRight">
+          <div class="comparePaneHeader">
+            <h4 id="compareRightTitle">Image B</h4>
+          </div>
+          <div id="compareRightPath" class="comparePathBreadcrumb"></div>
+          <div class="compareImgWrap">
+            <img id="compareRightImg" class="compareImg" alt="Image B">
+          </div>
+          <div id="compareRightMeta" class="compareMeta"></div>
+          <div class="compareActions">
+            <span id="compareRightKeep" class="keepBadge" style="display:none;">KEEP</span>
+            <button type="button" id="btnCompareRightDelete" class="btnMiniDanger" data-side="right"><i class="fa-solid fa-trash"></i> Delete</button>
+            <button type="button" id="btnCompareRightEdit" class="btnIcon" title="Crop/Edit"><i class="fa-solid fa-crop"></i></button>
+            <a id="compareRightLink" href="#" target="_blank" rel="noopener" class="btnIcon" title="Open in Drive"><i class="fa-solid fa-external-link"></i></a>
+            <a id="btnCompareRightDownload" href="#" class="btnIcon" title="Download"><i class="fa-solid fa-download"></i></a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Crop Modal -->
+  <div id="cropModal" class="modal" style="display:none;">
+    <div class="modalContent modalCrop">
+      <div class="modalHeader cropModalHeader">
+        <button type="button" id="btnCropPrev" class="btnGhost btnCompareNav" style="display:none;">← Prev</button>
+        <span class="keyboardHint">Click and drag to select crop area • R=Rotate • L=Lock • D=Delete</span>
+        <div class="modalHeaderRight">
+          <button type="button" id="btnCropNext" class="btnGhost btnCompareNav" style="display:none;">Next →</button>
+          <button type="button" id="btnCropClose" class="btnClose" aria-label="Close">✕</button>
+        </div>
+      </div>
+      <div class="cropTitleBar">
+        <h4 id="cropTitle">Crop Image</h4>
+        <span id="cropNavInfo" class="cropNavInfo"></span>
+      </div>
+      <div class="cropToolbar">
+        <button type="button" id="btnCropRotate" class="btnGhost btnSmall" title="Rotate 90° (R)"><i class="fa-solid fa-rotate-right"></i> Rotate</button>
+        <div class="zoomButtons">
+          <span class="zoomLabel">Zoom:</span>
+          <button type="button" class="btnZoom active" data-zoom="1">1×</button>
+          <button type="button" class="btnZoom" data-zoom="1.5">1.5×</button>
+          <button type="button" class="btnZoom" data-zoom="2">2×</button>
+          <button type="button" class="btnZoom" data-zoom="2.5">2.5×</button>
+        </div>
+        <div class="fixedSizeGroup">
+          <button type="button" id="btnCropLock" class="btnLock" title="Lock selection size (L)"><i class="fa-solid fa-lock-open"></i></button>
+          <input type="number" id="cropFixedWidth" class="fixedSizeInput" placeholder="W" min="10" max="10000" value="800" title="Fixed width (px)">
+          <span class="fixedSizeSeparator">×</span>
+          <input type="number" id="cropFixedHeight" class="fixedSizeInput" placeholder="H" min="10" max="10000" value="600" title="Fixed height (px)">
+          <span class="fixedSizeLabel">px</span>
+        </div>
+      </div>
+      <div class="modalBody cropBody">
+        <div id="cropLoading" class="cropLoading">
+          <span class="spinner"></span>
+          <span>Loading image...</span>
+        </div>
+        <div class="cropCanvasWrap">
+          <canvas id="cropCanvas" class="cropCanvas"></canvas>
+        </div>
+      </div>
+      <div class="modalFooter cropFooter">
+        <div id="cropMeta" class="cropMeta"></div>
+        <div class="cropFooterButtons">
+          <button type="button" id="btnCropCancel" class="btnGhost">Cancel</button>
+          <button type="button" id="btnCropDelete" class="btnMiniDanger btnCropDelete" title="Delete this image"><i class="fa-solid fa-trash"></i> Delete</button>
+          <button type="button" id="btnCropConfirm" class="btnMiniDanger" disabled><i class="fa-solid fa-crop"></i> Crop</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Error Viewer Modal -->
+  <div id="errorModal" class="modal" style="display:none;">
+    <div class="modalContent modalErrors">
+      <div class="modalHeader">
+        <h2>Hashing Errors</h2>
+        <button type="button" id="btnErrorClose" class="btnClose" aria-label="Close">✕</button>
+      </div>
+      <div class="modalBody">
+        <p class="muted" id="errorSummary">Files that could not be hashed:</p>
+        <div id="errorList" class="errorList"></div>
+      </div>
+      <div class="modalFooter">
+        <button type="button" id="btnErrorCloseFooter" class="btnGhost">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Queue Modal -->
+  <div id="queueModal" class="modal" style="display:none;">
+    <div class="modalContent">
+      <div class="modalHeader">
+        <h2>Trash Queue</h2>
+        <button type="button" id="btnQueueClose" class="btnClose" aria-label="Close">✕</button>
+      </div>
+      <div class="modalBody">
+        <div id="queueList" class="queueList"></div>
+      </div>
+      <div class="modalFooter">
+        <button type="button" id="btnQueueClear" class="btnGhost">Clear Queue</button>
+        <button type="button" id="btnQueueProcess" class="btnDanger">Trash All</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<!--
+  Drive Dupe Destroyer (DDD) v14.0 — privacy.html
+  
+  Copyright (c) 2025 Carlos Camacho
+  SPDX-License-Identifier: MIT
+  
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+  
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+  
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="X-Content-Type-Options" content="nosniff">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <title>Privacy Policy — Drive Dupe Destroyer</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 780px; margin: 0 auto; padding: 2rem 1.5rem; color: #222; line-height: 1.7; }
+    h1 { color: #1E4A8C; }
+    h2 { color: #1E4A8C; margin-top: 2rem; }
+    code { background: #f5f5f5; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+    .updated { color: #666; font-size: 0.9em; }
+    footer { margin-top: 3rem; color: #888; font-size: 0.85em; border-top: 1px solid #eee; padding-top: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Privacy Policy</h1>
+  <p class="updated">Last updated: March 2026 &nbsp;|&nbsp; Drive Dupe Destroyer v14.0</p>
+
+  <h2>What This App Does</h2>
+  <p>Drive Dupe Destroyer is a browser-based tool that helps you find and remove duplicate images in your Google Drive. It runs entirely in your browser. No data is sent to any third-party server operated by the app developer.</p>
+
+  <h2>Google Account Access</h2>
+  <p>This app requests the following Google OAuth scope:</p>
+  <ul>
+    <li><code>https://www.googleapis.com/auth/drive</code> — required to list folders, read image thumbnails, and move files to Google Drive Trash.</li>
+  </ul>
+  <p>This scope is the minimum required to perform duplicate detection across arbitrary Drive folders. The app does not access Gmail, Contacts, Calendar, or any Google service other than Drive.</p>
+
+  <h2>What Data Is Accessed</h2>
+  <ul>
+    <li><strong>File metadata</strong> — file names, sizes, dates, MIME types, folder structure, and MD5 checksums provided by the Drive API.</li>
+    <li><strong>Image thumbnails</strong> — low-resolution thumbnails downloaded temporarily to compute perceptual hashes.</li>
+    <li><strong>Nothing else</strong> — no file contents are read beyond what is needed to generate a perceptual hash fingerprint.</li>
+  </ul>
+
+  <h2>How Data Is Stored</h2>
+  <ul>
+    <li><strong>Access tokens</strong> are kept in browser memory only (JavaScript variables). They are never written to localStorage, cookies, or any external server. They expire when you close the tab.</li>
+    <li><strong>Perceptual hashes</strong> are stored in your browser's IndexedDB to speed up repeat scans. This data never leaves your device.</li>
+    <li><strong>Your OAuth Client ID</strong> is stored in your browser's IndexedDB so you don't have to re-enter it each session. It is never sent anywhere except to Google's authentication servers.</li>
+    <li><strong>Scan settings</strong> are stored in your browser's IndexedDB. They never leave your device.</li>
+  </ul>
+
+  <h2>Data Sharing</h2>
+  <p>No data is shared with any third party. The app communicates only with:</p>
+  <ul>
+    <li><code>accounts.google.com</code> — Google OAuth authentication</li>
+    <li><code>www.googleapis.com</code> — Google Drive API</li>
+    <li><code>cdnjs.cloudflare.com</code> — Font Awesome icons (CSS/fonts only)</li>
+  </ul>
+
+  <h2>Data Deletion</h2>
+  <p>All locally stored data (hashes, settings, Client ID) can be cleared at any time by clicking <strong>Clear Cache</strong> in the app. This deletes all IndexedDB data. You can also clear browser data through your browser's settings.</p>
+  <p>To revoke the app's access to your Google Drive, visit <a href="https://myaccount.google.com/permissions" rel="noopener noreferrer" target="_blank">Google Account Permissions</a> and remove Drive Dupe Destroyer from the list of connected apps.</p>
+
+  <h2>Children's Privacy</h2>
+  <p>This app is not directed at children under 13. It does not knowingly collect any personal information from children.</p>
+
+  <h2>Changes to This Policy</h2>
+  <p>If this policy changes materially, the "Last updated" date at the top will be updated. Continued use of the app constitutes acceptance of the updated policy.</p>
+
+  <h2>Contact</h2>
+  <p>If you have questions about this privacy policy, please open an issue on the project's repository or contact the developer directly.</p>
+
+  <footer>Drive Dupe Destroyer v14.0 &nbsp;|&nbsp; Privacy Policy</footer>
+</body>
+</html>
