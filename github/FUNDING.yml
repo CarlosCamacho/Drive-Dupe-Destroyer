@@ -1,0 +1,4 @@
+# Drive Dupe Destroyer — Sponsor button configuration
+# This puts a "Sponsor" button at the top of the repository.
+# `custom` accepts up to four URLs; we point at the existing PayPal donation link.
+custom: ["https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=idevgames%40gmail.com&item_name=Support%20Drive%20Dupe%20Destroyer&currency_code=USD"]

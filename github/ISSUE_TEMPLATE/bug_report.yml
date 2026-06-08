@@ -1,0 +1,74 @@
+name: Bug report
+description: Report a problem with Drive Dupe Destroyer
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report.
+
+        **Privacy note:** Drive Dupe Destroyer works directly with your Google Drive.
+        When attaching screenshots or logs, **blur or remove personal file names,
+        folder names, and image content** — do not paste anything you would not want
+        to be public.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before you start
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: My screenshots/logs do not contain personal Drive file names, folder names, or private images.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: Shown in the app header (for example, v14.0).
+      placeholder: v14.0
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Browser and operating system
+      placeholder: "Chrome 126 on Windows 11"
+    validations:
+      required: true
+  - type: dropdown
+    id: how-run
+    attributes:
+      label: How are you running it?
+      options:
+        - Local (python3 serve_secure.py)
+        - GitHub Pages or another static host
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the problem and what you expected to happen instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Sign in
+        2. Select folder ...
+        3. Start scan
+        4. See error
+    validations:
+      required: true
+  - type: textarea
+    id: console
+    attributes:
+      label: Console output / errors
+      description: Open your browser DevTools console (F12), and paste any errors here. Remove anything personal first.
+      render: shell
+    validations:
+      required: false
