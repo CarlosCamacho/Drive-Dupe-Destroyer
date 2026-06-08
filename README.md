@@ -117,8 +117,8 @@ Google Drive makes it easy to accumulate duplicate images across folders, backup
 ### 1. Clone or download the project
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/drive-dupe-destroyer.git
-cd drive-dupe-destroyer
+git clone https://github.com/CarlosCamacho/Drive-Dupe-Destroyer.git
+cd Drive-Dupe-Destroyer
 ```
 
 Or download the ZIP and open the project folder in a terminal.
@@ -159,6 +159,13 @@ Choose one or more Google Drive folders, set your scan options (optionally narro
 
 Drive Dupe Destroyer uses Google OAuth to access Google Drive with your permission.
 
+> **Each user supplies their own Client ID.** Drive Dupe Destroyer does not ship
+> with a shared Google client. Because the app requests a sensitive Google Drive
+> scope, the intended model is that **you create your own Google Cloud project
+> and OAuth Client ID** (free, a few minutes) and paste *your* Client ID into the
+> app. The steps below walk you through it. Your Client ID stays in your browser
+> (IndexedDB) and is never sent anywhere except Google.
+
 ### 1. Create a Google Cloud project
 
 Open Google Cloud Console and create a new project.
@@ -195,17 +202,26 @@ Choose:
 Application type: Web application
 ```
 
-Add this authorized JavaScript origin for local development:
+Under **Authorized JavaScript origins**, add the origins you'll use. Enter the
+**origin only** — scheme + host, no path and no trailing slash. For local
+development:
 
 ```text
 http://localhost:8080
 ```
 
-If you deploy with GitHub Pages, also add your production origin, for example:
+If you deploy with GitHub Pages, also add your Pages origin (this project's is):
 
 ```text
-https://YOUR-USERNAME.github.io
+https://carloscamacho.github.io
 ```
+
+Leave **Authorized redirect URIs** empty — the app uses the browser token-client
+(popup) flow, which uses JavaScript origins, not redirect URIs.
+
+> You can ignore the **client secret** Google generates. A static browser app
+> does not use it. Never paste the client secret into the app, the README, or
+> any file you commit to a repository.
 
 Copy the generated Client ID and paste it into the app when prompted.
 
@@ -304,9 +320,9 @@ Because DDD is a static web app, it can be hosted on GitHub Pages.
 Example public URLs:
 
 ```text
-https://YOUR-USERNAME.github.io/drive-dupe-destroyer/
-https://YOUR-USERNAME.github.io/drive-dupe-destroyer/privacy.html
-https://YOUR-USERNAME.github.io/drive-dupe-destroyer/terms.html
+https://carloscamacho.github.io/Drive-Dupe-Destroyer/
+https://carloscamacho.github.io/Drive-Dupe-Destroyer/privacy.html
+https://carloscamacho.github.io/Drive-Dupe-Destroyer/terms.html
 ```
 
 > **Note on `serve_secure.py`:** GitHub Pages cannot send the COOP/COEP headers that enable the SharedArrayBuffer zero-copy path, so that optimization is local-server only. The app works correctly on Pages without it — just slightly slower on very large scans.
