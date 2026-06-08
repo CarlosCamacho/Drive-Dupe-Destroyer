@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Setup & OAuth help
+    url: https://github.com/CarlosCamacho/Drive-Dupe-Destroyer#google-oauth-setup
+    about: Please read the README OAuth setup before opening a sign-in issue.
+  - name: Report a security vulnerability (private)
+    url: https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/security/advisories/new
+    about: Report security issues privately here, not as a public issue.
