@@ -9,7 +9,7 @@
   <img alt="App Type" src="https://img.shields.io/badge/app-static%20web%20app-brightgreen">
   <img alt="Google Drive" src="https://img.shields.io/badge/API-Google%20Drive-orange">
   <img alt="Privacy" src="https://img.shields.io/badge/privacy-browser%20local-lightgrey">
-  <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
+  <img alt="License" src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-orange">
   <a href="https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=idevgames%40gmail.com&item_name=Support%20Drive%20Dupe%20Destroyer&currency_code=USD">
     <img alt="Donate with PayPal" src="https://img.shields.io/badge/Donate-PayPal-00457C?logo=paypal&logoColor=white">
   </a>
@@ -351,7 +351,7 @@ drive-dupe-destroyer/
 ├── terms.html                  # Terms of service page (OAuth verification + Pages)
 ├── README.md                   # This file
 ├── CHANGELOG.md                # Consolidated changelog (newest first)
-├── LICENSE                     # MIT license
+├── LICENSE                     # PolyForm Noncommercial 1.0.0
 ├── .gitignore
 ├── js/                         # Application modules (32 files)
 │   ├── app.js                  # Main application wiring
@@ -424,6 +424,16 @@ Drive Dupe Destroyer is shared as a useful tool for people who need a safer way 
 
 ## License
 
-Released under the **MIT License**. See [`LICENSE`](LICENSE) for the full text.
+Licensed under the **PolyForm Noncommercial License 1.0.0** — see [`LICENSE`](LICENSE) for the full text.
 
-Copyright © 2025 Carlos Camacho.
+You are free to **use, copy, modify, and share** this software for any
+**noncommercial** purpose (personal use, hobby projects, research, education,
+nonprofits, and similar). **Commercial use is not permitted** — including
+selling the software, selling access to it, or hosting it as a paid product or
+service.
+
+> This is a *source-available*, noncommercial license, not an OSI-approved
+> open-source license. If you have a commercial use in mind, contact the author
+> to discuss separate terms.
+
+Copyright © 2026 Carlos Camacho.
