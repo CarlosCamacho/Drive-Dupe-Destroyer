@@ -17,7 +17,7 @@ Google's reviewers need a public URL to inspect. Options:
 ### Option A: GitHub Pages (Free, Recommended)
 1. Push your app folder to a GitHub repository
 2. Go to repo Settings → Pages → Source: `main` branch, `/root`
-3. Your URL will be `https://yourusername.github.io/drive-dupe-destroyer/`
+3. Your URL will be `https://carloscamacho.github.io/Drive-Dupe-Destroyer/`
 
 ### Option B: Netlify (Free, Drag-and-Drop)
 1. Go to netlify.com → "Add new site" → "Deploy manually"
