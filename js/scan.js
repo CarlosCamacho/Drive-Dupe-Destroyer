@@ -1,5 +1,5 @@
 /*
- * Drive Dupe Destroyer (DDD) v14.0 — scan.js
+ * Drive Dupe Destroyer (DDD) — scan.js
  *
  * Copyright (c) 2026 Carlos Camacho
  * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
@@ -11,21 +11,21 @@
  * Full terms: see the LICENSE file, or
  * https://polyformproject.org/licenses/noncommercial/1.0.0/
  */
-// Security: folder IDs validated before API calls
 // Main scanning logic with PROGRESSIVE RESULTS
 // v12.0: MD5 fast-path, AIMD throttle, resume, delta scan, aspect filter, pHash, LSH auto-tune, rejection filter
 
 import { el, nowMs, humanDuration, CONFIG } from "./util.js";
+import { validateFolderId, sanitizeText } from "./security.js";
 import { setStatus, setPhase, setProgress, showSpinner, updateStats, setSearchSummary, showEmptyState, setScanningState, showToast, setHashingErrors, updateEta, resetEta, showCollectingSpinner } from "./ui.js";
-import { driveFetch, fetchChangesSince, getChangesStartToken } from "./drive.js";
+import { driveFetch, fetchChangesSince, getChangesStartToken, isFolderMime } from "./drive.js";
 
 import { ensureValidToken } from "./auth.js";
-import { dbGetImagesBatch, dbPutImagesBatch, recordFoldersScan, dbCountImages, getChangesToken, setChangesToken } from "./db.js";
-import { computeHashesForFiles, getHashingStats } from "./hashing.js";
+import { dbGetImagesBatch, dbPutImagesBatch, recordFoldersScan, dbCountImages, getChangesToken, setChangesToken, isQuotaError, onQuotaExceeded } from "./db.js";
+import { computeHashesForFiles, getHashingStats, HASH_VERSION } from "./hashing.js";
 import { saveResumeState, clearResumeState } from "./resume.js";
 import { getRejectionStats, preloadRejections, isRejectedPairSync } from "./rejection.js";
 import { updateTelemetry } from "./telemetry.js";
-import { bestDist, bestDistExtended, bestDistWithPHash, thresholdFromEasy, isSupportedImageFile, aspectRatioCompatible, SUPPORTED_IMAGE_MIMES, getFileExtension } from "./common.js";
+import { bestDist, bestDistExtended, bestDistWithPHash, thresholdFromEasy, isSupportedImageFile, aspectRatioCompatible, SUPPORTED_IMAGE_MIMES, getFileExtension, DEFAULT_KEEP_RULE, canBrowserDecode } from "./common.js";
 import { makeUnionFind } from "./unionfind.js";
 import { buildPathsParallel, clearPathCaches } from "./paths.js";
 import { buildAutoTunedLshIndex, lshCandidates, lshStats } from "./lsh.js";
@@ -92,9 +92,66 @@ const NON_IMAGE_MIME_QUERIES = Array.from(SUPPORTED_IMAGE_MIMES)
   .map(mt => `mimeType = '${mt}'`)
   .join(' or ');
 
+/**
+ * Escape a Drive folder ID for interpolation into a `q` expression.
+ *
+ * Drive IDs are [-\w] in practice, but the ID reaches here from API responses
+ * and from the folder picker, and a stray quote would silently corrupt the
+ * query rather than fail loudly. validateFolderId was imported by drive.js and
+ * never called, while three files carried a header comment claiming "all
+ * file/folder IDs validated before API calls".
+ */
+function quoteFolderId(folderId) {
+  const id = String(folderId ?? "");
+  if (!validateFolderId(id)) {
+    throw new Error(`Refusing to query with a malformed folder ID: ${sanitizeText(id.slice(0, 64))}`);
+  }
+  return id;
+}
+
 function buildQuery(folderId) {
   const extra = NON_IMAGE_MIME_QUERIES ? ` or ${NON_IMAGE_MIME_QUERIES}` : '';
-  return `'${folderId}' in parents and trashed = false and (mimeType contains 'image/'${extra})`;
+  return `'${quoteFolderId(folderId)}' in parents and trashed = false and (mimeType contains 'image/'${extra})`;
+}
+
+/**
+ * One request per folder page, returning both images and subfolders.
+ *
+ * The recursive walk previously issued two list calls per folder — one filtered
+ * to images, one filtered to folders — doubling request count against a
+ * per-user rate limit the app already has to back off from. A single unfiltered
+ * query returns both and the split is free client-side, since isFolderMime and
+ * isSupportedImageFile already exist. It costs a little more JSON per page and
+ * saves half the round-trips; requests are the constrained resource here.
+ */
+async function listFolderContents(folderId, pageSize, signal) {
+  const images = [];
+  const subfolders = [];
+  let token = null;
+
+  do {
+    if (signal?.aborted) throw new Error("Scan stopped.");
+    await ensureValidToken();
+
+    const res = await driveFetch("files", {
+      params: {
+        q: `'${quoteFolderId(folderId)}' in parents and trashed = false`,
+        fields: FIELDS,
+        pageSize: String(pageSize),
+        pageToken: token || undefined,
+        orderBy: "folder,name"
+      },
+      signal
+    });
+
+    for (const f of (res.files || [])) {
+      if (isFolderMime(f.mimeType)) subfolders.push(f);
+      else if (isSupportedImageFile(f)) images.push(f);
+    }
+    token = res.nextPageToken || null;
+  } while (token);
+
+  return { images, subfolders };
 }
 
 async function listFolderLevel(folderId, pageSize, signal) {
@@ -123,39 +180,20 @@ async function listFolderLevel(folderId, pageSize, signal) {
   return out;
 }
 
-async function listFolders(folderId, pageSize, signal) {
-  const out = [];
-  let token = null;
-  
-  do {
-    if (signal?.aborted) throw new Error("Scan stopped.");
-    await ensureValidToken();
-    
-    const res = await driveFetch("files", {
-      params: {
-        q: `'${folderId}' in parents and trashed = false and mimeType = 'application/vnd.google-apps.folder'`,
-        fields: "nextPageToken, files(id,name)",
-        pageSize: String(pageSize),
-        pageToken: token || undefined
-      },
-      signal
-    });
-    
-    for (const f of (res.files || [])) out.push(f);
-    token = res.nextPageToken || null;
-  } while (token);
-  
-  return out;
-}
 
 // ============================================================================
 // File Collection
 // ============================================================================
 
-async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSize, signal, onStatus }) {
+async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSize, signal, onStatus, resume = null, onCheckpoint = null }) {
+  // Resuming means picking up the BFS frontier where it stopped: the folders
+  // already walked stay walked, and the queue restarts from what was still
+  // pending. Previously the resume state recorded neither, so "Resume" ran a
+  // full rescan from the selected roots.
   const visited = new Set(exclusions);
-  const allFiles = [];
-  const queue = [...folderIds];
+  const allFiles = resume?.files ? [...resume.files] : [];
+  if (resume?.visitedFolderIds) for (const id of resume.visitedFolderIds) visited.add(id);
+  const queue = resume?.pendingFolderIds?.length ? [...resume.pendingFolderIds] : [...folderIds];
   let foldersScanned = 0;
   let totalSubfoldersFound = 0;
   let lastTokenCheck = Date.now();
@@ -187,10 +225,7 @@ async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSi
     }
 
     try {
-      const [images, subfolders] = await Promise.all([
-        listFolderLevel(folderId, pageSize, signal),
-        listFolders(folderId, pageSize, signal)
-      ]);
+      const { images, subfolders } = await listFolderContents(folderId, pageSize, signal);
 
       for (const img of images) {
         if (maxItems > 0 && allFiles.length >= maxItems) break;
@@ -201,6 +236,13 @@ async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSi
       for (const sub of subfolders) {
         if (!visited.has(sub.id)) queue.push(sub.id);
       }
+
+      // Checkpoint the frontier, not just a count. Writing this once at the end
+      // of collection (as before) was useless: a crash during the long phase
+      // had nothing to resume from.
+      if (onCheckpoint && foldersScanned % 25 === 0) {
+        onCheckpoint({ files: allFiles, visitedFolderIds: Array.from(visited), pendingFolderIds: [...queue] });
+      }
     } catch (e) {
       if (signal?.aborted || e.message === "Scan stopped.") throw e;
       console.warn(`Error scanning folder ${folderId}:`, e.message);
@@ -209,7 +251,11 @@ async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSi
 
   if (onStatus) onStatus(`Collection complete: ${allFiles.length} images in ${foldersScanned} folders (${totalSubfoldersFound} subfolders traversed)`);
   console.log(`[DDD] Recursive scan: ${foldersScanned} folders scanned, ${totalSubfoldersFound} subfolders discovered, ${allFiles.length} images found`);
-  return allFiles;
+  // `visited` is the set of folders we actually walked. The delta scan needs it
+  // to tell whether a changed file lies inside the user's selection, and the
+  // resume state needs it to describe what was covered -- it previously stored
+  // the parent folders of found files, which is not the same thing.
+  return { files: allFiles, visitedFolderIds: visited };
 }
 
 async function fetchAllImagesFlat({ folderIds, exclusions, maxItems, pageSize, signal, onStatus }) {
@@ -241,7 +287,7 @@ async function fetchAllImagesFlat({ folderIds, exclusions, maxItems, pageSize, s
     }
   }
 
-  return allFiles;
+  return { files: allFiles, visitedFolderIds: new Set(folderIds.filter(id => !excludedSet.has(id))) };
 }
 
 // ============================================================================
@@ -276,8 +322,12 @@ async function computeHashesWithDb(images, {
           // If crop/color detection was requested but not in cache, need to recompute
           const needsCrop = withCropDetect && !rec.cropHashes;
           const needsColor = withColorMatch && (!rec.colorHist || !rec.edgeHist);
-          
-          if (needsCrop || needsColor) {
+          // Records written before the current hashing scheme are not comparable
+          // with freshly computed ones, so treat them as misses. Cheaper than
+          // wiping the whole cache, and it self-heals as files are rescanned.
+          const staleHash = (rec.hv || 1) !== HASH_VERSION;
+
+          if (needsCrop || needsColor || staleHash) {
             toCompute.push(f);
           } else {
             cacheHits++;
@@ -338,6 +388,7 @@ async function computeHashesWithDb(images, {
         
         if (useDb && e.base12) {
           recordsToSave.push({
+            hv: HASH_VERSION,
             id: f.id,
             name: f.name,
             size: f.size,
@@ -361,7 +412,12 @@ async function computeHashesWithDb(images, {
     if (recordsToSave.length > 0) {
       dbPutImagesBatch(recordsToSave)
         .then(() => updateCacheCount())
-        .catch(e => console.warn("Batch save failed:", e));
+        .catch(e => {
+          // A full cache is a user-visible condition, not a console footnote:
+          // scans stop getting faster and nothing said why.
+          if (isQuotaError(e)) onQuotaExceeded(msg => showToast(msg, "error", 8000));
+          else console.warn("Batch save failed:", e);
+        });
     }
   }
 
@@ -423,6 +479,7 @@ async function findMatchesProgressively({
   idToEntry,
   idToFile,
   idToFileMeta,
+  exactGroups = [],
   hamThresh,
   withVariants,
   withCropDetect,
@@ -436,6 +493,20 @@ async function findMatchesProgressively({
   onProgress
 }) {
   const uf = makeUnionFind();
+
+  // Seed byte-identical files before any perceptual comparison. This is what
+  // makes the MD5 fast path real: these files are grouped whether or not they
+  // could be hashed, so PSD/RAW/TIFF duplicates -- which no browser can decode
+  // -- now appear in results instead of only in the hashing-errors list.
+  let seededPairs = 0;
+  for (const group of exactGroups) {
+    for (let i = 1; i < group.length; i++) {
+      uf.union(group[0].id, group[i].id);
+      seededPairs++;
+    }
+  }
+  if (seededPairs > 0) console.log(`[DDD] Seeded ${seededPairs} exact-duplicate pair(s) from MD5`);
+
   const lshForceMode = typeof lshModeEl !== 'undefined' ? (lshModeEl || 'auto') : 'auto';
   const index = buildAutoTunedLshIndex(idToEntry, { use12: true, targetThreshold: hamThresh, forceMode: lshForceMode });
   
@@ -445,8 +516,12 @@ async function findMatchesProgressively({
   if (withCropDetect) console.log(`[DDD] Crop detection enabled`);
   if (withColorMatch) console.log(`[DDD] Color histogram matching enabled`);
   
+  // `ids` are the files we compare pairwise -- only those with a hash.
+  // `allIds` is every file that can appear in a result group, which includes
+  // MD5-seeded members that were deliberately never hashed.
   const ids = Array.from(idToEntry.keys());
   const idIndex = new Map(ids.map((id, idx) => [id, idx]));
+  const allIds = Array.from(idToFile.keys());
   
   let comparisons = 0;
   let matches = 0;
@@ -468,8 +543,8 @@ async function findMatchesProgressively({
       // once per dirty root (which was O(ids x dirtyRoots) every flush and ran on
       // the main thread). We only collect members for roots that are dirty.
       const membersByRoot = new Map();
-      for (let gi = 0; gi < ids.length; gi++) {
-        const gid = ids[gi];
+      for (let gi = 0; gi < allIds.length; gi++) {
+        const gid = allIds[gi];
         const root = uf.find(gid);
         if (!dirtyRoots.has(root)) continue;
         let arr = membersByRoot.get(root);
@@ -622,6 +697,12 @@ async function findMatchesProgressively({
     }
   }
   
+  // Mark every MD5-seeded root dirty so seeded groups reach the live view even
+  // when no perceptual match ever touched them.
+  for (const group of exactGroups) {
+    if (group.length > 1) dirtyRoots.add(uf.find(group[0].id));
+  }
+
   // Flush any groups changed in the final (partial) batch so the live view is
   // complete even if the scan ends mid-interval.
   flushDirty();
@@ -629,11 +710,15 @@ async function findMatchesProgressively({
   // Final emission of all groups
   const finalGroups = [];
   const rootMap = new Map();
-  
-  for (const id of ids) {
+
+  // Walk every file, not just the hashed ones, so MD5-seeded members are not
+  // dropped from the final result set.
+  for (const id of allIds) {
+    const f = idToFile.get(id);
+    if (!f) continue;
     const root = uf.find(id);
     if (!rootMap.has(root)) rootMap.set(root, []);
-    rootMap.get(root).push(idToFile.get(id));
+    rootMap.get(root).push(f);
   }
   
   for (const [root, group] of rootMap) {
@@ -661,7 +746,8 @@ export async function runScan({
   signal, 
   renderCb,           // Final render callback
   onProgressiveMatch, // NEW: Progressive match callback
-  emitGroupsCb 
+  emitGroupsCb,
+  resume = null       // Saved collection frontier from an interrupted scan
 }) {
   const start = nowMs();
   showSpinner(true);
@@ -703,7 +789,7 @@ export async function runScan({
     const quickScan = matchMode === "exact";
     const sensitivityLevel = parseInt(el("sensitivityLevel")?.value || "3", 10);
     const hamThresh = thresholdFromEasy(sensitivityLevel);
-    const keepRule = el("keepRule")?.value || "hires";
+    const keepRule = el("keepRule")?.value || DEFAULT_KEEP_RULE;
     const folderPriority = el("folderPriority")?.value || "";
     const dhashSize = parseInt(el("dhashSize")?.value || "12", 10);
     const withVariants = el("checkVariants")?.checked || el("checkVariants")?.value === "yes";
@@ -741,15 +827,37 @@ export async function runScan({
     setStatus("Collecting files from Drive…");
     await ensureValidToken();
     
+    if (resume) {
+      setStatus(`Resuming: ${resume.files?.length || 0} image(s) already collected, ${resume.pendingFolderIds?.length || 0} folder(s) left…`);
+      console.log(`[DDD] Resuming collection from ${resume.pendingFolderIds?.length || 0} pending folder(s)`);
+    }
+
     const fetcher = recursive ? fetchAllImagesRecursive : fetchAllImagesFlat;
-    let allItems = await fetcher({
+    const collected = await fetcher({
       folderIds,
       exclusions,
       maxItems,
       pageSize,
       signal,
-      onStatus: setStatus
+      onStatus: setStatus,
+      resume: recursive ? resume : null,
+      // Checkpoint through the collection phase so an interruption has
+      // something to resume from. Fire-and-forget: a failed write must not
+      // stall the walk.
+      onCheckpoint: (state) => {
+        saveResumeState({
+          folderIds,
+          exclusions: exclusions instanceof Set ? Array.from(exclusions) : (exclusions || []),
+          visitedFolderIds: state.visitedFolderIds,
+          pendingFolderIds: state.pendingFolderIds,
+          files: state.files,
+          totalImagesFound: state.files.length,
+          options: { recursive, maxItems, pageSize, withVariants, withCropDetect, withColorMatch, withPHash, withRotation }
+        }).catch(() => {});
+      }
     });
+    let allItems = collected.files;
+    const visitedFolderIds = collected.visitedFolderIds;
     
     if (signal?.aborted) throw new Error("Scan stopped.");
 
@@ -758,15 +866,18 @@ export async function runScan({
       await saveResumeState({
         folderIds,
         exclusions: exclusions instanceof Set ? Array.from(exclusions) : (exclusions || []),
-        visitedFolderIds: Array.from(allItems.map(f => f.parents?.[0]).filter(Boolean)),
-        hashedFileIds: [],
+        visitedFolderIds: Array.from(visitedFolderIds),
+        pendingFolderIds: [],
+        files: allItems,
         totalImagesFound: allItems.length,
         options: { recursive, maxItems, pageSize, withVariants, withCropDetect, withColorMatch, withPHash, withRotation }
       });
     } catch {}
 
-    // Filter by size and mime type
-    images = allItems.filter(f => {
+    // One predicate, applied everywhere a file can enter the scan set. It used
+    // to be inlined here only, so delta-added files below bypassed the size
+    // limits and the Image Types selection entirely.
+    const passesFilters = (f) => {
       const sz = Number(f.size || 0);
       if (!(isSupportedImageFile(f) && sz >= minBytes && sz <= maxBytes)) return false;
       // v14: honour the user's per-format selection. We match on extension; a
@@ -777,16 +888,28 @@ export async function runScan({
         if (ext && !enabledExts.has(ext)) return false;
       }
       return true;
-    });
+    };
+
+    images = allItems.filter(passesFilters);
 
     setStatus(`Found ${images.length} image(s).`);
     setProgress(10);
     showCollectingSpinner(false);
 
-    // Feature #5: MD5 exact-duplicate fast path
-    // Group files by md5Checksum before any hashing - zero cost since Drive API provides it
+    // MD5 exact-duplicate fast path.
+    //
+    // Drive hands us md5Checksum in the file listing for free, so byte-identical
+    // files are provably duplicates before we download anything. This used to
+    // compute the groups, log them, and throw them away: every exact duplicate
+    // was still downloaded and perceptually hashed, and a pair that failed to
+    // decode (PSD, RAW, TIFF outside Safari) was never grouped at all even
+    // though its checksum proved the match.
+    //
+    // Now the groups are (a) seeded into the union-find so they appear in
+    // results regardless of hashing, and (b) used to skip redundant work: only
+    // one representative per checksum is hashed, since the rest are the same
+    // bytes and cannot differ perceptually.
     const md5Groups = new Map();
-    let md5ExactCount = 0;
     for (const f of images) {
       if (f.md5Checksum) {
         const key = f.md5Checksum;
@@ -795,10 +918,23 @@ export async function runScan({
       }
     }
     const exactDupeGroups = Array.from(md5Groups.values()).filter(g => g.length > 1);
-    md5ExactCount = exactDupeGroups.reduce((s, g) => s + g.length, 0);
+    const md5ExactCount = exactDupeGroups.reduce((s, g) => s + g.length, 0);
+
+    // Everything after the first file in each checksum group is redundant work.
+    const md5Redundant = new Set();
+    for (const g of exactDupeGroups) {
+      for (let i = 1; i < g.length; i++) md5Redundant.add(g[i].id);
+    }
+
     if (exactDupeGroups.length > 0) {
-      setStatus(`Found ${exactDupeGroups.length} exact duplicate group(s) via MD5 (${md5ExactCount} files). Continuing with perceptual hash…`);
-      console.log(`[DDD] MD5 fast-path: ${exactDupeGroups.length} groups, ${md5ExactCount} exact dupes`);
+      setStatus(
+        `Found ${exactDupeGroups.length} exact duplicate group(s) via MD5 ` +
+        `(${md5ExactCount} files, skipping ${md5Redundant.size} redundant download(s))…`
+      );
+      console.log(
+        `[DDD] MD5 fast-path: ${exactDupeGroups.length} groups, ${md5ExactCount} exact dupes, ` +
+        `${md5Redundant.size} downloads avoided`
+      );
     }
 
     // Feature #13: Delta scan - fetch only files changed since last scan
@@ -811,15 +947,40 @@ export async function runScan({
           const { files: changed, nextToken } = await fetchChangesSince(savedToken, { signal });
           const removedIds = changed.filter(f => f._removed).map(f => f.id);
           deltaRemovedIds = new Set(removedIds);
-          // Add changed files not already in our list
+          // The Changes API reports changes across the ENTIRE Drive, not just
+          // the selected folders. Without a containment check this pulled in
+          // images from anywhere -- including folders the user had explicitly
+          // excluded -- and presented them as delete candidates.
+          const excludedSet = exclusions instanceof Set ? exclusions : new Set(exclusions || []);
+          const inScope = (f) => {
+            const parent = f.parents?.[0];
+            if (!parent) return false;
+            if (excludedSet.has(parent)) return false;
+            return visitedFolderIds.has(parent);
+          };
+
           const existingIds = new Set(images.map(f => f.id));
+          let added = 0, outOfScope = 0, filteredOut = 0;
+
           for (const cf of changed.filter(f => f._changed)) {
-            if (!existingIds.has(cf.id)) images.push(cf);
+            if (existingIds.has(cf.id)) continue;
+            if (!inScope(cf)) { outOfScope++; continue; }
+            // Same size/format rules as the main collection path.
+            if (!passesFilters(cf)) { filteredOut++; continue; }
+            images.push(cf);
+            added++;
+          }
+
+          if (outOfScope || filteredOut) {
+            console.log(
+              `[DDD] Delta scan: ignored ${outOfScope} change(s) outside the selected folders ` +
+              `and ${filteredOut} that did not pass the size/type filters.`
+            );
           }
           // Remove deleted files
           images = images.filter(f => !deltaRemovedIds.has(f.id));
           if (nextToken) await setChangesToken(nextToken);
-          setStatus(`Delta scan: ${changed.length} changes, ${removedIds.length} removed, ${images.length} images to process`);
+          setStatus(`Delta scan: ${changed.length} change(s), ${added} added, ${removedIds.length} removed, ${images.length} image(s) to process`);
         } else {
           // First run: get start token for future delta scans
           const startToken = await getChangesStartToken({ signal });
@@ -882,7 +1043,27 @@ export async function runScan({
     let lastDone = 0;
     let errorCount = 0;
 
-    const hashResult = await computeHashesWithDb(images, {
+    // Skip the redundant members of each MD5 group; they are byte-identical to a
+    // file we are already hashing, so their perceptual hash is knowable without
+    // the download.
+    // Also skip formats no browser can turn into pixels. They are still in the
+    // scan -- MD5 groups them above -- but downloading a 300 MB layered PSD to
+    // watch createImageBitmap reject it helps nobody.
+    const undecodable = [];
+    const imagesToHash = images.filter(f => {
+      if (md5Redundant.has(f.id)) return false;
+      if (!canBrowserDecode(f)) { undecodable.push(f); return false; }
+      return true;
+    });
+
+    if (undecodable.length > 0) {
+      console.log(
+        `[DDD] ${undecodable.length} file(s) in formats this browser cannot decode — ` +
+        `matched by checksum only, not downloaded.`
+      );
+    }
+
+    const hashResult = await computeHashesWithDb(imagesToHash, {
       useDb, 
       withVariants,
       withCropDetect,
@@ -941,6 +1122,7 @@ export async function runScan({
       idToEntry,
       idToFile,
       idToFileMeta: idToFile,
+      exactGroups: exactDupeGroups,
       hamThresh,
       withVariants,
       withCropDetect,
@@ -1045,19 +1227,32 @@ export async function runScan({
     } else {
       console.error("Scan failed:", e);
       
+      // Classify on the status the fetch layer attached, not on substrings of
+      // the message. Matching "403" anywhere in a Drive error body is fragile,
+      // and `e.name === "TypeError"` matched every ordinary programming error
+      // in the codebase — a genuine "x is not a function" was reported to the
+      // user as "Network error. Check your internet connection.", sending them
+      // to check a connection that was fine while the real stack trace stayed
+      // in the console.
       let errorMsg = "Scan failed: ";
-      if (e.message?.includes("401") || e.message?.includes("auth")) {
+      const status = e?.status;
+
+      if (status === 401 || e?.code === "AUTH") {
         errorMsg += "Authentication expired. Please sign out and sign in again.";
-      } else if (e.message?.includes("403")) {
+      } else if (status === 403) {
         errorMsg += "Access denied. Check folder permissions.";
-      } else if (e.message?.includes("404")) {
+      } else if (status === 404) {
         errorMsg += "Folder not found. It may have been deleted.";
-      } else if (e.message?.includes("429")) {
+      } else if (status === 429) {
         errorMsg += "Too many requests. Wait a few minutes and try again.";
-      } else if (e.message?.includes("network") || e.name === "TypeError") {
+      } else if (status >= 500) {
+        errorMsg += `Google Drive returned a server error (${status}). Try again shortly.`;
+      } else if (e?.code === "NETWORK") {
         errorMsg += "Network error. Check your internet connection.";
       } else {
-        errorMsg += e.message || "Unknown error";
+        // Anything unclassified is most likely a bug. Show the real message
+        // rather than dressing it up as something the user can act on.
+        errorMsg += e?.message || "Unknown error";
       }
       
       setStatus(errorMsg);

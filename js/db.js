@@ -1,5 +1,5 @@
 /*
- * Drive Dupe Destroyer (DDD) v14.0 — db.js
+ * Drive Dupe Destroyer (DDD) — db.js
  *
  * Copyright (c) 2026 Carlos Camacho
  * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
@@ -17,7 +17,7 @@
 import { toIso, chunk } from "./util.js";
 
 const DB_NAME = "drive_dupe_destroyer_db_v1";  // Namespaced: distinct from Drive Dupe Decimator
-const DB_VERSION = 1;  // Reset: new namespaced DB starts at version 1
+const DB_VERSION = 2;  // v2: dedicated "rejections" store (was a single settings blob)
 
 let dbp = null;
 let dbReady = false;
@@ -92,11 +92,37 @@ function openDb() {
         const hashStore = db.createObjectStore("hashLookup", { keyPath: "hash" });
         hashStore.createIndex("count", "count", { unique: false });
       }
+
+      // Rejected pairs, one row each.
+      //
+      // These lived in a single settings value, so every rejection serialized
+      // and rewrote the whole collection — up to ~1 MB at the 10,000 cap, on
+      // the hot path of pressing "4" repeatedly in the compare modal. One row
+      // per pair makes a rejection a single small put, and trimming a cursor
+      // delete rather than a rebuild.
+      if (!db.objectStoreNames.contains("rejections")) {
+        const rejStore = db.createObjectStore("rejections", { keyPath: "key" });
+        rejStore.createIndex("ts", "ts", { unique: false });
+      }
     };
     
+    // A second tab holding the old version blocks an upgrade indefinitely, with
+    // no feedback at all previously.
+    req.onblocked = () => {
+      console.warn("[DB] Upgrade blocked — another tab has this database open at an older version.");
+    };
+
     req.onsuccess = () => {
       dbReady = true;
-      resolve(req.result);
+      const db = req.result;
+      // Let a newer tab upgrade instead of deadlocking against our open handle.
+      db.onversionchange = () => {
+        console.warn("[DB] Another tab requested a database upgrade; closing this connection.");
+        try { db.close(); } catch {}
+        dbp = null;
+        dbReady = false;
+      };
+      resolve(db);
     };
     
     req.onerror = () => {
@@ -123,6 +149,67 @@ async function getStores(storeNames, mode = "readonly") {
   const db = await openDb();
   const tx = db.transaction(storeNames, mode);
   return storeNames.map(name => tx.objectStore(name));
+}
+
+// ============================================================================
+// Storage Durability & Quota
+// ============================================================================
+
+/**
+ * Ask the browser to keep this origin's storage.
+ *
+ * Without it, IndexedDB is "best effort": the browser may evict the entire
+ * database under storage pressure, taking the hash cache AND the user's
+ * accumulated rejected-pairs list with it, silently. Chrome grants this without
+ * a prompt for sites the user has engaged with; elsewhere it may be declined,
+ * which is fine — it is an improvement, not a requirement.
+ */
+export async function requestPersistentStorage() {
+  try {
+    if (!navigator.storage?.persist) return false;
+    if (await navigator.storage.persisted?.()) return true;
+    const granted = await navigator.storage.persist();
+    console.log(`[DB] Persistent storage ${granted ? "granted" : "not granted"}`);
+    return granted;
+  } catch {
+    return false;
+  }
+}
+
+/** Bytes used / available, or null when the browser will not say. */
+export async function getStorageEstimate() {
+  try {
+    if (!navigator.storage?.estimate) return null;
+    const { usage = 0, quota = 0 } = await navigator.storage.estimate();
+    return { usage, quota, pctUsed: quota > 0 ? (usage / quota) * 100 : 0 };
+  } catch {
+    return null;
+  }
+}
+
+/** True for the various shapes a quota failure arrives in. */
+export function isQuotaError(e) {
+  return (
+    e?.name === "QuotaExceededError" ||
+    e?.name === "NS_ERROR_DOM_QUOTA_REACHED" ||
+    e?.code === 22 ||
+    /quota/i.test(e?.message || "")
+  );
+}
+
+// Report a full cache once per session, not once per failed batch.
+let _quotaWarned = false;
+
+export function onQuotaExceeded(notify) {
+  if (_quotaWarned) return;
+  _quotaWarned = true;
+  console.warn("[DB] Storage quota exceeded — the hash cache has stopped growing.");
+  if (typeof notify === "function") {
+    notify(
+      "Browser storage is full, so new hashes are no longer being cached. " +
+      "Clear the cache in the sidebar to keep caching."
+    );
+  }
 }
 
 // ============================================================================
@@ -224,18 +311,27 @@ export async function dbGetImagesBatch(ids) {
  */
 export async function dbPutImagesBatch(records) {
   if (!records || records.length === 0) return;
-  
+
   const db = await openDb();
   const tx = db.transaction("images", "readwrite");
   const store = tx.objectStore("images");
   const ts = toIso();
-  
+
   // Use put without waiting for each one
   for (const rec of records) {
     store.put({ ...rec, ts });
   }
-  
-  return promisifyTransaction(tx);
+
+  try {
+    return await promisifyTransaction(tx);
+  } catch (e) {
+    // A quota failure used to be swallowed by the caller's .catch(console.warn),
+    // so the cache silently stopped working and the user only saw that repeat
+    // scans were as slow as the first. Re-thrown with a flag so scan.js can tell
+    // "storage is full" apart from a transient write error.
+    if (isQuotaError(e)) throw Object.assign(e, { code: "QUOTA" });
+    throw e;
+  }
 }
 
 /**
@@ -608,4 +704,74 @@ export async function setChangesToken(token) {
 
 export async function clearChangesToken() {
   await settingDel("destroyer_drive_changes_token");
+}
+
+// ============================================================================
+// Rejected Pairs Store
+// ============================================================================
+
+/** All rejection keys, for the in-memory set rejection.js keeps. */
+export async function rejectionsAll() {
+  const store = await getStore("rejections");
+  const rows = await promisifyRequest(store.getAll());
+  return (rows || []).map(r => r.key);
+}
+
+/** Record one rejected pair. A single small put, not a whole-collection rewrite. */
+export async function rejectionAdd(key) {
+  const store = await getStore("rejections", "readwrite");
+  return promisifyRequest(store.put({ key, ts: Date.now() }));
+}
+
+export async function rejectionCount() {
+  const store = await getStore("rejections");
+  return promisifyRequest(store.count());
+}
+
+export async function rejectionsClear() {
+  const store = await getStore("rejections", "readwrite");
+  return promisifyRequest(store.clear());
+}
+
+/** Drop the oldest entries once the cap is exceeded. */
+export async function rejectionsTrim(maxEntries) {
+  const count = await rejectionCount();
+  const excess = count - maxEntries;
+  if (excess <= 0) return 0;
+
+  const store = await getStore("rejections", "readwrite");
+  const index = store.index("ts");
+  let removed = 0;
+
+  return new Promise((resolve, reject) => {
+    const req = index.openCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor || removed >= excess) return resolve(removed);
+      cursor.delete();
+      removed++;
+      cursor.continue();
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+/**
+ * One-time migration of the old single-blob rejection list into its own store.
+ * Returns the number of entries migrated.
+ */
+export async function migrateRejectionsFromSettings(settingsKey) {
+  const legacy = await settingGet(settingsKey, null).catch(() => null);
+  if (!Array.isArray(legacy) || legacy.length === 0) return 0;
+
+  const db = await openDb();
+  const tx = db.transaction("rejections", "readwrite");
+  const store = tx.objectStore("rejections");
+  const ts = Date.now();
+  for (const key of legacy) store.put({ key, ts });
+  await promisifyTransaction(tx);
+
+  await settingSet(settingsKey, []).catch(() => {});
+  console.log(`[DB] Migrated ${legacy.length} rejected pair(s) into the rejections store`);
+  return legacy.length;
 }

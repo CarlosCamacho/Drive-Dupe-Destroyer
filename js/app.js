@@ -1,5 +1,5 @@
 /*
- * Drive Dupe Destroyer (DDD) v14.0 — app.js
+ * Drive Dupe Destroyer (DDD) — app.js
  *
  * Copyright (c) 2026 Carlos Camacho
  * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
@@ -14,8 +14,8 @@
 // Security-hardened: localStorage replaced with IndexedDB for all persistence
 // Main application entry point
 
-import { el } from "./util.js";
-import { uiInit, setSignedInUi, setStatus, showEmptyState, setScanningState, showToast, wireErrorModal, setSelectedCountProvider } from "./ui.js";
+import { el, APP_VERSION } from "./util.js";
+import { uiInit, setSignedInUi, setStatus, showEmptyState, setScanningState, showToast, wireErrorModal, setSelectedCountProvider, lockBodyScroll } from "./ui.js";
 import { wireAuth } from "./auth.js";
 import { runScan, setupBackgroundDetection } from "./scan.js";
 import { renderGroups, wireRenderControls, getSelectedCount, beginProgressive, pushProgressiveMatch, endProgressive } from "./render.js";
@@ -26,10 +26,10 @@ import { wireKeyboard } from "./keyboard.js";
 import { wireActions } from "./actions.js";
 import { wireExport, setExportState } from "./exporter.js";
 import { applyAllSecurityPolicies } from "./security.js";
-import { settingGet, settingSet } from "./db.js";
+import { settingGet, settingSet, requestPersistentStorage, getStorageEstimate } from "./db.js";
 import { initPersistentSettings } from "./settings.js";
 import { toggleTelemetry } from "./telemetry.js";
-import { undoLastDelete } from "./undo.js";
+import { undoLastDelete, loadUndoStack } from "./undo.js";
 import { loadResumeState, clearResumeState, formatResumeDescription } from "./resume.js";
 import { wireQueue } from "./queue.js";
 import { dbClearImages, dbCountImages, dbExportImages, dbImportImages } from "./db.js";
@@ -151,11 +151,16 @@ function wireScanControls() {
       abortCtrl = new AbortController();
       
       try {
+        // Consume the resume offer on the first scan after boot; a later scan in
+        // the same session starts clean.
+        const resume = takePendingResume();
+
         await runScan({
           folderIds,
           folders: getIncludedFolders(), // For scan history tracking
           exclusions: getExclusions(),
           signal: abortCtrl.signal,
+          resume,
           renderCb: async (data) => {
             // Final, authoritative render (includes folder paths + final sort).
             endProgressive();
@@ -372,6 +377,35 @@ function wireScrollToTop() {
   btn.onclick = () => tableWrap.scrollTo({ top: 0, behavior: "smooth" });
 }
 
+function wireAboutModal() {
+  const btn = document.getElementById("btnAbout");
+  const modal = document.getElementById("aboutModal");
+  if (!btn || !modal) return;
+
+  // Same open/close contract as the other modals in the app: overlay click,
+  // Escape, the header X and the footer button all close it, and the body
+  // scroll is locked while it is open.
+  const open = () => {
+    modal.style.display = "flex";
+    lockBodyScroll(true);
+    document.getElementById("aboutModalOk")?.focus();
+  };
+
+  const close = () => {
+    modal.style.display = "none";
+    lockBodyScroll(false);
+    btn.focus();
+  };
+
+  btn.onclick = open;
+  document.getElementById("aboutModalClose")?.addEventListener("click", close);
+  document.getElementById("aboutModalOk")?.addEventListener("click", close);
+  modal.addEventListener("click", (e) => { if (e.target === modal) close(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && modal.style.display === "flex") close();
+  });
+}
+
 function wireTelemetryButton() {
   const btn = document.getElementById("btnTelemetry");
   if (btn) btn.onclick = () => toggleTelemetry();
@@ -380,11 +414,39 @@ function wireTelemetryButton() {
 function wireUndoButton() {
   const btn = document.getElementById("btnUndo");
   if (btn) btn.onclick = () => undoLastDelete();
+
+  // The undo stack is persisted, so a refresh (including the one sw.js triggers
+  // when a new service worker activates) no longer discards it. Rehydrate on
+  // boot so the button reflects what is actually still restorable.
+  loadUndoStack().catch(e => console.warn("[Undo] Load failed:", e?.message || e));
+}
+
+// Collection frontier offered to the next scan, or null. Set by
+// checkResumeState() at boot and consumed exactly once by the scan handler.
+//
+// The comment that used to sit at the bottom of this function claimed "the
+// scan.js layer will detect the state and use it". It did not — nothing read
+// the saved state, so clicking OK ran a full rescan. Worse, the state was only
+// cleared on Cancel, so the prompt reappeared on every load for its full 24h
+// lifetime.
+let pendingResume = null;
+
+export function takePendingResume() {
+  const r = pendingResume;
+  pendingResume = null;
+  return r;
 }
 
 async function checkResumeState() {
   const state = await loadResumeState().catch(() => null);
   if (!state) return;
+
+  // Only worth offering if there is actually work left to skip.
+  if (!state.pendingFolderIds?.length) {
+    await clearResumeState();
+    return;
+  }
+
   const desc = formatResumeDescription(state);
   const confirmed = confirm(
     `Resume previous scan?
@@ -393,10 +455,12 @@ ${desc}
 
 Click OK to resume, Cancel to start fresh.`
   );
-  if (!confirmed) {
+
+  if (confirmed) {
+    pendingResume = state;
+  } else {
     await clearResumeState();
   }
-  // If confirmed, the scan.js layer will detect the state and use it
 }
 
 // Register service worker (non-blocking)
@@ -427,11 +491,42 @@ function registerServiceWorker() {
       console.log('[SW] Received update signal v' + ev.data.version + ' — reloading');
       window.location.reload();
     }
+    // The SW carries its own version literal (it cannot import util.js). If it has
+    // drifted from APP_VERSION, the cache name derived from it has drifted too and
+    // the app may be running against a stale precache. Surface it rather than
+    // letting it fail silently, which is how stale-asset bugs go unnoticed.
+    if (ev.data?.type === 'VERSION' && ev.data.version !== APP_VERSION) {
+      console.warn(
+        `[SW] Version mismatch: service worker reports v${ev.data.version}, app is v${APP_VERSION}. ` +
+        `Bump SW_VERSION in sw.js to match APP_VERSION in js/util.js.`
+      );
+    }
   });
+
+  // Ask the active worker to report its version so the check above can run.
+  navigator.serviceWorker.ready
+    .then((reg) => reg.active?.postMessage({ type: 'VERSION_CHECK' }))
+    .catch(() => {});
 }
 
 async function init() {
-  console.log("Drive Dupe Destroyer v14.0 initializing…");
+  console.log(`Drive Dupe Destroyer v${APP_VERSION} initializing…`);
+
+  // Ask the browser not to evict our IndexedDB under storage pressure. Without
+  // this the hash cache and the user's rejected-pairs list can vanish silently.
+  // Non-blocking: a refusal is not an error, just a weaker guarantee.
+  requestPersistentStorage()
+    .then(async (granted) => {
+      const est = await getStorageEstimate();
+      if (est) {
+        console.log(
+          `[DB] Storage ${granted ? "persistent" : "best-effort"}: ` +
+          `${(est.usage / 1048576).toFixed(1)} MB used of ` +
+          `${(est.quota / 1048576).toFixed(0)} MB (${est.pctUsed.toFixed(1)}%)`
+        );
+      }
+    })
+    .catch(() => {});
 
   // Apply all security policies before anything else
   try { applyAllSecurityPolicies(); } catch(e) { console.warn("Security init failed:", e); }
@@ -468,6 +563,7 @@ async function init() {
   wireThemeToggle();
   wireTelemetryButton();
   wireUndoButton();
+  wireAboutModal();
   await initPersistentSettings();
   await checkResumeState();
   
@@ -476,7 +572,7 @@ async function init() {
   setScanningState(false);
   
   setStatus("Ready. Sign in to start.");
-  console.log("Drive Dupe Destroyer v14.0 ready.");
+  console.log(`Drive Dupe Destroyer v${APP_VERSION} ready.`);
 }
 
 // v14: 🖼️ Image Types panel. The master "Select all" box toggles every format

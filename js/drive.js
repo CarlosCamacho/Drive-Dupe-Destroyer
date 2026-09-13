@@ -1,5 +1,5 @@
 /*
- * Drive Dupe Destroyer (DDD) v14.0 — drive.js
+ * Drive Dupe Destroyer (DDD) — drive.js
  *
  * Copyright (c) 2026 Carlos Camacho
  * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
@@ -11,11 +11,10 @@
  * Full terms: see the LICENSE file, or
  * https://polyformproject.org/licenses/noncommercial/1.0.0/
  */
-// Security: all file/folder IDs validated before API calls
 // Google Drive API operations
 
 import { authedFetch, ensureValidToken } from "./auth.js";
-import { validateFolderId, sanitizeText } from "./security.js";
+import { sanitizeText } from "./security.js";
 import { isSupportedImageFile } from "./common.js";
 
 export function isFolderMime(m) {
@@ -61,8 +60,11 @@ function driveParamsBase() {
 }
 
 export async function driveFetch(path, { method = "GET", params = {}, body = null, signal = null } = {}) {
-  // Security: basic path sanity check - no traversal, no injection
-  if (typeof path !== "string" || path.length > 512 || /[<>"{}|\^`]/.test(path)) {
+  // Path sanity check. Note this is a guard against malformed input reaching
+  // the URL, not a security boundary: the caller already holds the user's own
+  // token and every path here is built from IDs Drive gave us. Rejects the
+  // characters that would break out of the path segment, plus traversal.
+  if (typeof path !== "string" || path.length > 512 || /[<>"{}|\^`?#\s]/.test(path) || path.includes("..")) {
     throw new Error("Invalid API path");
   }
   await ensureValidToken();
@@ -86,26 +88,42 @@ export async function driveFetch(path, { method = "GET", params = {}, body = nul
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`Drive API error ${res.status}: ${sanitizeText(text.slice(0, 200))}`);
+    // Attach the real status rather than leaving callers to regex the message.
+    // scan.js used to classify failures with e.message.includes("403") etc.,
+    // which matches any 403 appearing anywhere in a Drive error body.
+    throw Object.assign(
+      new Error(`Drive API error ${res.status}: ${sanitizeText(text.slice(0, 200))}`),
+      { status: res.status, code: "DRIVE_API" }
+    );
   }
-  
+
   return res.status === 204 ? null : res.json();
+}
+
+// Whether Google's thumbnail CDN will serve us a readable blob.
+//
+// null = not yet probed, true/false = answer for this session.
+//
+// lh3.googleusercontent.com sends no Access-Control-Allow-Origin, so a
+// cors-mode fetch of a thumbnailLink is rejected. That is not a per-file
+// condition — it either works for this origin or it never will. Previously we
+// attempted it for every file and swallowed the rejection, which on a 20,000
+// image scan meant 20,000 doomed requests and 20,000 CORS errors in the console
+// before falling back to the full-resolution download each time.
+//
+// Probe once, remember the answer, and skip the attempt thereafter.
+let _thumbFetchUsable = null;
+
+export function getThumbFetchStatus() {
+  return _thumbFetchUsable;
 }
 
 export async function downloadFileBlob(fileId, { altThumbUrl = null, signal = null, preferThumb = false } = {}) {
   // Hashing only needs a ~256px image, but the Drive `alt=media` endpoint always
   // returns the full-resolution original (often multiple MB). Google's thumbnail
-  // URLs (lh3.googleusercontent.com) normally can't be *fetched* as a blob from
-  // the browser because they don't send CORS headers — fetching them taints the
-  // response and throws. So historically we always downloaded the original.
-  //
-  // When a caller opts in via preferThumb and supplies altThumbUrl, we *try* the
-  // thumbnail first and fall back to the full original on any failure. This is
-  // strictly safe: if the thumbnail fetch is blocked (CORS) or yields an
-  // unusable blob, we transparently download the original exactly as before, so
-  // hashing fidelity is never silently degraded — at worst we spend one failed
-  // (cheap, instantly-rejected) request before falling back.
-  if (preferThumb && altThumbUrl) {
+  // URLs are far cheaper when they can be read at all — see the note on
+  // _thumbFetchUsable above for why they usually cannot.
+  if (preferThumb && altThumbUrl && _thumbFetchUsable !== false) {
     try {
       const tRes = await fetch(altThumbUrl, { method: "GET", signal });
       if (tRes.ok) {
@@ -113,12 +131,23 @@ export async function downloadFileBlob(fileId, { altThumbUrl = null, signal = nu
         // Validate: must be a non-trivial image blob. Google sometimes returns a
         // tiny HTML/error body with a 200, which would not be a usable image.
         if (blob && blob.size > 512 && /^image\//.test(blob.type || "")) {
+          if (_thumbFetchUsable === null) {
+            _thumbFetchUsable = true;
+            console.log("[Drive] Thumbnail fast-path is available.");
+          }
           return blob;
         }
       }
     } catch (e) {
-      // CORS / network / abort — fall through to the authenticated full download.
+      // An abort is the caller cancelling, not a verdict on the CDN.
       if (signal?.aborted) throw e;
+      if (_thumbFetchUsable === null) {
+        _thumbFetchUsable = false;
+        console.info(
+          "[Drive] Thumbnail fast-path unavailable (the thumbnail CDN sends no CORS headers). " +
+          "Falling back to full downloads for hashing; will not retry per file."
+        );
+      }
     }
   }
 
@@ -127,7 +156,10 @@ export async function downloadFileBlob(fileId, { altThumbUrl = null, signal = nu
 
   if (!res.ok) {
     const t = await res.text().catch(() => "");
-    throw new Error(`Download failed ${res.status}: ${sanitizeText(t.slice(0, 200))}`);
+    throw Object.assign(
+      new Error(`Download failed ${res.status}: ${sanitizeText(t.slice(0, 200))}`),
+      { status: res.status, code: "DRIVE_DOWNLOAD" }
+    );
   }
 
   return await res.blob();
@@ -151,7 +183,7 @@ export function thumbLinkSized(thumbnailLink, w = 256) {
  * outcome. We tagged each sub-request with "Content-ID: <fileId>" on the way
  * out, and Google echoes it back as "Content-ID: response-<fileId>".
  */
-function parseBatchResponse(text, boundaryHint) {
+export function parseBatchResponse(text, boundaryHint) {
   const out = new Map();
   if (!text) return out;
 
@@ -168,8 +200,14 @@ function parseBatchResponse(text, boundaryHint) {
   for (const part of parts) {
     if (!part || part === "--\r\n" || part.trim() === "--") continue;
 
-    // Content-ID echoed by Google looks like: "response-<fileId>"
-    const idMatch = part.match(/Content-ID:\s*response-([^\r\n]+)/i);
+    // Content-ID echoed by Google is angle-bracketed: "Content-ID: <response-abc123>".
+    // The previous pattern required "response-" to follow the colon directly, so
+    // the leading "<" made it never match. statusById then came back empty and
+    // every chunk silently fell through to fallbackPatch -- one batch request
+    // followed by 100 individual PATCHes. Brackets are optional here so a
+    // bare "Content-ID: response-abc123" still parses, and the capture stops at
+    // ">" so the closing bracket is not swallowed into the file ID.
+    const idMatch = part.match(/Content-ID:\s*<?\s*response-([^>\r\n]+)>?/i);
     // The embedded HTTP status line, e.g. "HTTP/1.1 204 No Content"
     const statusMatch = part.match(/HTTP\/\d\.\d\s+(\d{3})/);
 

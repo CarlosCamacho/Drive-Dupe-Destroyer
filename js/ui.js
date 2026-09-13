@@ -1,5 +1,5 @@
 /*
- * Drive Dupe Destroyer (DDD) v14.0 — ui.js
+ * Drive Dupe Destroyer (DDD) — ui.js
  *
  * Copyright (c) 2026 Carlos Camacho
  * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
@@ -16,9 +16,11 @@
 // UI utilities and state management
 // Fixed selection count bug - now uses render module's selected Set
 
-import { el, clamp, bytesToHuman, humanDuration, getCurrentYear, HELP_TEXT } from "./util.js";
+import { el, clamp, bytesToHuman, humanDuration, getCurrentYear, HELP_TEXT, APP_VERSION } from "./util.js";
 
-export const APP_VERSION = "14.0";
+// Re-exported so existing importers (exporter.js) keep working; the value
+// itself is defined once in util.js.
+export { APP_VERSION };
 
 let statusPending = null;
 let phasePending = null;
@@ -40,8 +42,17 @@ export function uiInit() {
     if (vEl) vEl.textContent = "v" + APP_VERSION;
     document.title = `Drive Dupe Destroyer (DDD) v${APP_VERSION}`;
     
+    // The header subtitle no longer carries the copyright — it moved into the
+    // About modal. #copyrightYear is still honoured if present so older markup
+    // keeps working; #aboutYear and #aboutVersion are the current targets.
     const yearEl = el("copyrightYear");
     if (yearEl) yearEl.textContent = getCurrentYear();
+
+    const aboutYearEl = el("aboutYear");
+    if (aboutYearEl) aboutYearEl.textContent = getCurrentYear();
+
+    const aboutVerEl = el("aboutVersion");
+    if (aboutVerEl) aboutVerEl.textContent = APP_VERSION;
     
     // Initialize help tooltips
     initHelpTooltips();

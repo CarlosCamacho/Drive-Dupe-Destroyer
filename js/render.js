@@ -1,5 +1,5 @@
 /*
- * Drive Dupe Destroyer (DDD) v14.0 — render.js
+ * Drive Dupe Destroyer (DDD) — render.js
  *
  * Copyright (c) 2026 Carlos Camacho
  * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
@@ -21,7 +21,8 @@ import { releaseAllThumbBlobs, getThumbUrlForFile } from "./hashing.js";
 import { openCompare, setCompareCallbacks } from "./compare.js";
 import { setCropCallbacks } from "./crop.js";
 import { batchTrash, driveFilePreviewLink, driveFolderLink, downloadFileBlob, thumbLinkSized } from "./drive.js";
-import { chooseKeepIndex, distToPercent, bestDist } from "./common.js";
+import { chooseKeepIndex, distToPercent, bestDist, DEFAULT_KEEP_RULE } from "./common.js";
+import { pushUndoDeleteBatch } from "./undo.js";
 
 const ROW_HEIGHT = 58;
 const BUFFER_ROWS = 10;
@@ -62,6 +63,23 @@ export function getPathMap() { return currentState?.pathMap || new Map(); }
 
 function getFolderPath(file, pathMap) {
   return pathMap?.get(file.id) || "";
+}
+
+/**
+ * Copy each file's resolved folder path onto the file object.
+ *
+ * chooseKeepIndex's folderPriority rule matches against `_path`, but `_path` was
+ * only assigned in createRowElement -- which runs AFTER the keep was chosen, and
+ * only for rows the virtual scroller had painted. So on the first render every
+ * file scored "no match" and the folderPriority rule silently did nothing.
+ * Resolving up front makes the rule work on the first pass.
+ */
+function resolvePaths(group, pathMap) {
+  if (!pathMap || pathMap.size === 0) return group;
+  for (const f of group) {
+    if (f && !f._path) f._path = getFolderPath(f, pathMap);
+  }
+  return group;
 }
 
 function dimsForFile(file) {
@@ -279,10 +297,15 @@ const throttledLoadVisibleThumbs = throttle(() => {
   if (!tableWrap) return;
   const imgs = tableWrap.querySelectorAll('img.thumb[data-file-id]');
   const wrapRect = tableWrap.getBoundingClientRect();
-  
+
   for (const img of imgs) {
     if (img.dataset.failed) continue;
-    if (img.src && img.src.startsWith('http')) continue;
+    // loadedThumbs is the authority on what is already showing. The previous
+    // guard tested `img.src.startsWith('http')`, which blob: URLs fail, so every
+    // blob-backed thumbnail was re-processed on every scroll tick — an async
+    // call and a cache lookup per image, ten times a second, for images that
+    // were already painted.
+    if (loadedThumbs.has(img.dataset.fileId)) continue;
     const rect = img.getBoundingClientRect();
     if (rect.bottom >= wrapRect.top - 200 && rect.top <= wrapRect.bottom + 200) {
       loadThumbnailForImg(img);
@@ -290,22 +313,57 @@ const throttledLoadVisibleThumbs = throttle(() => {
   }
 }, 100);
 
+/**
+ * Point a results-table <img> at a thumbnail.
+ *
+ * Order matters. Drive's own thumbnailLink is tried FIRST: a plain cross-origin
+ * <img> load needs no CORS, no access token, no blob and no memory on our side,
+ * and the browser caches it. Only when there is no link, or it fails to load, do
+ * we fall back to an authenticated download — which costs an API call and holds
+ * a blob in the (byte-budgeted) cache.
+ *
+ * This was previously inverted: the blob path ran first for every visible row,
+ * so the table downloaded a full image per thumbnail before falling back to the
+ * cheap URL it could have used immediately.
+ */
 async function loadThumbnailForImg(img) {
   const fileId = img.dataset.fileId;
-  if (!fileId || img.dataset.failed || (img.src && img.src.startsWith('http'))) return;
-  
+  if (!fileId || img.dataset.failed || loadedThumbs.has(fileId)) return;
+
   const file = idToFile.get(fileId);
   if (!file) return;
-  
+
+  const directUrl = file.thumbnailLink ? thumbLinkSized(file.thumbnailLink, 256) : null;
+
+  if (directUrl && img.isConnected) {
+    loadedThumbs.add(fileId);
+    // thumbnailLink URLs expire after a few hours, so a long-lived session can
+    // see them start failing. Fall back to the authenticated blob on error.
+    img.onerror = () => {
+      img.onerror = null;
+      loadedThumbs.delete(fileId);
+      loadThumbnailViaBlob(img, file, fileId);
+    };
+    img.src = directUrl;
+    return;
+  }
+
+  await loadThumbnailViaBlob(img, file, fileId);
+}
+
+async function loadThumbnailViaBlob(img, file, fileId) {
   try {
     const url = await getThumbUrlForFile(file, { size: 256 });
-    if (url && img.isConnected) { img.src = url; loadedThumbs.add(fileId); return; }
-  } catch (e) {}
-  
-  if (file.thumbnailLink && img.isConnected) {
-    const url = thumbLinkSized(file.thumbnailLink, 256);
-    if (url) { img.src = url; loadedThumbs.add(fileId); }
+    if (url && img.isConnected) {
+      img.src = url;
+      loadedThumbs.add(fileId);
+      return;
+    }
+  } catch (e) {
+    console.warn(`[Render] Thumbnail failed for ${fileId}:`, e?.message || e);
   }
+  // Leave the inline placeholder in place and stop retrying this row.
+  img.dataset.failed = "1";
 }
 
 function observeThumbnails() {
@@ -314,7 +372,7 @@ function observeThumbnails() {
   if (!tbody) return;
   const imgs = tbody.querySelectorAll("img.thumb[data-file-id]");
   for (const img of imgs) {
-    if (!(img.src && img.src.startsWith('http'))) thumbObserver.observe(img);
+    if (!loadedThumbs.has(img.dataset.fileId)) thumbObserver.observe(img);
   }
 }
 
@@ -361,6 +419,10 @@ function handleTableClick(e) {
 
   if (target.matches('[data-action="delete"]') || target.closest('[data-action="delete"]')) {
     e.stopPropagation();
+    // Rows are ~58px tall and the trash button sits next to Download, so a
+    // misclick is easy. Confirm here as the KEEP row already does — the two are
+    // the same irreversible action from the user's point of view.
+    if (!confirm(`Move "${file.name}" to Google Drive Trash?`)) return;
     handleSingleDelete(file, tr);
     return;
   }
@@ -428,10 +490,14 @@ async function handleSingleDelete(file, tr) {
   try {
     const result = await batchTrash([file.id]);
     if (result.success.includes(file.id)) {
+      // Record before removing the row: this path used to trash the file without
+      // any undo entry, so a misclick was only recoverable from Drive Trash.
+      pushUndoDeleteBatch([file]);
+
       selected.delete(file.id);
       removeFileFromResults(file.id);
       window.dispatchEvent(new CustomEvent("ddd:trashed", { detail: { ids: [file.id] } }));
-      showToast("File moved to trash", "success");
+      showToast("File moved to trash — use Undo to restore", "success");
     } else throw new Error("Trash failed");
   } catch (err) {
     showToast("Trash failed: " + (err?.message || err), "error");
@@ -630,7 +696,15 @@ function handleFilterChange() {
   
   for (const g of currentState.groups) {
     groupId++;
-    const keepIdx = chooseKeepIndex(g, el("keepRule")?.value || "newest", el("folderPriority")?.value || "");
+    // Use the rule this result set was built with rather than re-reading the
+    // dropdown, so changing it mid-scan cannot make the filter disagree with the
+    // table it is filtering.
+    resolvePaths(g, currentState.pathMap);
+    const keepIdx = chooseKeepIndex(
+      g,
+      currentState.keepRule || DEFAULT_KEEP_RULE,
+      currentState.folderPriority || ""
+    );
     const keepFile = g[keepIdx] || g[0];
     const sortedGroup = [keepFile, ...g.filter(f => f.id !== keepFile.id)];
     
@@ -687,7 +761,7 @@ function applyFilter() {
  * Resets the table and switches the renderer into "progressive" mode so that
  * pushProgressiveMatch() can stream groups into the SAME interactive table.
  */
-export function beginProgressive({ idToEntry, keepRule = "newest", folderPriority = "", bitsCount = 144, withVariants = false } = {}) {
+export function beginProgressive({ idToEntry, keepRule = DEFAULT_KEEP_RULE, folderPriority = "", bitsCount = 144, withVariants = false } = {}) {
   releaseAllThumbBlobs();
   loadedThumbs.clear();
   clearSimCache();
@@ -711,7 +785,9 @@ export function beginProgressive({ idToEntry, keepRule = "newest", folderPriorit
     idToEntry: idToEntry || new Map(),
     pathMap: new Map(),
     bitsCount,
-    withVariants
+    withVariants,
+    keepRule,
+    folderPriority
   };
   idToFile = new Map();
 
@@ -770,7 +846,8 @@ function rebuildProgressiveRows() {
     groupId++;
     liveGroups.push(group);
 
-    const keepIdx = chooseKeepIndex(group, opts.keepRule || "newest", opts.folderPriority || "");
+    resolvePaths(group, pathMap);
+    const keepIdx = chooseKeepIndex(group, opts.keepRule || DEFAULT_KEEP_RULE, opts.folderPriority || "");
     const keepFile = group[keepIdx] || group[0];
     const sortedGroup = [keepFile, ...group.filter(f => f.id !== keepFile.id)];
     const _groupPct = groupBestPct(sortedGroup, 0, idToEntry, opts.bitsCount, opts.withVariants);
@@ -818,7 +895,7 @@ export function endProgressive() {
   progressiveRenderScheduled = false;
 }
 
-export async function renderGroups({ groups, idToEntry, pathMap, keepRule = "newest", folderPriority = "", bitsCount = 144, withVariants = false }) {
+export async function renderGroups({ groups, idToEntry, pathMap, keepRule = DEFAULT_KEEP_RULE, folderPriority = "", bitsCount = 144, withVariants = false }) {
   releaseAllThumbBlobs();
   loadedThumbs.clear();
   clearSimCache();
@@ -830,7 +907,7 @@ export async function renderGroups({ groups, idToEntry, pathMap, keepRule = "new
   allRows = [];
   visibleRange = { start: -1, end: -1 };
 
-  currentState = { groups, idToEntry, pathMap, bitsCount, withVariants };
+  currentState = { groups, idToEntry, pathMap, bitsCount, withVariants, keepRule, folderPriority };
   idToFile = new Map(groups.flat().map(f => [f.id, f]));
 
   if (groups.length === 0) {
@@ -846,7 +923,8 @@ export async function renderGroups({ groups, idToEntry, pathMap, keepRule = "new
   let groupId = 0;
   for (const g of groups) {
     groupId++;
-    const keepIdx = chooseKeepIndex(g, keepRule, folderPriority);
+    resolvePaths(g, pathMap);
+    const keepIdx = chooseKeepIndex(g, keepRule || DEFAULT_KEEP_RULE, folderPriority);
     const keepFile = g[keepIdx] || g[0];
     const sortedGroup = [keepFile, ...g.filter(f => f.id !== keepFile.id)];
     

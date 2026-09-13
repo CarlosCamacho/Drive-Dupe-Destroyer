@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Drive Dupe Destroyer (DDD) v14.0 — serve_secure.py
+# Drive Dupe Destroyer (DDD) — serve_secure.py
 #
 # Copyright (c) 2026 Carlos Camacho
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
@@ -12,7 +12,7 @@
 # https://polyformproject.org/licenses/noncommercial/1.0.0/
 
 """
-serve_secure.py — Drive Dupe Destroyer v14.0
+serve_secure.py — Drive Dupe Destroyer
 Serves the app on localhost:8080 with all required security headers.
 
 Usage: python3 serve_secure.py
@@ -24,16 +24,56 @@ This enables:
   - COOP/COEP headers required for SAB
 """
 import os
+import re
 import sys
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 PORT = 8080
 
+ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
+def app_version(default="unknown"):
+    """Read APP_VERSION out of js/util.js, the single source of truth.
+
+    Parsing the constant keeps this script from being one more place that has to
+    be remembered on a release. If the format ever changes, we fall back to
+    printing "unknown" rather than failing to start the dev server.
+    """
+    try:
+        src = open(os.path.join(ROOT, "js", "util.js"), encoding="utf-8").read()
+    except OSError:
+        return default
+    m = re.search(r'export\s+const\s+APP_VERSION\s*=\s*["\']([^"\']+)["\']', src)
+    return m.group(1) if m else default
+
 class SecureHandler(SimpleHTTPRequestHandler):
     def end_headers(self):
-        # COOP + COEP: required for SharedArrayBuffer
-        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
-        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
+        # Cross-Origin-Opener-Policy: same-origin-allow-popups, NOT same-origin.
+        #
+        # Google Identity Services delivers the OAuth token from a popup window
+        # back to its opener. COOP "same-origin" puts that popup in a different
+        # browsing context group, severing window.opener, so the token never
+        # arrives and sign-in hangs until ensureToken's 60s timeout fires.
+        # Google documents "same-origin-allow-popups" as the required value for
+        # the popup flow.
+        #
+        # This means SharedArrayBuffer is NOT available: SAB requires
+        # crossOriginIsolated, which requires COOP to be exactly "same-origin"
+        # plus COEP "require-corp". Those two requirements are mutually
+        # exclusive with the GIS popup on the same document -- you cannot have
+        # both. Sign-in wins; it is the app's front door.
+        #
+        # Cross-Origin-Embedder-Policy is deliberately NOT sent. It only existed
+        # to enable SAB, and require-corp additionally blocked every Drive
+        # thumbnail: lh3.googleusercontent.com sends no Cross-Origin-Resource-
+        # Policy header, so the results table showed placeholders instead of
+        # images and downloadFileBlob's thumbnail fast-path failed every time,
+        # forcing a full-resolution download per file.
+        #
+        # shared-worker-pool.js already detects SAB at runtime and falls back to
+        # postMessage transfers, so nothing breaks by its absence.
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin-allow-popups")
         # Standard security headers
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -57,20 +97,24 @@ class SecureHandler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def log_message(self, format, *args):
-        # Quieter logging — only show non-asset requests
-        path = args[0].split(" ")[1] if args else ""
+        # Quieter logging — only show non-asset requests.
+        # args[0] is the raw request line; a malformed one may not have a path
+        # field at all, so index defensively rather than raising inside the logger.
+        parts = args[0].split(" ") if args else []
+        path = parts[1] if len(parts) > 1 else ""
         if any(path.endswith(ext) for ext in [".js", ".css", ".png", ".ico", ".woff2"]):
             return
         super().log_message(format, *args)
 
 if __name__ == "__main__":
-    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    os.chdir(ROOT)
+    version = app_version()
     server = HTTPServer(("localhost", PORT), SecureHandler)
-    print(f"\n  Drive Dupe Destroyer v14.0")
+    print(f"\n  Drive Dupe Destroyer v{version}")
     print(f"  ─────────────────────────────────────────")
     print(f"  Serving at:          http://localhost:{PORT}")
-    print(f"  Security headers:    ✓ COOP/COEP/CSP")
-    print(f"  SharedArrayBuffer:   ✓ Enabled")
+    print(f"  Security headers:    ✓ COOP (allow-popups) + CSP")
+    print(f"  SharedArrayBuffer:   — disabled (incompatible with Google sign-in)")
     print(f"")
     print(f"  ⚠  ISOLATION NOTE:")
     print(f"  If Drive Dupe Decimator also runs on port 8080,")

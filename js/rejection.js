@@ -1,5 +1,5 @@
 /*
- * Drive Dupe Destroyer (DDD) v14.0 — rejection.js
+ * Drive Dupe Destroyer (DDD) — rejection.js
  *
  * Copyright (c) 2026 Carlos Camacho
  * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
@@ -15,7 +15,10 @@
 // Stores rejected pairs by hash fingerprint so they persist across sessions.
 // Also tracks session-level calibration data for weight tuning.
 
-import { settingGet, settingSet } from "./db.js";
+import {
+  rejectionsAll, rejectionAdd, rejectionsClear, rejectionsTrim,
+  migrateRejectionsFromSettings,
+} from "./db.js";
 
 const REJECTION_KEY = "destroyer_rejected_pairs_v1";
 const MAX_REJECTIONS = 10000;
@@ -25,13 +28,27 @@ let rejectionSet = null;
 
 async function ensureLoaded() {
   if (rejectionSet !== null) return;
-  const saved = await settingGet(REJECTION_KEY, []).catch(() => []);
-  rejectionSet = new Set(Array.isArray(saved) ? saved : []);
+  try {
+    // Carry over anything stored under the old single-blob scheme.
+    await migrateRejectionsFromSettings(REJECTION_KEY);
+    rejectionSet = new Set(await rejectionsAll());
+  } catch (e) {
+    console.warn("[Rejection] Load failed:", e?.message || e);
+    rejectionSet = new Set();
+  }
 }
 
 /**
  * Create a canonical key from two hash fingerprints.
  * Order-independent: always smaller hash first.
+ *
+ * NOTE: keying on the hash rather than on file IDs has two consequences worth
+ * knowing about. Changing the dHash size setting (8 vs 12) changes every hash,
+ * so stored rejections stop matching and the user's "not a duplicate" feedback
+ * appears to evaporate. And any OTHER pair with the same two hashes is also
+ * suppressed — which is arguably the intent ("these two images look identical
+ * and I said they differ"), but it is a consequence of the design, not an
+ * accident.
  */
 function pairKey(hashA, hashB) {
   const a = Array.from(hashA || []).join(",");
@@ -46,14 +63,20 @@ function pairKey(hashA, hashB) {
 export async function recordRejection(entryA, entryB) {
   await ensureLoaded();
   if (!entryA?.base12 || !entryB?.base12) return;
+
   const key = pairKey(entryA.base12, entryB.base12);
+  if (rejectionSet.has(key)) return;
   rejectionSet.add(key);
-  // Trim if too large
+
+  // One small row, rather than re-serializing the entire collection. This runs
+  // every time the user presses "4" in the compare modal, so the old
+  // whole-array rewrite (up to ~1 MB at the cap) was squarely on the hot path.
+  await rejectionAdd(key).catch(e => console.warn("[Rejection] Save failed:", e?.message || e));
+
   if (rejectionSet.size > MAX_REJECTIONS) {
-    const first = rejectionSet.values().next().value;
-    rejectionSet.delete(first);
+    const removed = await rejectionsTrim(MAX_REJECTIONS).catch(() => 0);
+    if (removed > 0) rejectionSet = new Set(await rejectionsAll().catch(() => []));
   }
-  await settingSet(REJECTION_KEY, Array.from(rejectionSet)).catch(() => {});
 }
 
 /**
@@ -138,5 +161,5 @@ export async function getRejectionStats() {
 
 export async function clearRejections() {
   rejectionSet = new Set();
-  await settingSet(REJECTION_KEY, []).catch(() => {});
+  await rejectionsClear().catch(e => console.warn("[Rejection] Clear failed:", e?.message || e));
 }
