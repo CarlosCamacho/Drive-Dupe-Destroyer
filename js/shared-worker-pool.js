@@ -638,22 +638,20 @@ export function terminateSharedWorkerPool() {
 /**
  * Report whether SharedArrayBuffer is in use.
  *
- * This used to hand back instructions telling the operator to set
- * COOP: same-origin + COEP: require-corp. Do not do that. Those headers make
- * the document cross-origin isolated, which:
+ * SAB needs cross-origin isolation (COOP: same-origin + COEP: require-corp),
+ * which serve_secure.py does not enable, so expect false here.
  *
- *   1. Breaks Google sign-in. GIS returns the OAuth token from a popup to its
- *      opener; COOP "same-origin" severs window.opener, so the token never
- *      arrives and sign-in hangs until it times out.
- *   2. Blocks every Drive thumbnail. COEP "require-corp" requires a
- *      Cross-Origin-Resource-Policy header that lh3.googleusercontent.com does
- *      not send, so the results table renders placeholders and the thumbnail
- *      fast-path in downloadFileBlob falls back to a full-resolution download
- *      for every single file.
+ * CORRECTION (v14.1.2): this comment previously stated as fact that those
+ * headers "break Google sign-in" and "block every Drive thumbnail". The first
+ * was tested directly and is FALSE -- sign-in works fine under COOP
+ * same-origin. The second was never tested; whether Drive's thumbnail CDN
+ * sends a Cross-Origin-Resource-Policy header is an open question. Both claims
+ * came from documentation rather than observation, and one of them was wrong.
  *
- * SAB and the GIS popup cannot coexist on one document, and the postMessage
- * path below is a correct fallback, so SAB is simply not available here.
- * serve_secure.py sends COOP: same-origin-allow-popups and no COEP.
+ * Isolation stays off because the app has never needed SAB and the postMessage
+ * path below is a correct fallback -- not because enabling it is known to break
+ * anything. If you want SAB, measure whether it actually helps first, then test
+ * sign-in and thumbnails under the headers rather than trusting this comment.
  */
 export function getSecurityHeadersStatus() {
   return {
@@ -663,6 +661,6 @@ export function getSecurityHeadersStatus() {
     guidance: USE_SHARED_MEMORY
       ? 'SharedArrayBuffer is enabled.'
       : 'Using postMessage transfers. SharedArrayBuffer needs cross-origin isolation, ' +
-        'which is incompatible with the Google sign-in popup — this is expected, not a misconfiguration.'
+        'which serve_secure.py does not enable — expected, not a misconfiguration.'
   };
 }

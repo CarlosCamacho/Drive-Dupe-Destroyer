@@ -54,30 +54,28 @@ def app_version(default="unknown"):
 
 class SecureHandler(SimpleHTTPRequestHandler):
     def end_headers(self):
-        # Cross-Origin-Opener-Policy: same-origin-allow-popups, NOT same-origin.
+        # Cross-Origin-Opener-Policy: same-origin-allow-popups.
         #
-        # Google Identity Services delivers the OAuth token from a popup window
-        # back to its opener. COOP "same-origin" puts that popup in a different
-        # browsing context group, severing window.opener, so the token never
-        # arrives and sign-in hangs until ensureToken's 60s timeout fires.
-        # Google documents "same-origin-allow-popups" as the required value for
-        # the popup flow.
+        # This is the value Google documents for the Sign In With Google popup
+        # flow, which returns the OAuth token to its opener. We use it because
+        # it is the documented value and is strictly more permissive for popups,
+        # so it cannot break sign-in on any browser.
         #
-        # This means SharedArrayBuffer is NOT available: SAB requires
-        # crossOriginIsolated, which requires COOP to be exactly "same-origin"
-        # plus COEP "require-corp". Those two requirements are mutually
-        # exclusive with the GIS popup on the same document -- you cannot have
-        # both. Sign-in wins; it is the app's front door.
+        # CORRECTION (v14.1.2): an earlier version of this comment claimed
+        # "same-origin" BROKE sign-in and that this change fixed it. That was
+        # asserted from Google's documentation, never observed. It was then
+        # tested directly with "same-origin" restored, and sign-in worked fine.
+        # So this setting is defensive, not a bug fix -- do not repeat the claim
+        # that the old value was broken.
         #
-        # Cross-Origin-Embedder-Policy is deliberately NOT sent. It only existed
-        # to enable SAB, and require-corp additionally blocked every Drive
-        # thumbnail: lh3.googleusercontent.com sends no Cross-Origin-Resource-
-        # Policy header, so the results table showed placeholders instead of
-        # images and downloadFileBlob's thumbnail fast-path failed every time,
-        # forcing a full-resolution download per file.
-        #
-        # shared-worker-pool.js already detects SAB at runtime and falls back to
-        # postMessage transfers, so nothing breaks by its absence.
+        # Cross-Origin-Embedder-Policy is not sent. require-corp would enable
+        # SharedArrayBuffer (it needs crossOriginIsolated, i.e. COOP same-origin
+        # + COEP require-corp), but it also blocks any cross-origin subresource
+        # that does not carry a Cross-Origin-Resource-Policy header. Whether
+        # Drive's thumbnail CDN sends one has NOT been verified here -- treat
+        # that as an open question, not established fact. Leaving COEP off only
+        # removes a restriction, so it is safe either way; the app has never
+        # needed SAB, and shared-worker-pool.js falls back to postMessage.
         self.send_header("Cross-Origin-Opener-Policy", "same-origin-allow-popups")
         # Standard security headers
         self.send_header("X-Frame-Options", "DENY")
@@ -119,7 +117,7 @@ if __name__ == "__main__":
     print(f"  ─────────────────────────────────────────")
     print(f"  Serving at:          http://localhost:{PORT}")
     print(f"  Security headers:    ✓ COOP (allow-popups) + CSP")
-    print(f"  SharedArrayBuffer:   — disabled (incompatible with Google sign-in)")
+    print(f"  SharedArrayBuffer:   — disabled (cross-origin isolation not enabled)")
     print(f"")
     print(f"  ⚠  ISOLATION NOTE:")
     print(f"  If Drive Dupe Decimator also runs on port 8080,")
