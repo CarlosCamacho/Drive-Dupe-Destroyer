@@ -21,7 +21,7 @@ import { driveFetch, fetchChangesSince, getChangesStartToken } from "./drive.js"
 
 import { ensureValidToken } from "./auth.js";
 import { dbGetImagesBatch, dbPutImagesBatch, recordFoldersScan, dbCountImages, getChangesToken, setChangesToken } from "./db.js";
-import { computeHashesForFiles, getHashingStats } from "./hashing.js";
+import { computeHashesForFiles, getHashingStats, HASH_VERSION } from "./hashing.js";
 import { saveResumeState, clearResumeState } from "./resume.js";
 import { getRejectionStats, preloadRejections, isRejectedPairSync } from "./rejection.js";
 import { updateTelemetry } from "./telemetry.js";
@@ -276,8 +276,12 @@ async function computeHashesWithDb(images, {
           // If crop/color detection was requested but not in cache, need to recompute
           const needsCrop = withCropDetect && !rec.cropHashes;
           const needsColor = withColorMatch && (!rec.colorHist || !rec.edgeHist);
-          
-          if (needsCrop || needsColor) {
+          // Records written before the current hashing scheme are not comparable
+          // with freshly computed ones, so treat them as misses. Cheaper than
+          // wiping the whole cache, and it self-heals as files are rescanned.
+          const staleHash = (rec.hv || 1) !== HASH_VERSION;
+
+          if (needsCrop || needsColor || staleHash) {
             toCompute.push(f);
           } else {
             cacheHits++;
@@ -338,6 +342,7 @@ async function computeHashesWithDb(images, {
         
         if (useDb && e.base12) {
           recordsToSave.push({
+            hv: HASH_VERSION,
             id: f.id,
             name: f.name,
             size: f.size,

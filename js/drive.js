@@ -92,20 +92,30 @@ export async function driveFetch(path, { method = "GET", params = {}, body = nul
   return res.status === 204 ? null : res.json();
 }
 
+// Whether Google's thumbnail CDN will serve us a readable blob.
+//
+// null = not yet probed, true/false = answer for this session.
+//
+// lh3.googleusercontent.com sends no Access-Control-Allow-Origin, so a
+// cors-mode fetch of a thumbnailLink is rejected. That is not a per-file
+// condition — it either works for this origin or it never will. Previously we
+// attempted it for every file and swallowed the rejection, which on a 20,000
+// image scan meant 20,000 doomed requests and 20,000 CORS errors in the console
+// before falling back to the full-resolution download each time.
+//
+// Probe once, remember the answer, and skip the attempt thereafter.
+let _thumbFetchUsable = null;
+
+export function getThumbFetchStatus() {
+  return _thumbFetchUsable;
+}
+
 export async function downloadFileBlob(fileId, { altThumbUrl = null, signal = null, preferThumb = false } = {}) {
   // Hashing only needs a ~256px image, but the Drive `alt=media` endpoint always
   // returns the full-resolution original (often multiple MB). Google's thumbnail
-  // URLs (lh3.googleusercontent.com) normally can't be *fetched* as a blob from
-  // the browser because they don't send CORS headers — fetching them taints the
-  // response and throws. So historically we always downloaded the original.
-  //
-  // When a caller opts in via preferThumb and supplies altThumbUrl, we *try* the
-  // thumbnail first and fall back to the full original on any failure. This is
-  // strictly safe: if the thumbnail fetch is blocked (CORS) or yields an
-  // unusable blob, we transparently download the original exactly as before, so
-  // hashing fidelity is never silently degraded — at worst we spend one failed
-  // (cheap, instantly-rejected) request before falling back.
-  if (preferThumb && altThumbUrl) {
+  // URLs are far cheaper when they can be read at all — see the note on
+  // _thumbFetchUsable above for why they usually cannot.
+  if (preferThumb && altThumbUrl && _thumbFetchUsable !== false) {
     try {
       const tRes = await fetch(altThumbUrl, { method: "GET", signal });
       if (tRes.ok) {
@@ -113,12 +123,23 @@ export async function downloadFileBlob(fileId, { altThumbUrl = null, signal = nu
         // Validate: must be a non-trivial image blob. Google sometimes returns a
         // tiny HTML/error body with a 200, which would not be a usable image.
         if (blob && blob.size > 512 && /^image\//.test(blob.type || "")) {
+          if (_thumbFetchUsable === null) {
+            _thumbFetchUsable = true;
+            console.log("[Drive] Thumbnail fast-path is available.");
+          }
           return blob;
         }
       }
     } catch (e) {
-      // CORS / network / abort — fall through to the authenticated full download.
+      // An abort is the caller cancelling, not a verdict on the CDN.
       if (signal?.aborted) throw e;
+      if (_thumbFetchUsable === null) {
+        _thumbFetchUsable = false;
+        console.info(
+          "[Drive] Thumbnail fast-path unavailable (the thumbnail CDN sends no CORS headers). " +
+          "Falling back to full downloads for hashing; will not retry per file."
+        );
+      }
     }
   }
 

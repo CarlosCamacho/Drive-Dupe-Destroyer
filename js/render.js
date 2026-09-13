@@ -297,10 +297,15 @@ const throttledLoadVisibleThumbs = throttle(() => {
   if (!tableWrap) return;
   const imgs = tableWrap.querySelectorAll('img.thumb[data-file-id]');
   const wrapRect = tableWrap.getBoundingClientRect();
-  
+
   for (const img of imgs) {
     if (img.dataset.failed) continue;
-    if (img.src && img.src.startsWith('http')) continue;
+    // loadedThumbs is the authority on what is already showing. The previous
+    // guard tested `img.src.startsWith('http')`, which blob: URLs fail, so every
+    // blob-backed thumbnail was re-processed on every scroll tick — an async
+    // call and a cache lookup per image, ten times a second, for images that
+    // were already painted.
+    if (loadedThumbs.has(img.dataset.fileId)) continue;
     const rect = img.getBoundingClientRect();
     if (rect.bottom >= wrapRect.top - 200 && rect.top <= wrapRect.bottom + 200) {
       loadThumbnailForImg(img);
@@ -308,22 +313,57 @@ const throttledLoadVisibleThumbs = throttle(() => {
   }
 }, 100);
 
+/**
+ * Point a results-table <img> at a thumbnail.
+ *
+ * Order matters. Drive's own thumbnailLink is tried FIRST: a plain cross-origin
+ * <img> load needs no CORS, no access token, no blob and no memory on our side,
+ * and the browser caches it. Only when there is no link, or it fails to load, do
+ * we fall back to an authenticated download — which costs an API call and holds
+ * a blob in the (byte-budgeted) cache.
+ *
+ * This was previously inverted: the blob path ran first for every visible row,
+ * so the table downloaded a full image per thumbnail before falling back to the
+ * cheap URL it could have used immediately.
+ */
 async function loadThumbnailForImg(img) {
   const fileId = img.dataset.fileId;
-  if (!fileId || img.dataset.failed || (img.src && img.src.startsWith('http'))) return;
-  
+  if (!fileId || img.dataset.failed || loadedThumbs.has(fileId)) return;
+
   const file = idToFile.get(fileId);
   if (!file) return;
-  
+
+  const directUrl = file.thumbnailLink ? thumbLinkSized(file.thumbnailLink, 256) : null;
+
+  if (directUrl && img.isConnected) {
+    loadedThumbs.add(fileId);
+    // thumbnailLink URLs expire after a few hours, so a long-lived session can
+    // see them start failing. Fall back to the authenticated blob on error.
+    img.onerror = () => {
+      img.onerror = null;
+      loadedThumbs.delete(fileId);
+      loadThumbnailViaBlob(img, file, fileId);
+    };
+    img.src = directUrl;
+    return;
+  }
+
+  await loadThumbnailViaBlob(img, file, fileId);
+}
+
+async function loadThumbnailViaBlob(img, file, fileId) {
   try {
     const url = await getThumbUrlForFile(file, { size: 256 });
-    if (url && img.isConnected) { img.src = url; loadedThumbs.add(fileId); return; }
-  } catch (e) {}
-  
-  if (file.thumbnailLink && img.isConnected) {
-    const url = thumbLinkSized(file.thumbnailLink, 256);
-    if (url) { img.src = url; loadedThumbs.add(fileId); }
+    if (url && img.isConnected) {
+      img.src = url;
+      loadedThumbs.add(fileId);
+      return;
+    }
+  } catch (e) {
+    console.warn(`[Render] Thumbnail failed for ${fileId}:`, e?.message || e);
   }
+  // Leave the inline placeholder in place and stop retrying this row.
+  img.dataset.failed = "1";
 }
 
 function observeThumbnails() {
@@ -332,7 +372,7 @@ function observeThumbnails() {
   if (!tbody) return;
   const imgs = tbody.querySelectorAll("img.thumb[data-file-id]");
   for (const img of imgs) {
-    if (!(img.src && img.src.startsWith('http'))) thumbObserver.observe(img);
+    if (!loadedThumbs.has(img.dataset.fileId)) thumbObserver.observe(img);
   }
 }
 

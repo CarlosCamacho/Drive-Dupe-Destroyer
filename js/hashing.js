@@ -49,47 +49,95 @@ async function loadOptionalModules() {
 // LRU Cache for Thumbnails
 // ============================================================================
 
-class LRUCache {
-  constructor(maxSize = 5000) {
-    this.maxSize = maxSize;
-    this.cache = new Map();
+/**
+ * LRU cache of blob URLs, bounded by BYTES rather than entry count.
+ *
+ * The previous version capped at 5000 entries with no regard for their size.
+ * Because the thumbnail fast-path failed (CORS) and the fallback downloaded the
+ * full-resolution original, those 5000 entries could be 5000 multi-megabyte
+ * photos — tens of gigabytes of live blob references. An eviction policy that
+ * ignores object size cannot bound memory.
+ */
+class BlobUrlCache {
+  constructor(maxBytes) {
+    this.maxBytes = maxBytes;
+    this.bytes = 0;
+    this.cache = new Map();   // key -> { url, bytes }
   }
-  
+
   get(key) {
-    if (!this.cache.has(key)) return undefined;
-    const value = this.cache.get(key);
+    const entry = this.cache.get(key);
+    if (!entry) return undefined;
     this.cache.delete(key);
-    this.cache.set(key, value);
-    return value;
+    this.cache.set(key, entry);   // refresh recency
+    return entry.url;
   }
-  
-  set(key, value) {
-    if (this.cache.has(key)) {
+
+  set(key, url, bytes = 0) {
+    const existing = this.cache.get(key);
+    if (existing) {
+      this.bytes -= existing.bytes;
       this.cache.delete(key);
-    } else if (this.cache.size >= this.maxSize) {
+      if (existing.url !== url) this._revoke(existing.url);
+    }
+
+    this.cache.set(key, { url, bytes });
+    this.bytes += bytes;
+    this._evictToFit();
+  }
+
+  _evictToFit() {
+    // Always keep at least one entry, so a single blob larger than the whole
+    // budget is still usable rather than being evicted the instant it is added.
+    while (this.bytes > this.maxBytes && this.cache.size > 1) {
       const oldestKey = this.cache.keys().next().value;
-      const oldestValue = this.cache.get(oldestKey);
+      const oldest = this.cache.get(oldestKey);
       this.cache.delete(oldestKey);
-      if (typeof oldestValue === 'string' && oldestValue.startsWith('blob:')) {
-        try { URL.revokeObjectURL(oldestValue); } catch {}
-      }
+      this.bytes -= oldest.bytes;
+      this._revoke(oldest.url);
     }
-    this.cache.set(key, value);
   }
-  
+
+  _revoke(url) {
+    if (typeof url === 'string' && url.startsWith('blob:')) {
+      try { URL.revokeObjectURL(url); } catch {}
+    }
+  }
+
   has(key) { return this.cache.has(key); }
+
   clear() {
-    for (const value of this.cache.values()) {
-      if (typeof value === 'string' && value.startsWith('blob:')) {
-        try { URL.revokeObjectURL(value); } catch {}
-      }
-    }
+    for (const { url } of this.cache.values()) this._revoke(url);
     this.cache.clear();
+    this.bytes = 0;
   }
+
   get size() { return this.cache.size; }
+  get byteSize() { return this.bytes; }
 }
 
-const thumbUrlCache = new LRUCache(5000);
+// 192 MB of decoded-image blobs is generous for a results table and small
+// enough to stay well clear of a tab's memory ceiling on a modest machine.
+const THUMB_CACHE_BYTES = 192 * 1024 * 1024;
+const thumbUrlCache = new BlobUrlCache(THUMB_CACHE_BYTES);
+
+// Every hash path downsamples to this edge length before looking at pixels.
+// dHash reduces to 12x12 (144 bits) or 8x8 (64 bits) and pHash to 32x32, so
+// 256px is already far more detail than any of them consume.
+const HASH_EDGE = 256;
+
+/**
+ * Bump whenever a change would make newly computed hashes incomparable with
+ * cached ones. Records written under an older version are treated as cache
+ * misses and recomputed, rather than being compared against fresh hashes
+ * derived differently — which would silently break matching for part of a
+ * library with no visible error.
+ *
+ * 2: the WASM path now downsamples to HASH_EDGE before hashing. It previously
+ *    hashed at full resolution, so its cached values do not match the worker
+ *    path's (which always downsampled) or the current WASM path's.
+ */
+export const HASH_VERSION = 2;
 
 // ============================================================================
 // Hashing Statistics
@@ -216,20 +264,36 @@ function hashInWorker(bitmap, withVariants, timeout = 30000, withCropDetect = fa
 // File Processing
 // ============================================================================
 
+/**
+ * Blob URL for DISPLAY, at roughly `size` px.
+ *
+ * This is the fallback path: render.js points <img> at file.thumbnailLink
+ * directly, which costs no memory and no API quota. We only get here when a
+ * file has no thumbnailLink or that link failed to load, and then the blob is
+ * an authenticated download.
+ *
+ * The cache key is deliberately distinct from anything the hashing path uses.
+ * Both previously wrote `${id}-256`, so the full-resolution original downloaded
+ * for hashing was handed straight to a 44px <img> — the browser then decoded a
+ * whole 4000x3000 photo (or a 60 MB RAW) to paint a thumbnail.
+ */
 export async function getThumbUrlForFile(file, { signal = null, size = 256 } = {}) {
-  const cacheKey = `${file.id}-${size}`;
+  const cacheKey = `display:${file.id}:${size}`;
   if (thumbUrlCache.has(cacheKey)) return thumbUrlCache.get(cacheKey);
-  
+
   try {
     const blob = await downloadFileBlob(file.id, {
       altThumbUrl: file.thumbnailLink ? thumbLinkSized(file.thumbnailLink, size) : null,
+      // preferThumb was never passed here, so display thumbnails downloaded the
+      // full original too. For a 44px cell that is the wrong end of the trade.
+      preferThumb: true,
       signal,
       maxSize: 5 * 1024 * 1024
     });
-    
+
     if (blob) {
       const url = URL.createObjectURL(blob);
-      thumbUrlCache.set(cacheKey, url);
+      thumbUrlCache.set(cacheKey, url, blob.size || 0);
       return url;
     }
   } catch (e) {
@@ -248,23 +312,36 @@ function sleep(ms) {
 async function computeHashOptimized(blob, withVariants, withCropDetect = false, withColorMatch = false, withPHash = false, withRotation = false) {
   // Try WASM path if available (for base hashes only, worker for extended features)
   if (wasmModule?.isWasmAvailable?.() && !withCropDetect && !withColorMatch) {
+    let imageBitmap = null;
     try {
-      const imageBitmap = await createImageBitmap(blob);
-      const canvas = new OffscreenCanvas(imageBitmap.width, imageBitmap.height);
-      const ctx = canvas.getContext('2d');
+      // Decode straight to HASH_EDGE. This used to decode at full resolution,
+      // allocate an OffscreenCanvas the same size, and pull the whole thing back
+      // with getImageData — roughly 96 MB of RGBA for a 6000x4000 photo, times
+      // HASH_CONCURRENCY in flight, to produce a 12x12 and an 8x8 grid. The
+      // browser's own downscale (often on the GPU) is far cheaper than moving
+      // 24M pixels through getImageData, and dHash cannot tell the difference.
+      imageBitmap = await createImageBitmap(blob, {
+        resizeWidth: HASH_EDGE,
+        resizeHeight: HASH_EDGE,
+        resizeQuality: 'low'
+      });
+      const canvas = new OffscreenCanvas(HASH_EDGE, HASH_EDGE);
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
       ctx.drawImage(imageBitmap, 0, 0);
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      
-      const base12 = wasmModule.computeDHashFromRGBA(imageData.data, canvas.width, canvas.height, 12);
-      const base8 = wasmModule.computeDHashFromRGBA(imageData.data, canvas.width, canvas.height, 8);
-      
+      // One readback, reused for both hash sizes — it was previously read twice.
+      const imageData = ctx.getImageData(0, 0, HASH_EDGE, HASH_EDGE);
+
+      const base12 = wasmModule.computeDHashFromRGBA(imageData.data, HASH_EDGE, HASH_EDGE, 12);
+      const base8 = wasmModule.computeDHashFromRGBA(imageData.data, HASH_EDGE, HASH_EDGE, 8);
+
       hashingStats.wasmUsed++;
       imageBitmap.close();
+      imageBitmap = null;
       
       let variants = [];
       if (withVariants) {
         // Use worker for variant transforms
-        const bmp = await createImageBitmap(blob, { resizeWidth: 256, resizeHeight: 256, resizeQuality: 'low' });
+        const bmp = await createImageBitmap(blob, { resizeWidth: HASH_EDGE, resizeHeight: HASH_EDGE, resizeQuality: 'low' });
         const result = await hashInWorker(bmp, true);
         variants = (result.variants || []).map(v => ({
           base8: new Uint8Array(v.base8),
@@ -275,6 +352,10 @@ async function computeHashOptimized(blob, withVariants, withCropDetect = false, 
       return { base8, base12, variants, cropHashes: null, colorHist: null, edgeHist: null };
     } catch (e) {
       console.warn('[WASM] Hash failed, falling back to worker:', e.message);
+    } finally {
+      // close() was previously only reached on success, leaking the decoded
+      // bitmap whenever the WASM call threw and we fell through to the worker.
+      if (imageBitmap) { try { imageBitmap.close(); } catch {} }
     }
   }
   
@@ -282,8 +363,8 @@ async function computeHashOptimized(blob, withVariants, withCropDetect = false, 
   hashingStats.jsUsed++;
   
   const bmp = await createImageBitmap(blob, {
-    resizeWidth: 256,
-    resizeHeight: 256,
+    resizeWidth: HASH_EDGE,
+    resizeHeight: HASH_EDGE,
     resizeQuality: 'low',
     premultiplyAlpha: 'none'
   });
@@ -332,12 +413,12 @@ async function computeHashForFileWithRetry(file, {
       const thumbSize = canUseThumb ? 512 : 256;
       const thumb = file.thumbnailLink ? thumbLinkSized(file.thumbnailLink, thumbSize) : null;
       const blob = await downloadFileBlob(file.id, { altThumbUrl: thumb, signal, preferThumb: canUseThumb });
-      
-      const cacheKey = `${file.id}-256`;
-      if (!thumbUrlCache.has(cacheKey)) {
-        thumbUrlCache.set(cacheKey, URL.createObjectURL(blob));
-      }
-      
+
+      // The hash-source blob is NOT retained. It used to be stored under
+      // `${file.id}-256` — the same key the results table reads for display —
+      // so a scan left thousands of full-resolution originals alive in the blob
+      // cache and then painted them into 44px thumbnails. createImageBitmap
+      // consumes what it needs below; after that the blob is garbage.
       const result = await computeHashOptimized(blob, withVariants, withCropDetect, withColorMatch, withPHash, withRotation);
       if (attempt > 1) hashingStats.retried++;
       return result;
