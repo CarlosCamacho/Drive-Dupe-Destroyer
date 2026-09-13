@@ -22,6 +22,7 @@ import { openCompare, setCompareCallbacks } from "./compare.js";
 import { setCropCallbacks } from "./crop.js";
 import { batchTrash, driveFilePreviewLink, driveFolderLink, downloadFileBlob, thumbLinkSized } from "./drive.js";
 import { chooseKeepIndex, distToPercent, bestDist, DEFAULT_KEEP_RULE } from "./common.js";
+import { pushUndoDeleteBatch } from "./undo.js";
 
 const ROW_HEIGHT = 58;
 const BUFFER_ROWS = 10;
@@ -378,6 +379,10 @@ function handleTableClick(e) {
 
   if (target.matches('[data-action="delete"]') || target.closest('[data-action="delete"]')) {
     e.stopPropagation();
+    // Rows are ~58px tall and the trash button sits next to Download, so a
+    // misclick is easy. Confirm here as the KEEP row already does — the two are
+    // the same irreversible action from the user's point of view.
+    if (!confirm(`Move "${file.name}" to Google Drive Trash?`)) return;
     handleSingleDelete(file, tr);
     return;
   }
@@ -445,10 +450,14 @@ async function handleSingleDelete(file, tr) {
   try {
     const result = await batchTrash([file.id]);
     if (result.success.includes(file.id)) {
+      // Record before removing the row: this path used to trash the file without
+      // any undo entry, so a misclick was only recoverable from Drive Trash.
+      pushUndoDeleteBatch([file]);
+
       selected.delete(file.id);
       removeFileFromResults(file.id);
       window.dispatchEvent(new CustomEvent("ddd:trashed", { detail: { ids: [file.id] } }));
-      showToast("File moved to trash", "success");
+      showToast("File moved to trash — use Undo to restore", "success");
     } else throw new Error("Trash failed");
   } catch (err) {
     showToast("Trash failed: " + (err?.message || err), "error");

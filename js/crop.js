@@ -16,6 +16,7 @@
 
 import { el, bytesToHuman, formatDate } from "./util.js";
 import { lockBodyScroll, showToast } from "./ui.js";
+import { pushUndoDeleteBatch } from "./undo.js";
 import { batchTrash, uploadFile, getAccessToken } from "./drive.js";
 import { openCompare } from "./compare.js";
 
@@ -774,7 +775,8 @@ async function handleCropDelete() {
   try {
     const result = await batchTrash([currentFile.id]);
     if (result.success.includes(currentFile.id)) {
-      showToast("File moved to trash", "success");
+      pushUndoDeleteBatch([currentFile]);
+      showToast("File moved to trash — use Undo to restore", "success");
       window.dispatchEvent(new CustomEvent("ddd:trashed", { detail: { ids: [currentFile.id] } }));
       
       // Navigate to next image
@@ -878,8 +880,20 @@ async function performCrop() {
     showToast("Moving original to trash...", "info", 1500);
     const trashResult = await batchTrash([currentFile.id]);
     
-    if (!trashResult.success.includes(currentFile.id)) {
-      showToast("Warning: Original may not have been trashed", "error");
+    if (trashResult.success.includes(currentFile.id)) {
+      // The original is now in Trash. Record it so Undo can bring it back —
+      // this path replaced a file with a re-encoded crop and left no way back.
+      pushUndoDeleteBatch([currentFile]);
+    } else {
+      // Upload succeeded but the trash did not, so Drive now holds two files
+      // with the same name in the same folder. Say so loudly: quietly creating
+      // a duplicate is the exact outcome this app exists to prevent.
+      showToast(
+        "Cropped copy was uploaded, but the original could NOT be trashed — " +
+        "both files are now in that folder.",
+        "error",
+        8000
+      );
     }
     
     window.dispatchEvent(new CustomEvent("ddd:fileReplaced", { detail: { oldId: currentFile.id, newFile: uploadedFile } }));

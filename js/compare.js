@@ -15,7 +15,7 @@
 // Fixed: Proper folder path display from pathMap
 
 import { recordRejection } from "./rejection.js";
-import { pushUndoDelete } from "./undo.js";
+import { pushUndoDeleteBatch } from "./undo.js";
 import { el, bytesToHuman, formatDate, IMAGE_PLACEHOLDER } from "./util.js";
 import { getThumbUrlForFile } from "./hashing.js";
 import { lockBodyScroll, showToast } from "./ui.js";
@@ -323,7 +323,13 @@ async function handleDeleteBoth() {
     const result = await batchTrash(ids);
     
     if (result.success.length > 0) {
-      showToast(`${result.success.length} file(s) moved to trash`, "success");
+      // Record as one undo operation. pushUndoDelete was imported here but never
+      // actually called, so no delete path in the app recorded anything and the
+      // Undo button had nothing to restore.
+      const trashed = new Set(result.success);
+      pushUndoDeleteBatch(filesToDelete.map(f => f.file).filter(f => trashed.has(f.id)));
+
+      showToast(`${result.success.length} file(s) moved to trash — use Undo to restore`, "success");
       window.dispatchEvent(new CustomEvent("ddd:trashed", { detail: { ids: result.success } }));
       
       setTimeout(() => {
@@ -354,7 +360,8 @@ async function handleDelete(side) {
   try {
     const result = await batchTrash([file.id]);
     if (result.success.includes(file.id)) {
-      showToast("File moved to trash", "success");
+      pushUndoDeleteBatch([file]);
+      showToast("File moved to trash — use Undo to restore", "success");
       window.dispatchEvent(new CustomEvent("ddd:trashed", { detail: { ids: [file.id] } }));
       
       setTimeout(() => {

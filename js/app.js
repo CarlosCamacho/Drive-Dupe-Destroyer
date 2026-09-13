@@ -29,7 +29,7 @@ import { applyAllSecurityPolicies } from "./security.js";
 import { settingGet, settingSet } from "./db.js";
 import { initPersistentSettings } from "./settings.js";
 import { toggleTelemetry } from "./telemetry.js";
-import { undoLastDelete } from "./undo.js";
+import { undoLastDelete, loadUndoStack } from "./undo.js";
 import { loadResumeState, clearResumeState, formatResumeDescription } from "./resume.js";
 import { wireQueue } from "./queue.js";
 import { dbClearImages, dbCountImages, dbExportImages, dbImportImages } from "./db.js";
@@ -380,6 +380,11 @@ function wireTelemetryButton() {
 function wireUndoButton() {
   const btn = document.getElementById("btnUndo");
   if (btn) btn.onclick = () => undoLastDelete();
+
+  // The undo stack is persisted, so a refresh (including the one sw.js triggers
+  // when a new service worker activates) no longer discards it. Rehydrate on
+  // boot so the button reflects what is actually still restorable.
+  loadUndoStack().catch(e => console.warn("[Undo] Load failed:", e?.message || e));
 }
 
 async function checkResumeState() {
