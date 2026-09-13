@@ -20,7 +20,7 @@ import { setStatus, setPhase, setProgress, showSpinner, updateStats, setSearchSu
 import { driveFetch, fetchChangesSince, getChangesStartToken } from "./drive.js";
 
 import { ensureValidToken } from "./auth.js";
-import { dbGetImagesBatch, dbPutImagesBatch, recordFoldersScan, dbCountImages, getChangesToken, setChangesToken } from "./db.js";
+import { dbGetImagesBatch, dbPutImagesBatch, recordFoldersScan, dbCountImages, getChangesToken, setChangesToken, isQuotaError, onQuotaExceeded } from "./db.js";
 import { computeHashesForFiles, getHashingStats, HASH_VERSION } from "./hashing.js";
 import { saveResumeState, clearResumeState } from "./resume.js";
 import { getRejectionStats, preloadRejections, isRejectedPairSync } from "./rejection.js";
@@ -366,7 +366,12 @@ async function computeHashesWithDb(images, {
     if (recordsToSave.length > 0) {
       dbPutImagesBatch(recordsToSave)
         .then(() => updateCacheCount())
-        .catch(e => console.warn("Batch save failed:", e));
+        .catch(e => {
+          // A full cache is a user-visible condition, not a console footnote:
+          // scans stop getting faster and nothing said why.
+          if (isQuotaError(e)) onQuotaExceeded(msg => showToast(msg, "error", 8000));
+          else console.warn("Batch save failed:", e);
+        });
     }
   }
 
@@ -1050,19 +1055,32 @@ export async function runScan({
     } else {
       console.error("Scan failed:", e);
       
+      // Classify on the status the fetch layer attached, not on substrings of
+      // the message. Matching "403" anywhere in a Drive error body is fragile,
+      // and `e.name === "TypeError"` matched every ordinary programming error
+      // in the codebase — a genuine "x is not a function" was reported to the
+      // user as "Network error. Check your internet connection.", sending them
+      // to check a connection that was fine while the real stack trace stayed
+      // in the console.
       let errorMsg = "Scan failed: ";
-      if (e.message?.includes("401") || e.message?.includes("auth")) {
+      const status = e?.status;
+
+      if (status === 401 || e?.code === "AUTH") {
         errorMsg += "Authentication expired. Please sign out and sign in again.";
-      } else if (e.message?.includes("403")) {
+      } else if (status === 403) {
         errorMsg += "Access denied. Check folder permissions.";
-      } else if (e.message?.includes("404")) {
+      } else if (status === 404) {
         errorMsg += "Folder not found. It may have been deleted.";
-      } else if (e.message?.includes("429")) {
+      } else if (status === 429) {
         errorMsg += "Too many requests. Wait a few minutes and try again.";
-      } else if (e.message?.includes("network") || e.name === "TypeError") {
+      } else if (status >= 500) {
+        errorMsg += `Google Drive returned a server error (${status}). Try again shortly.`;
+      } else if (e?.code === "NETWORK") {
         errorMsg += "Network error. Check your internet connection.";
       } else {
-        errorMsg += e.message || "Unknown error";
+        // Anything unclassified is most likely a bug. Show the real message
+        // rather than dressing it up as something the user can act on.
+        errorMsg += e?.message || "Unknown error";
       }
       
       setStatus(errorMsg);

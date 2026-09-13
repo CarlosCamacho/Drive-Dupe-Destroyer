@@ -26,7 +26,7 @@ import { wireKeyboard } from "./keyboard.js";
 import { wireActions } from "./actions.js";
 import { wireExport, setExportState } from "./exporter.js";
 import { applyAllSecurityPolicies } from "./security.js";
-import { settingGet, settingSet } from "./db.js";
+import { settingGet, settingSet, requestPersistentStorage, getStorageEstimate } from "./db.js";
 import { initPersistentSettings } from "./settings.js";
 import { toggleTelemetry } from "./telemetry.js";
 import { undoLastDelete, loadUndoStack } from "./undo.js";
@@ -481,6 +481,22 @@ function registerServiceWorker() {
 
 async function init() {
   console.log(`Drive Dupe Destroyer v${APP_VERSION} initializing…`);
+
+  // Ask the browser not to evict our IndexedDB under storage pressure. Without
+  // this the hash cache and the user's rejected-pairs list can vanish silently.
+  // Non-blocking: a refusal is not an error, just a weaker guarantee.
+  requestPersistentStorage()
+    .then(async (granted) => {
+      const est = await getStorageEstimate();
+      if (est) {
+        console.log(
+          `[DB] Storage ${granted ? "persistent" : "best-effort"}: ` +
+          `${(est.usage / 1048576).toFixed(1)} MB used of ` +
+          `${(est.quota / 1048576).toFixed(0)} MB (${est.pctUsed.toFixed(1)}%)`
+        );
+      }
+    })
+    .catch(() => {});
 
   // Apply all security policies before anything else
   try { applyAllSecurityPolicies(); } catch(e) { console.warn("Security init failed:", e); }

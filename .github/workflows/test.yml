@@ -13,3 +13,5 @@ jobs:
         with:
           node-version: '20'
       - run: npm test
+      - name: Service worker precache list is current
+        run: python3 tools/gen_precache.py --check

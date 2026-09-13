@@ -332,12 +332,25 @@ export async function ensureValidToken() {
 export async function authedFetch(url, { method = "GET", headers = {}, body = null, signal = null } = {}) {
   await ensureValidToken();
   
-  let res = await fetch(url, {
-    method,
-    headers: { ...headers, Authorization: "Bearer " + accessToken },
-    body,
-    signal
-  });
+  // Tag a genuine transport failure so callers can tell it apart from an
+  // ordinary TypeError. fetch throws TypeError on a network error, but so does
+  // every "x is not a function" bug in the codebase — scan.js used to report
+  // both as "Network error. Check your internet connection."
+  const doFetch = async () => {
+    try {
+      return await fetch(url, {
+        method,
+        headers: { ...headers, Authorization: "Bearer " + accessToken },
+        body,
+        signal
+      });
+    } catch (e) {
+      if (e?.name === "AbortError") throw e;
+      throw Object.assign(new Error("Network request failed: " + (e?.message || e)), { code: "NETWORK" });
+    }
+  };
+
+  let res = await doFetch();
   
   if (res.status === 401) {
     console.warn("Got 401, attempting token refresh...");
@@ -346,12 +359,7 @@ export async function authedFetch(url, { method = "GET", headers = {}, body = nu
     
     try {
       await ensureValidToken();
-      res = await fetch(url, {
-        method,
-        headers: { ...headers, Authorization: "Bearer " + accessToken },
-        body,
-        signal
-      });
+      res = await doFetch();
     } catch (e) {
       showToast("Session expired. Please sign in again.", "error");
       throw e;

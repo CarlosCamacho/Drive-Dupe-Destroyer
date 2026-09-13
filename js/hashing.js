@@ -14,6 +14,7 @@
 // Image hashing with WASM acceleration and SharedArrayBuffer support
 
 import { makeLimiter, nowMs, CONFIG } from "./util.js";
+import { AIMDController } from "./aimd.js";
 import { downloadFileBlob, thumbLinkSized } from "./drive.js";
 import { ensureValidToken } from "./auth.js";
 
@@ -147,6 +148,8 @@ let hashingStats = {
   success: 0,
   failed: 0,
   retried: 0,
+  throttled: 0,          // 429s seen — drives the AIMD decrease
+  concurrency: CONFIG.HASH_CONCURRENCY,
   cacheHits: 0,
   wasmUsed: 0,
   jsUsed: 0,
@@ -171,6 +174,7 @@ export function getHashingStats() {
 export function resetHashingStats() {
   hashingStats = { 
     success: 0, failed: 0, retried: 0, cacheHits: 0,
+    throttled: 0, concurrency: CONFIG.HASH_CONCURRENCY,
     wasmUsed: 0, jsUsed: 0, errors: [],
     startTime: nowMs(), endTime: 0
   };
@@ -461,6 +465,23 @@ export async function computeHashesForFiles(files, {
   await initHashModule();
   
   const limit = makeLimiter(concurrency);
+
+  // Adaptive throttle. Without this, a 429 only slowed the one file that hit it:
+  // all six workers backed off independently and then independently resumed at
+  // full rate, which is the pattern that keeps a rate limit pinned. The
+  // controller has existed in aimd.js since v12 but was never connected to
+  // anything, while scan.js advertised an "AIMD throttle" in its header.
+  const aimd = new AIMDController({
+    initial: concurrency,
+    max: Math.max(concurrency, 12),
+    min: 1,
+    onUpdate: (n) => {
+      limit.setConcurrency(n);
+      hashingStats.concurrency = n;
+      console.log(`[Hashing] Concurrency → ${n}`);
+    }
+  });
+
   let done = 0;
   const out = new Map();
   const failedFiles = [];
@@ -479,8 +500,15 @@ export async function computeHashesForFiles(files, {
       const hashes = await computeHashForFileWithRetry(f, { withVariants, withCropDetect, withColorMatch, withPHash, withRotation, signal });
       out.set(f.id, hashes);
       hashingStats.success++;
+      aimd.onSuccess();
     } catch (e) {
       if (signal?.aborted || e.message === "Scan stopped.") throw e;
+
+      // A 429 (or a repeated timeout) means we are asking for too much at once,
+      // so halve global concurrency rather than just retrying this one file.
+      const throttled = e?.status === 429 || /\b429\b|rate limit|too many requests/i.test(e?.message || "");
+      if (throttled) hashingStats.throttled++;
+      aimd.onError(throttled);
       
       const errorInfo = { fileId: f.id, fileName: f.name, error: e.message || String(e) };
       hashingStats.failed++;

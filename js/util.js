@@ -142,12 +142,24 @@ export function chunk(arr, n) {
   return out;
 }
 
+/**
+ * Concurrency limiter whose limit can change while jobs are in flight.
+ *
+ * `limit.setConcurrency(n)` is what lets the AIMD controller actually throttle:
+ * the limit was previously captured as a constant, so nothing could reduce
+ * in-flight work when Drive started returning 429s.
+ *
+ * Lowering the limit never cancels running jobs — it just stops new ones from
+ * starting until enough have drained. Raising it immediately starts as many
+ * queued jobs as the new headroom allows.
+ */
 export function makeLimiter(concurrency) {
+  let limit_ = Math.max(1, concurrency | 0);
   let active = 0;
   const q = [];
-  
+
   const runNext = () => {
-    if (active >= concurrency) return;
+    if (active >= limit_) return;
     const job = q.shift();
     if (!job) return;
     active++;
@@ -162,13 +174,28 @@ export function makeLimiter(concurrency) {
       }
     })();
   };
-  
-  return function limit(fn) {
+
+  function limit(fn) {
     return new Promise((resolve, reject) => {
       q.push({ fn, resolve, reject });
       runNext();
     });
+  }
+
+  limit.setConcurrency = (n) => {
+    const next = Math.max(1, Math.floor(n) || 1);
+    if (next === limit_) return;
+    const raised = next > limit_;
+    limit_ = next;
+    // Fill the new headroom right away; a reduction just lets actives drain.
+    if (raised) for (let i = active; i < limit_; i++) runNext();
   };
+
+  limit.getConcurrency = () => limit_;
+  limit.pending = () => q.length;
+  limit.active = () => active;
+
+  return limit;
 }
 
 export function humanDuration(ms) {

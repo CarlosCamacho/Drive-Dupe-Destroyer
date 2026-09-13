@@ -86,9 +86,15 @@ export async function driveFetch(path, { method = "GET", params = {}, body = nul
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`Drive API error ${res.status}: ${sanitizeText(text.slice(0, 200))}`);
+    // Attach the real status rather than leaving callers to regex the message.
+    // scan.js used to classify failures with e.message.includes("403") etc.,
+    // which matches any 403 appearing anywhere in a Drive error body.
+    throw Object.assign(
+      new Error(`Drive API error ${res.status}: ${sanitizeText(text.slice(0, 200))}`),
+      { status: res.status, code: "DRIVE_API" }
+    );
   }
-  
+
   return res.status === 204 ? null : res.json();
 }
 
@@ -148,7 +154,10 @@ export async function downloadFileBlob(fileId, { altThumbUrl = null, signal = nu
 
   if (!res.ok) {
     const t = await res.text().catch(() => "");
-    throw new Error(`Download failed ${res.status}: ${sanitizeText(t.slice(0, 200))}`);
+    throw Object.assign(
+      new Error(`Download failed ${res.status}: ${sanitizeText(t.slice(0, 200))}`),
+      { status: res.status, code: "DRIVE_DOWNLOAD" }
+    );
   }
 
   return await res.blob();

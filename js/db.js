@@ -94,9 +94,23 @@ function openDb() {
       }
     };
     
+    // A second tab holding the old version blocks an upgrade indefinitely, with
+    // no feedback at all previously.
+    req.onblocked = () => {
+      console.warn("[DB] Upgrade blocked — another tab has this database open at an older version.");
+    };
+
     req.onsuccess = () => {
       dbReady = true;
-      resolve(req.result);
+      const db = req.result;
+      // Let a newer tab upgrade instead of deadlocking against our open handle.
+      db.onversionchange = () => {
+        console.warn("[DB] Another tab requested a database upgrade; closing this connection.");
+        try { db.close(); } catch {}
+        dbp = null;
+        dbReady = false;
+      };
+      resolve(db);
     };
     
     req.onerror = () => {
@@ -123,6 +137,67 @@ async function getStores(storeNames, mode = "readonly") {
   const db = await openDb();
   const tx = db.transaction(storeNames, mode);
   return storeNames.map(name => tx.objectStore(name));
+}
+
+// ============================================================================
+// Storage Durability & Quota
+// ============================================================================
+
+/**
+ * Ask the browser to keep this origin's storage.
+ *
+ * Without it, IndexedDB is "best effort": the browser may evict the entire
+ * database under storage pressure, taking the hash cache AND the user's
+ * accumulated rejected-pairs list with it, silently. Chrome grants this without
+ * a prompt for sites the user has engaged with; elsewhere it may be declined,
+ * which is fine — it is an improvement, not a requirement.
+ */
+export async function requestPersistentStorage() {
+  try {
+    if (!navigator.storage?.persist) return false;
+    if (await navigator.storage.persisted?.()) return true;
+    const granted = await navigator.storage.persist();
+    console.log(`[DB] Persistent storage ${granted ? "granted" : "not granted"}`);
+    return granted;
+  } catch {
+    return false;
+  }
+}
+
+/** Bytes used / available, or null when the browser will not say. */
+export async function getStorageEstimate() {
+  try {
+    if (!navigator.storage?.estimate) return null;
+    const { usage = 0, quota = 0 } = await navigator.storage.estimate();
+    return { usage, quota, pctUsed: quota > 0 ? (usage / quota) * 100 : 0 };
+  } catch {
+    return null;
+  }
+}
+
+/** True for the various shapes a quota failure arrives in. */
+export function isQuotaError(e) {
+  return (
+    e?.name === "QuotaExceededError" ||
+    e?.name === "NS_ERROR_DOM_QUOTA_REACHED" ||
+    e?.code === 22 ||
+    /quota/i.test(e?.message || "")
+  );
+}
+
+// Report a full cache once per session, not once per failed batch.
+let _quotaWarned = false;
+
+export function onQuotaExceeded(notify) {
+  if (_quotaWarned) return;
+  _quotaWarned = true;
+  console.warn("[DB] Storage quota exceeded — the hash cache has stopped growing.");
+  if (typeof notify === "function") {
+    notify(
+      "Browser storage is full, so new hashes are no longer being cached. " +
+      "Clear the cache in the sidebar to keep caching."
+    );
+  }
 }
 
 // ============================================================================
@@ -224,18 +299,27 @@ export async function dbGetImagesBatch(ids) {
  */
 export async function dbPutImagesBatch(records) {
   if (!records || records.length === 0) return;
-  
+
   const db = await openDb();
   const tx = db.transaction("images", "readwrite");
   const store = tx.objectStore("images");
   const ts = toIso();
-  
+
   // Use put without waiting for each one
   for (const rec of records) {
     store.put({ ...rec, ts });
   }
-  
-  return promisifyTransaction(tx);
+
+  try {
+    return await promisifyTransaction(tx);
+  } catch (e) {
+    // A quota failure used to be swallowed by the caller's .catch(console.warn),
+    // so the cache silently stopped working and the user only saw that repeat
+    // scans were as slow as the first. Re-thrown with a flag so scan.js can tell
+    // "storage is full" apart from a transient write error.
+    if (isQuotaError(e)) throw Object.assign(e, { code: "QUOTA" });
+    throw e;
+  }
 }
 
 /**
