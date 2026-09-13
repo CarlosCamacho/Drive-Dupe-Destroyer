@@ -33,6 +33,28 @@ function getPooledCtx(w, h) {
     // Clear any prior contents so stale pixels can't leak between images.
     entry.ctx.clearRect(0, 0, w, h);
   }
+
+  // Composite onto WHITE, not the canvas's default transparent black.
+  //
+  // getImageData returns transparent pixels as (0,0,0,0), and the grayscale
+  // conversion below ignores alpha -- so a transparent region hashed as BLACK
+  // while the same image flattened onto white hashed as WHITE. Measured on an
+  // identical drawing rendered both ways: Hamming distance 22 out of 144, above
+  // even the loosest sensitivity threshold (20). A transparent PNG could never
+  // match its own flattened JPEG at ANY setting, which is one of the most common
+  // ways a real duplicate pair arises -- JPEG has no alpha, so every PNG->JPEG
+  // export produces exactly this pair.
+  //
+  // White is the conventional base for perceptual hashing for this reason. With
+  // it the same pair measures 0, while two images that genuinely differ in
+  // background (white vs black) still measure 22 -- background information is
+  // normalised, not discarded.
+  //
+  // Note this also covers the first-use branch above: a fresh OffscreenCanvas
+  // starts transparent, so filling here is what makes the two paths agree.
+  entry.ctx.fillStyle = "#ffffff";
+  entry.ctx.fillRect(0, 0, w, h);
+
   return entry.ctx;
 }
 

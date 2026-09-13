@@ -138,8 +138,10 @@ const HASH_EDGE = 256;
  * 2: the WASM path now downsamples to HASH_EDGE before hashing. It previously
  *    hashed at full resolution, so its cached values do not match the worker
  *    path's (which always downsampled) or the current WASM path's.
+ * 3: hashes are now composited onto white instead of transparent black, so
+ *    images with an alpha channel hash differently (and correctly) from before.
  */
-export const HASH_VERSION = 2;
+export const HASH_VERSION = 3;
 
 // ============================================================================
 // Hashing Statistics
@@ -332,6 +334,13 @@ async function computeHashOptimized(blob, withVariants, withCropDetect = false, 
       });
       const canvas = new OffscreenCanvas(HASH_EDGE, HASH_EDGE);
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      // Composite onto white, matching getPooledCtx in worker-hash.js. A fresh
+      // OffscreenCanvas is transparent black, and the dHash grayscale ignores
+      // alpha, so without this a transparent PNG hashes as though its
+      // background were black -- and, worse, the WASM and worker paths would
+      // disagree about the same image while both claiming HASH_VERSION 3.
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, HASH_EDGE, HASH_EDGE);
       ctx.drawImage(imageBitmap, 0, 0);
       // One readback, reused for both hash sizes — it was previously read twice.
       const imageData = ctx.getImageData(0, 0, HASH_EDGE, HASH_EDGE);
