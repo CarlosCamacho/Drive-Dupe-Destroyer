@@ -190,9 +190,18 @@ async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSi
   // already walked stay walked, and the queue restarts from what was still
   // pending. Previously the resume state recorded neither, so "Resume" ran a
   // full rescan from the selected roots.
+  // `visited` is the BFS dedup set and is seeded with the exclusions so the walk
+  // skips them. `walked` is the folders we actually listed — the two must not be
+  // conflated: returning `visited` as "visitedFolderIds" meant the delta scan's
+  // containment check treated EXCLUDED folders as in-scope, and only a separate
+  // excludedSet guard happening to run first kept that from leaking files back
+  // in. Track them apart so the guarantee does not depend on statement order.
   const visited = new Set(exclusions);
+  const walked = new Set();
   const allFiles = resume?.files ? [...resume.files] : [];
-  if (resume?.visitedFolderIds) for (const id of resume.visitedFolderIds) visited.add(id);
+  if (resume?.visitedFolderIds) {
+    for (const id of resume.visitedFolderIds) { visited.add(id); walked.add(id); }
+  }
   const queue = resume?.pendingFolderIds?.length ? [...resume.pendingFolderIds] : [...folderIds];
   let foldersScanned = 0;
   let totalSubfoldersFound = 0;
@@ -207,6 +216,7 @@ async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSi
     const folderId = queue.shift();
     if (visited.has(folderId)) continue;
     visited.add(folderId);
+    walked.add(folderId);
     foldersScanned++;
 
     if (Date.now() - lastTokenCheck > TOKEN_CHECK_INTERVAL) {
@@ -241,7 +251,7 @@ async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSi
       // of collection (as before) was useless: a crash during the long phase
       // had nothing to resume from.
       if (onCheckpoint && foldersScanned % 25 === 0) {
-        onCheckpoint({ files: allFiles, visitedFolderIds: Array.from(visited), pendingFolderIds: [...queue] });
+        onCheckpoint({ files: allFiles, visitedFolderIds: Array.from(walked), pendingFolderIds: [...queue] });
       }
     } catch (e) {
       if (signal?.aborted || e.message === "Scan stopped.") throw e;
@@ -251,11 +261,10 @@ async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSi
 
   if (onStatus) onStatus(`Collection complete: ${allFiles.length} images in ${foldersScanned} folders (${totalSubfoldersFound} subfolders traversed)`);
   console.log(`[DDD] Recursive scan: ${foldersScanned} folders scanned, ${totalSubfoldersFound} subfolders discovered, ${allFiles.length} images found`);
-  // `visited` is the set of folders we actually walked. The delta scan needs it
-  // to tell whether a changed file lies inside the user's selection, and the
-  // resume state needs it to describe what was covered -- it previously stored
-  // the parent folders of found files, which is not the same thing.
-  return { files: allFiles, visitedFolderIds: visited };
+  // `walked`, not `visited`: only folders we actually listed. The delta scan
+  // uses this to decide whether a changed file lies inside the user's selection,
+  // and the resume state uses it to describe what was covered.
+  return { files: allFiles, visitedFolderIds: walked };
 }
 
 async function fetchAllImagesFlat({ folderIds, exclusions, maxItems, pageSize, signal, onStatus }) {

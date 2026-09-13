@@ -15,6 +15,7 @@
 
 import { makeLimiter, nowMs, CONFIG } from "./util.js";
 import { AIMDController } from "./aimd.js";
+import { isBackpressureError, isThrottleError } from "./common.js";
 import { downloadFileBlob, thumbLinkSized } from "./drive.js";
 import { ensureValidToken } from "./auth.js";
 
@@ -515,11 +516,11 @@ export async function computeHashesForFiles(files, {
     } catch (e) {
       if (signal?.aborted || e.message === "Scan stopped.") throw e;
 
-      // A 429 (or a repeated timeout) means we are asking for too much at once,
-      // so halve global concurrency rather than just retrying this one file.
-      const throttled = e?.status === 429 || /\b429\b|rate limit|too many requests/i.test(e?.message || "");
+      // Back off only for failures that mean the server is under pressure from
+      // us — see isBackpressureError in common.js. A decode failure is not one.
+      const throttled = isThrottleError(e);
       if (throttled) hashingStats.throttled++;
-      aimd.onError(throttled);
+      if (isBackpressureError(e)) aimd.onError(throttled);
       
       const errorInfo = { fileId: f.id, fileName: f.name, error: e.message || String(e) };
       hashingStats.failed++;
