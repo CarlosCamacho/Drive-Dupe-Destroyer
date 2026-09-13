@@ -42,8 +42,17 @@ export function uiInit() {
     if (vEl) vEl.textContent = "v" + APP_VERSION;
     document.title = `Drive Dupe Destroyer (DDD) v${APP_VERSION}`;
     
+    // The header subtitle no longer carries the copyright — it moved into the
+    // About modal. #copyrightYear is still honoured if present so older markup
+    // keeps working; #aboutYear and #aboutVersion are the current targets.
     const yearEl = el("copyrightYear");
     if (yearEl) yearEl.textContent = getCurrentYear();
+
+    const aboutYearEl = el("aboutYear");
+    if (aboutYearEl) aboutYearEl.textContent = getCurrentYear();
+
+    const aboutVerEl = el("aboutVersion");
+    if (aboutVerEl) aboutVerEl.textContent = APP_VERSION;
     
     // Initialize help tooltips
     initHelpTooltips();

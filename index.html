@@ -61,7 +61,7 @@
     <header class="header">
       <div class="headerLeft">
         <h1>Drive Dupe Destroyer <span class="muted" id="appVersion">v14.1</span></h1>
-        <p class="subtitle">Google Drive Similar Image Finder — ©<span id="copyrightYear">2026</span> Carlos Camacho</p>
+        <p class="subtitle">Google Drive Similar Image Finder</p>
       </div>
       <div class="headerRight">
         <button type="button" id="btnTheme" class="btnGhost btnTheme" title="Toggle dark/light mode">🌙</button>
@@ -71,6 +71,9 @@
            title="Support Drive Dupe Destroyer with a PayPal donation">
           <i class="fab fa-paypal" aria-hidden="true"></i> Donate
         </a>
+        <button type="button" id="btnAbout" class="btnBlue" title="About Drive Dupe Destroyer">
+          <i class="fa-solid fa-circle-info" aria-hidden="true"></i> About
+        </button>
         <span id="clientIdDisplay" class="clientIdDisplay" style="display:none;"></span>
       </div>
     </header>
@@ -436,6 +439,50 @@
   </div>
 
   <!-- Auth Modal -->
+  <!-- About Modal -->
+  <div id="aboutModal" class="modal" style="display:none;">
+    <div class="modalContent modalSmall">
+      <div class="modalHeader">
+        <h2>About</h2>
+        <button type="button" id="aboutModalClose" class="btnClose" aria-label="Close">&#10005;</button>
+      </div>
+      <div class="modalBody aboutBody">
+        <h3 class="aboutTitle">Google Drive Similar Image Finder</h3>
+        <!-- Version and year are filled in from APP_VERSION / the current year by
+             ui.js, so this markup never has to be touched on a release. -->
+        <p class="aboutVersion">Version <span id="aboutVersion">&mdash;</span></p>
+        <p class="aboutCopyright">&copy;<span id="aboutYear">2026</span> Carlos Camacho</p>
+
+        <p class="aboutRepo">
+          <a href="https://github.com/CarlosCamacho/Drive-Dupe-Destroyer"
+             target="_blank" rel="noopener noreferrer">
+            <i class="fa-brands fa-github" aria-hidden="true"></i>
+            github.com/CarlosCamacho/Drive-Dupe-Destroyer
+          </a>
+        </p>
+
+        <hr class="aboutRule">
+
+        <p class="aboutDonate">
+          Please consider
+          <a href="https://www.paypal.com/cgi-bin/webscr?cmd=_donations&amp;business=idevgames%40gmail.com&amp;item_name=Support%20Drive%20Dupe%20Destroyer&amp;currency_code=USD"
+             target="_blank" rel="noopener noreferrer">donating</a>
+          to fund continued development.
+        </p>
+
+        <p class="aboutIssues">
+          Issues? Be sure to
+          <a href="https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/new/choose"
+             target="_blank" rel="noopener noreferrer">submit</a>
+          any bugs.
+        </p>
+      </div>
+      <div class="modalFooter">
+        <button type="button" id="aboutModalOk" class="btnBlue">Close</button>
+      </div>
+    </div>
+  </div>
+
   <div id="authModal" class="modal" style="display:none;">
     <div class="modalContent modalSmall">
       <div class="modalHeader">

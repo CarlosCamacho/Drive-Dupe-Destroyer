@@ -15,7 +15,7 @@
 // Main application entry point
 
 import { el, APP_VERSION } from "./util.js";
-import { uiInit, setSignedInUi, setStatus, showEmptyState, setScanningState, showToast, wireErrorModal, setSelectedCountProvider } from "./ui.js";
+import { uiInit, setSignedInUi, setStatus, showEmptyState, setScanningState, showToast, wireErrorModal, setSelectedCountProvider, lockBodyScroll } from "./ui.js";
 import { wireAuth } from "./auth.js";
 import { runScan, setupBackgroundDetection } from "./scan.js";
 import { renderGroups, wireRenderControls, getSelectedCount, beginProgressive, pushProgressiveMatch, endProgressive } from "./render.js";
@@ -372,6 +372,35 @@ function wireScrollToTop() {
   btn.onclick = () => tableWrap.scrollTo({ top: 0, behavior: "smooth" });
 }
 
+function wireAboutModal() {
+  const btn = document.getElementById("btnAbout");
+  const modal = document.getElementById("aboutModal");
+  if (!btn || !modal) return;
+
+  // Same open/close contract as the other modals in the app: overlay click,
+  // Escape, the header X and the footer button all close it, and the body
+  // scroll is locked while it is open.
+  const open = () => {
+    modal.style.display = "flex";
+    lockBodyScroll(true);
+    document.getElementById("aboutModalOk")?.focus();
+  };
+
+  const close = () => {
+    modal.style.display = "none";
+    lockBodyScroll(false);
+    btn.focus();
+  };
+
+  btn.onclick = open;
+  document.getElementById("aboutModalClose")?.addEventListener("click", close);
+  document.getElementById("aboutModalOk")?.addEventListener("click", close);
+  modal.addEventListener("click", (e) => { if (e.target === modal) close(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && modal.style.display === "flex") close();
+  });
+}
+
 function wireTelemetryButton() {
   const btn = document.getElementById("btnTelemetry");
   if (btn) btn.onclick = () => toggleTelemetry();
@@ -488,6 +517,7 @@ async function init() {
   wireThemeToggle();
   wireTelemetryButton();
   wireUndoButton();
+  wireAboutModal();
   await initPersistentSettings();
   await checkResumeState();
   

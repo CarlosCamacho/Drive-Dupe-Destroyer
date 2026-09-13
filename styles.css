@@ -2153,3 +2153,74 @@ input[type="checkbox"] {
   cursor: pointer;
 }
 .imgTypeRow input { cursor: pointer; }
+
+/* ============================================================================
+   About modal
+   Reuses the shared .modal / .modalContent / .modalHeader / .modalFooter
+   structure; these rules only style the body content.
+   ============================================================================ */
+
+.aboutBody {
+  text-align: center;
+}
+
+.aboutTitle {
+  margin: 4px 0 10px;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.aboutVersion,
+.aboutCopyright {
+  margin: 2px 0;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.aboutRepo {
+  margin: 14px 0 0;
+  font-size: 0.88rem;
+  word-break: break-all;
+}
+
+.aboutRepo i {
+  margin-right: 6px;
+}
+
+.aboutRule {
+  margin: 18px 0;
+  border: none;
+  border-top: 1px solid var(--border-color);
+}
+
+.aboutDonate,
+.aboutIssues {
+  margin: 8px 0;
+  font-size: 0.9rem;
+  color: var(--text-primary);
+}
+
+.aboutBody a {
+  color: var(--accent-blue);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.aboutBody a:hover,
+.aboutBody a:focus-visible {
+  text-decoration: underline;
+}
+
+/* The About button sits beside Donate in the header and uses .btnBlue, which
+   is styled for <button>; the icon needs the same inline-flex alignment the
+   Donate anchor gets from .btnDonate. */
+#btnAbout {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  cursor: pointer;
+}
