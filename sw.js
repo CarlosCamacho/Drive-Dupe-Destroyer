@@ -1,5 +1,5 @@
 /*
- * Drive Dupe Destroyer (DDD) v14.0 — sw.js
+ * Drive Dupe Destroyer (DDD) — sw.js
  *
  * Copyright (c) 2026 Carlos Camacho
  * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
@@ -15,7 +15,16 @@
 // Service Worker: cache-first for app assets + background hash queue keepalive (Feature #20)
 // When main tab is backgrounded, SW keeps Drive API fetch queue alive.
 
-const CACHE_NAME = "drive-dupe-destroyer-v14";
+// sw.js is a classic worker and cannot import ES modules, so the version is
+// duplicated here rather than read from util.js. app.js compares this value
+// against APP_VERSION at boot and warns if they diverge -- a mismatch means a
+// release bumped util.js without bumping the cache, which would serve stale JS.
+// Keep SW_VERSION in step with APP_VERSION in js/util.js.
+const SW_VERSION = "14.1";
+// Deriving the cache name from the version means every release gets a fresh
+// cache and the activate handler evicts the old one. Bumping the version is
+// now sufficient to invalidate; it is no longer a separate thing to remember.
+const CACHE_NAME = `drive-dupe-destroyer-v${SW_VERSION}`;
 const PRECACHE = [
   "./",
   "./index.html",
@@ -78,14 +87,14 @@ self.addEventListener("activate", (ev) => {
         })
       ))
       .then(() => {
-        console.log("[SW] v14.0 activated, claiming all clients");
+        console.log(`[SW] v${SW_VERSION} activated, claiming all clients`);
         return self.clients.claim();  // Take over open tabs immediately
       })
       .then(() => {
         // Notify all open tabs to reload so they get the new SW immediately
         return self.clients.matchAll({ type: "window" }).then(clients => {
           clients.forEach(client => {
-            client.postMessage({ type: "SW_UPDATED", version: "14.0" });
+            client.postMessage({ type: "SW_UPDATED", version: SW_VERSION });
           });
         });
       })
@@ -212,7 +221,7 @@ self.addEventListener("message", async (ev) => {
   }
 
   if (type === "VERSION_CHECK") {
-    ev.source?.postMessage({ type: "VERSION", version: "14.0", cacheName: CACHE_NAME });
+    ev.source?.postMessage({ type: "VERSION", version: SW_VERSION, cacheName: CACHE_NAME });
     return;
   }
 });

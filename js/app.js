@@ -1,5 +1,5 @@
 /*
- * Drive Dupe Destroyer (DDD) v14.0 — app.js
+ * Drive Dupe Destroyer (DDD) — app.js
  *
  * Copyright (c) 2026 Carlos Camacho
  * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
@@ -14,7 +14,7 @@
 // Security-hardened: localStorage replaced with IndexedDB for all persistence
 // Main application entry point
 
-import { el } from "./util.js";
+import { el, APP_VERSION } from "./util.js";
 import { uiInit, setSignedInUi, setStatus, showEmptyState, setScanningState, showToast, wireErrorModal, setSelectedCountProvider } from "./ui.js";
 import { wireAuth } from "./auth.js";
 import { runScan, setupBackgroundDetection } from "./scan.js";
@@ -427,11 +427,26 @@ function registerServiceWorker() {
       console.log('[SW] Received update signal v' + ev.data.version + ' — reloading');
       window.location.reload();
     }
+    // The SW carries its own version literal (it cannot import util.js). If it has
+    // drifted from APP_VERSION, the cache name derived from it has drifted too and
+    // the app may be running against a stale precache. Surface it rather than
+    // letting it fail silently, which is how stale-asset bugs go unnoticed.
+    if (ev.data?.type === 'VERSION' && ev.data.version !== APP_VERSION) {
+      console.warn(
+        `[SW] Version mismatch: service worker reports v${ev.data.version}, app is v${APP_VERSION}. ` +
+        `Bump SW_VERSION in sw.js to match APP_VERSION in js/util.js.`
+      );
+    }
   });
+
+  // Ask the active worker to report its version so the check above can run.
+  navigator.serviceWorker.ready
+    .then((reg) => reg.active?.postMessage({ type: 'VERSION_CHECK' }))
+    .catch(() => {});
 }
 
 async function init() {
-  console.log("Drive Dupe Destroyer v14.0 initializing…");
+  console.log(`Drive Dupe Destroyer v${APP_VERSION} initializing…`);
 
   // Apply all security policies before anything else
   try { applyAllSecurityPolicies(); } catch(e) { console.warn("Security init failed:", e); }
@@ -476,7 +491,7 @@ async function init() {
   setScanningState(false);
   
   setStatus("Ready. Sign in to start.");
-  console.log("Drive Dupe Destroyer v14.0 ready.");
+  console.log(`Drive Dupe Destroyer v${APP_VERSION} ready.`);
 }
 
 // v14: 🖼️ Image Types panel. The master "Select all" box toggles every format

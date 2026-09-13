@@ -1,5 +1,5 @@
 /*
- * Drive Dupe Destroyer (DDD) v14.0 — util.js
+ * Drive Dupe Destroyer (DDD) — util.js
  *
  * Copyright (c) 2026 Carlos Camacho
  * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
@@ -12,6 +12,16 @@
  * https://polyformproject.org/licenses/noncommercial/1.0.0/
  */
 // Centralized utilities and constants
+
+// The single source of truth for the app version.
+// Everything that displays or reports a version reads it from here:
+//   - ui.js       -> the header badge and document.title
+//   - exporter.js -> the `version` field in JSON exports
+//   - app.js      -> the boot log, and the service-worker version check
+// sw.js cannot import ES modules, so it carries its own SW_VERSION literal;
+// app.js compares the two at boot and warns on a mismatch (a stale cache).
+// serve_secure.py parses this line at startup, so keep the format as-is.
+export const APP_VERSION = "14.1";
 
 // Configuration constants
 export const CONFIG = {
@@ -80,7 +90,11 @@ export function clamp(n, min, max) {
 
 export function bytesToHuman(n) {
   const x = Number(n);
-  if (!isFinite(x) || x <= 0) return "—";
+  // Distinguish "no size information" from "genuinely empty". Collapsing both to
+  // an em dash made a 0-byte file indistinguishable from one whose size Drive
+  // did not report, which matters when deciding whether a file is worth keeping.
+  if (!isFinite(x) || x < 0) return "—";
+  if (x === 0) return "0 B";
   const u = ["B", "KB", "MB", "GB", "TB"];
   let i = 0, v = x;
   while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
