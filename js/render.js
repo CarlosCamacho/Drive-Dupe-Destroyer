@@ -1,5 +1,5 @@
 /*
- * Drive Dupe Destroyer (DDD) v14.0 — render.js
+ * Drive Dupe Destroyer (DDD) — render.js
  *
  * Copyright (c) 2026 Carlos Camacho
  * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
@@ -21,7 +21,7 @@ import { releaseAllThumbBlobs, getThumbUrlForFile } from "./hashing.js";
 import { openCompare, setCompareCallbacks } from "./compare.js";
 import { setCropCallbacks } from "./crop.js";
 import { batchTrash, driveFilePreviewLink, driveFolderLink, downloadFileBlob, thumbLinkSized } from "./drive.js";
-import { chooseKeepIndex, distToPercent, bestDist } from "./common.js";
+import { chooseKeepIndex, distToPercent, bestDist, DEFAULT_KEEP_RULE } from "./common.js";
 
 const ROW_HEIGHT = 58;
 const BUFFER_ROWS = 10;
@@ -62,6 +62,23 @@ export function getPathMap() { return currentState?.pathMap || new Map(); }
 
 function getFolderPath(file, pathMap) {
   return pathMap?.get(file.id) || "";
+}
+
+/**
+ * Copy each file's resolved folder path onto the file object.
+ *
+ * chooseKeepIndex's folderPriority rule matches against `_path`, but `_path` was
+ * only assigned in createRowElement -- which runs AFTER the keep was chosen, and
+ * only for rows the virtual scroller had painted. So on the first render every
+ * file scored "no match" and the folderPriority rule silently did nothing.
+ * Resolving up front makes the rule work on the first pass.
+ */
+function resolvePaths(group, pathMap) {
+  if (!pathMap || pathMap.size === 0) return group;
+  for (const f of group) {
+    if (f && !f._path) f._path = getFolderPath(f, pathMap);
+  }
+  return group;
 }
 
 function dimsForFile(file) {
@@ -630,7 +647,15 @@ function handleFilterChange() {
   
   for (const g of currentState.groups) {
     groupId++;
-    const keepIdx = chooseKeepIndex(g, el("keepRule")?.value || "newest", el("folderPriority")?.value || "");
+    // Use the rule this result set was built with rather than re-reading the
+    // dropdown, so changing it mid-scan cannot make the filter disagree with the
+    // table it is filtering.
+    resolvePaths(g, currentState.pathMap);
+    const keepIdx = chooseKeepIndex(
+      g,
+      currentState.keepRule || DEFAULT_KEEP_RULE,
+      currentState.folderPriority || ""
+    );
     const keepFile = g[keepIdx] || g[0];
     const sortedGroup = [keepFile, ...g.filter(f => f.id !== keepFile.id)];
     
@@ -687,7 +712,7 @@ function applyFilter() {
  * Resets the table and switches the renderer into "progressive" mode so that
  * pushProgressiveMatch() can stream groups into the SAME interactive table.
  */
-export function beginProgressive({ idToEntry, keepRule = "newest", folderPriority = "", bitsCount = 144, withVariants = false } = {}) {
+export function beginProgressive({ idToEntry, keepRule = DEFAULT_KEEP_RULE, folderPriority = "", bitsCount = 144, withVariants = false } = {}) {
   releaseAllThumbBlobs();
   loadedThumbs.clear();
   clearSimCache();
@@ -711,7 +736,9 @@ export function beginProgressive({ idToEntry, keepRule = "newest", folderPriorit
     idToEntry: idToEntry || new Map(),
     pathMap: new Map(),
     bitsCount,
-    withVariants
+    withVariants,
+    keepRule,
+    folderPriority
   };
   idToFile = new Map();
 
@@ -770,7 +797,8 @@ function rebuildProgressiveRows() {
     groupId++;
     liveGroups.push(group);
 
-    const keepIdx = chooseKeepIndex(group, opts.keepRule || "newest", opts.folderPriority || "");
+    resolvePaths(group, pathMap);
+    const keepIdx = chooseKeepIndex(group, opts.keepRule || DEFAULT_KEEP_RULE, opts.folderPriority || "");
     const keepFile = group[keepIdx] || group[0];
     const sortedGroup = [keepFile, ...group.filter(f => f.id !== keepFile.id)];
     const _groupPct = groupBestPct(sortedGroup, 0, idToEntry, opts.bitsCount, opts.withVariants);
@@ -818,7 +846,7 @@ export function endProgressive() {
   progressiveRenderScheduled = false;
 }
 
-export async function renderGroups({ groups, idToEntry, pathMap, keepRule = "newest", folderPriority = "", bitsCount = 144, withVariants = false }) {
+export async function renderGroups({ groups, idToEntry, pathMap, keepRule = DEFAULT_KEEP_RULE, folderPriority = "", bitsCount = 144, withVariants = false }) {
   releaseAllThumbBlobs();
   loadedThumbs.clear();
   clearSimCache();
@@ -830,7 +858,7 @@ export async function renderGroups({ groups, idToEntry, pathMap, keepRule = "new
   allRows = [];
   visibleRange = { start: -1, end: -1 };
 
-  currentState = { groups, idToEntry, pathMap, bitsCount, withVariants };
+  currentState = { groups, idToEntry, pathMap, bitsCount, withVariants, keepRule, folderPriority };
   idToFile = new Map(groups.flat().map(f => [f.id, f]));
 
   if (groups.length === 0) {
@@ -846,7 +874,8 @@ export async function renderGroups({ groups, idToEntry, pathMap, keepRule = "new
   let groupId = 0;
   for (const g of groups) {
     groupId++;
-    const keepIdx = chooseKeepIndex(g, keepRule, folderPriority);
+    resolvePaths(g, pathMap);
+    const keepIdx = chooseKeepIndex(g, keepRule || DEFAULT_KEEP_RULE, folderPriority);
     const keepFile = g[keepIdx] || g[0];
     const sortedGroup = [keepFile, ...g.filter(f => f.id !== keepFile.id)];
     

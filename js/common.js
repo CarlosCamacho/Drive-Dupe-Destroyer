@@ -1,5 +1,5 @@
 /*
- * Drive Dupe Destroyer (DDD) v14.0 — common.js
+ * Drive Dupe Destroyer (DDD) — common.js
  *
  * Copyright (c) 2026 Carlos Camacho
  * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
@@ -102,9 +102,27 @@ export function isImageFileName(name) {
   return SUPPORTED_IMAGE_EXTENSIONS.has(getFileExtension(name));
 }
 
+// MIME types Drive hands back that carry no format information on their own.
+// Drive reports many PSD/TGA/IFF/PCX uploads this way, which is why
+// application/octet-stream is in SUPPORTED_IMAGE_MIMES at all -- but it is also
+// what Drive reports for .zip, .exe, .dmg and every other binary. For these the
+// MIME type alone must NOT be sufficient; the filename has to corroborate it.
+const AMBIGUOUS_MIMES = new Set(['application/octet-stream']);
+
 export function isSupportedImageFile(file) {
   if (!file) return false;
-  return isImageMime(file.mimeType) || isImageFileName(file.name);
+  const mime = typeof file.mimeType === 'string' ? file.mimeType.toLowerCase() : '';
+
+  // Folders are never scan candidates, whatever else matches.
+  if (mime === 'application/vnd.google-apps.folder') return false;
+
+  // For an ambiguous MIME the extension is the only real evidence, so require it.
+  // This was previously an OR, so octet-stream passed on the MIME alone and every
+  // archive and installer in the user's Drive was downloaded in full before
+  // failing to decode.
+  if (AMBIGUOUS_MIMES.has(mime)) return isImageFileName(file.name);
+
+  return isImageMime(mime) || isImageFileName(file.name);
 }
 
 
@@ -508,75 +526,97 @@ export function batchBestDist(entry, candidates, idToEntry, withVariants, use12,
  * Choose which file to keep in a duplicate group
  * Fixed: Uses file size as fallback when imageMediaMetadata is missing
  */
+// The keep rule used when the #keepRule element is missing or empty.
+//
+// scan.js defaulted to "hires" while render.js defaulted to "newest", so a
+// missing element made the scan pipeline and the render pipeline nominate
+// different keepers for the same group. Since the keeper is the one file NOT
+// offered for deletion, that divergence is a correctness problem. One constant,
+// used by every call site.
+export const DEFAULT_KEEP_RULE = "hires";
+
 export function chooseKeepIndex(group, keepRule, folderPriorityCsv = "") {
   if (!Array.isArray(group) || group.length <= 1) return 0;
   
   const mod = f => Date.parse(f.modifiedTime || 0) || 0;
   const size = f => Number(f.size || 0) || 0;
-  
-  // Resolution function with fallback to file size
-  // When imageMediaMetadata is missing, use file size as proxy
-  // (larger files often correlate with higher resolution for same format)
-  const res = f => {
+
+  // Pixel count, or null when Drive gave us no dimensions.
+  //
+  // This deliberately does NOT fall back to the byte count. Doing so compared a
+  // pixel count against a byte count, so a 5 MB file with no imageMediaMetadata
+  // beat a genuine 800x600 original -- and Drive routinely omits that metadata
+  // for exactly the formats most likely to be the master copy (PSD, RAW, TIFF,
+  // and anything it typed as application/octet-stream). Under a "hires" rule a
+  // file whose resolution we actually know is always the better-evidenced
+  // keeper; size only decides between two files that are both unknown.
+  const pixels = f => {
     const w = Number(f.imageMediaMetadata?.width || 0);
     const h = Number(f.imageMediaMetadata?.height || 0);
-    if (w > 0 && h > 0) {
-      return w * h;
-    }
-    // Fallback: use file size (not ideal but better than 0)
-    return Number(f.size || 0);
+    return (w > 0 && h > 0) ? w * h : null;
   };
-  
+
   // Parse and cache folder priority lookup
   const folderPriority = (folderPriorityCsv || "")
     .split(",")
     .map(s => s.trim().toLowerCase())
     .filter(Boolean);
-  
+
+  const NO_FOLDER_MATCH = Number.MAX_SAFE_INTEGER;
+
+  // Rank by the RESOLVED folder path only.
+  //
+  // This used to also test f.parents[0] -- an opaque Drive folder ID -- and
+  // f.name, the file's own name. Neither is a folder name, so a pattern could
+  // match for reasons the user never intended, and the help text ("folder name
+  // patterns") described behaviour the code did not have.
   const folderRank = (f) => {
-    const p = (f.parents?.[0] || "").toLowerCase();
-    const name = (f.name || "").toLowerCase();
+    if (folderPriority.length === 0) return NO_FOLDER_MATCH;
     const path = (f._path || "").toLowerCase();
-    
+    if (!path) return NO_FOLDER_MATCH;
     for (let i = 0; i < folderPriority.length; i++) {
-      const pattern = folderPriority[i];
-      if (p.includes(pattern) || name.includes(pattern) || path.includes(pattern)) {
-        return i;
-      }
+      if (path.includes(folderPriority[i])) return i;
     }
-    return 999999;
+    return NO_FOLDER_MATCH;
   };
 
+  // Comparators return > 0 when b is the better keeper, < 0 when a is, and 0 for
+  // a genuine tie -- which the loop below then breaks deterministically.
+  const compare = {
+    newest:         (a, b) => mod(b) - mod(a),
+    oldest:         (a, b) => mod(a) - mod(b),
+    largest:        (a, b) => size(b) - size(a),
+    smallest:       (a, b) => size(a) - size(b),
+    folderPriority: (a, b) => folderRank(a) - folderRank(b),
+    hires: (a, b) => {
+      const pa = pixels(a), pb = pixels(b);
+      if (pa !== null && pb !== null) return pb - pa;   // both known: more pixels wins
+      if (pa !== null) return -1;                       // only a known: prefer a
+      if (pb !== null) return 1;                        // only b known: prefer b
+      return size(b) - size(a);                         // neither known: fall back to bytes
+    },
+  }[keepRule] ?? (() => 0);
+
   let best = 0;
-  
+
   for (let i = 1; i < group.length; i++) {
     const a = group[best], b = group[i];
-    let pickB = false;
+    let verdict = compare(a, b);
 
-    switch (keepRule) {
-      case "newest":
-        pickB = mod(b) > mod(a);
-        break;
-      case "oldest":
-        pickB = mod(b) < mod(a);
-        break;
-      case "largest":
-        pickB = size(b) > size(a);
-        break;
-      case "smallest":
-        pickB = size(b) < size(a);
-        break;
-      case "hires":
-        pickB = res(b) > res(a);
-        break;
-      case "folderPriority":
-        pickB = folderRank(b) < folderRank(a);
-        break;
+    // Deterministic tie-break. Without this the keeper depended on group order,
+    // which comes from union-find iteration and is not stable between runs -- so
+    // the same library scanned twice could nominate a different file to delete.
+    // createdTime first (the earliest upload is the most likely original), then
+    // the Drive ID, which is stable and unique.
+    if (verdict === 0) {
+      const ca = Date.parse(a.createdTime || 0) || 0;
+      const cb = Date.parse(b.createdTime || 0) || 0;
+      verdict = ca !== cb ? ca - cb : String(a.id).localeCompare(String(b.id));
     }
-    
-    if (pickB) best = i;
+
+    if (verdict > 0) best = i;
   }
-  
+
   return best;
 }
 

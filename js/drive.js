@@ -1,5 +1,5 @@
 /*
- * Drive Dupe Destroyer (DDD) v14.0 — drive.js
+ * Drive Dupe Destroyer (DDD) — drive.js
  *
  * Copyright (c) 2026 Carlos Camacho
  * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
@@ -151,7 +151,7 @@ export function thumbLinkSized(thumbnailLink, w = 256) {
  * outcome. We tagged each sub-request with "Content-ID: <fileId>" on the way
  * out, and Google echoes it back as "Content-ID: response-<fileId>".
  */
-function parseBatchResponse(text, boundaryHint) {
+export function parseBatchResponse(text, boundaryHint) {
   const out = new Map();
   if (!text) return out;
 
@@ -168,8 +168,14 @@ function parseBatchResponse(text, boundaryHint) {
   for (const part of parts) {
     if (!part || part === "--\r\n" || part.trim() === "--") continue;
 
-    // Content-ID echoed by Google looks like: "response-<fileId>"
-    const idMatch = part.match(/Content-ID:\s*response-([^\r\n]+)/i);
+    // Content-ID echoed by Google is angle-bracketed: "Content-ID: <response-abc123>".
+    // The previous pattern required "response-" to follow the colon directly, so
+    // the leading "<" made it never match. statusById then came back empty and
+    // every chunk silently fell through to fallbackPatch -- one batch request
+    // followed by 100 individual PATCHes. Brackets are optional here so a
+    // bare "Content-ID: response-abc123" still parses, and the capture stops at
+    // ">" so the closing bracket is not swallowed into the file ID.
+    const idMatch = part.match(/Content-ID:\s*<?\s*response-([^>\r\n]+)>?/i);
     // The embedded HTTP status line, e.g. "HTTP/1.1 204 No Content"
     const statusMatch = part.match(/HTTP\/\d\.\d\s+(\d{3})/);
 

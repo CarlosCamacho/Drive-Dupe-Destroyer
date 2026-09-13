@@ -1,5 +1,5 @@
 /*
- * Drive Dupe Destroyer (DDD) v14.0 — scan.js
+ * Drive Dupe Destroyer (DDD) — scan.js
  *
  * Copyright (c) 2026 Carlos Camacho
  * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
@@ -25,7 +25,7 @@ import { computeHashesForFiles, getHashingStats } from "./hashing.js";
 import { saveResumeState, clearResumeState } from "./resume.js";
 import { getRejectionStats, preloadRejections, isRejectedPairSync } from "./rejection.js";
 import { updateTelemetry } from "./telemetry.js";
-import { bestDist, bestDistExtended, bestDistWithPHash, thresholdFromEasy, isSupportedImageFile, aspectRatioCompatible, SUPPORTED_IMAGE_MIMES, getFileExtension } from "./common.js";
+import { bestDist, bestDistExtended, bestDistWithPHash, thresholdFromEasy, isSupportedImageFile, aspectRatioCompatible, SUPPORTED_IMAGE_MIMES, getFileExtension, DEFAULT_KEEP_RULE } from "./common.js";
 import { makeUnionFind } from "./unionfind.js";
 import { buildPathsParallel, clearPathCaches } from "./paths.js";
 import { buildAutoTunedLshIndex, lshCandidates, lshStats } from "./lsh.js";
@@ -703,7 +703,7 @@ export async function runScan({
     const quickScan = matchMode === "exact";
     const sensitivityLevel = parseInt(el("sensitivityLevel")?.value || "3", 10);
     const hamThresh = thresholdFromEasy(sensitivityLevel);
-    const keepRule = el("keepRule")?.value || "hires";
+    const keepRule = el("keepRule")?.value || DEFAULT_KEEP_RULE;
     const folderPriority = el("folderPriority")?.value || "";
     const dhashSize = parseInt(el("dhashSize")?.value || "12", 10);
     const withVariants = el("checkVariants")?.checked || el("checkVariants")?.value === "yes";
