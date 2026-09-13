@@ -5,7 +5,7 @@
 ### A browser-based Google Drive duplicate image finder with safe review, side-by-side comparison, export, and undo support.
 
 <p>
-  <img alt="Version" src="https://img.shields.io/badge/version-14.0-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-14.1-blue">
   <img alt="App Type" src="https://img.shields.io/badge/app-static%20web%20app-brightgreen">
   <img alt="Google Drive" src="https://img.shields.io/badge/API-Google%20Drive-orange">
   <img alt="Privacy" src="https://img.shields.io/badge/privacy-browser%20local-lightgrey">
@@ -66,21 +66,30 @@ Google Drive makes it easy to accumulate duplicate images across folders, backup
 - **Exact duplicate detection** using Google Drive MD5 checksums.
 - **Similar image detection** using browser-based perceptual hashing.
 - **Advanced matching options** including dHash, pHash, color/edge matching, crop detection, rotation variants, flip variants, aspect-ratio filtering, and LSH candidate matching.
-- **Wide format support:** JPEG, PNG, GIF, WebP, BMP, TIFF, SVG, HEIC/HEIF, AVIF, ICO, JPEG 2000, JPEG XL, Netpbm (PPM/PGM/PBM), RAW camera files, and the design/legacy formats **PSD, TGA, IFF/ILBM, and PCX**.
+- **Wide format support**, in two tiers:
+  - **Full matching** (exact *and* visually similar) for the formats browsers can
+    decode: JPEG, PNG, GIF, WebP, BMP, ICO, SVG, and AVIF. TIFF and HEIC/HEIF
+    are attempted and work where the browser supports them (Safari).
+  - **Exact-duplicate matching only** for formats no browser can decode: **PSD,
+    TGA, IFF/ILBM, PCX**, Netpbm (PPM/PGM/PBM), JPEG 2000, JPEG XL, and RAW
+    camera files. These are matched by Drive checksum, which needs no decoder —
+    and they are *not* downloaded, so a library of RAW files costs no bandwidth.
 - **Per-format scan selection** — an Image Types panel lets you include or exclude specific formats from a scan.
 - **Folder-based scanning** with optional recursive traversal.
 - **Side-by-side compare modal** for reviewing duplicate candidates before trashing files.
 - **Download or delete any image** directly from the results table — including the keep file (with confirmation).
 - **Clickable File Location** — open the file's containing Google Drive folder in a new tab from the table or the compare modal.
 - **Graceful image placeholders** instead of broken-image icons while thumbnails load or if an image fails to load.
-- **Undo delete support** for recently trashed files.
+- **Undo delete support** for recently trashed files, covering every delete path
+  and surviving a page refresh. A bulk delete is undone in one click.
 - **False-positive rejection memory** so ignored pairs are not repeatedly shown.
 - **Delta scan support** for scanning changed Drive files after a previous scan.
 - **Resume support** after refresh or browser interruption.
 - **CSV and JSON export** with match metadata.
 - **IndexedDB cache** for faster repeat scans.
 - **Dark/light theme toggle**.
-- **Security-hardened local server** with COOP, COEP, CSP, and related browser security headers.
+- **Security-hardened local server** with CSP, COOP and related browser security
+  headers, chosen so they do not break Google sign-in or Drive thumbnails.
 
 ---
 
@@ -152,6 +161,21 @@ Paste your Google OAuth Client ID when prompted. The Client ID normally ends wit
 ### 5. Select folders and scan
 
 Choose one or more Google Drive folders, set your scan options (optionally narrow the formats in the **Image Types** panel), then click **Start Scan**.
+
+---
+
+## Running the Tests
+
+The app itself ships no dependencies. The test suite uses Node's built-in
+runner, so it needs no install step:
+
+```bash
+npm test
+```
+
+It covers the pure functions — keep-file selection, format gating, Hamming
+distance, the batch-response parser — which is where a mistake means the wrong
+file is offered for deletion. CI runs it on every push.
 
 ---
 
@@ -325,7 +349,7 @@ https://carloscamacho.github.io/Drive-Dupe-Destroyer/privacy.html
 https://carloscamacho.github.io/Drive-Dupe-Destroyer/terms.html
 ```
 
-> **Note on `serve_secure.py`:** GitHub Pages cannot send the COOP/COEP headers that enable the SharedArrayBuffer zero-copy path, so that optimization is local-server only. The app works correctly on Pages without it — just slightly slower on very large scans.
+> **Note on `serve_secure.py`:** it exists to send CSP and related security headers during local development. It deliberately does **not** enable cross-origin isolation (`COOP: same-origin` + `COEP: require-corp`): those headers would unlock SharedArrayBuffer, but they also sever the Google sign-in popup and block Drive's thumbnail CDN. Hashing uses `postMessage` transfers instead, and the app behaves the same on GitHub Pages.
 
 For a more polished documentation page, link to:
 
@@ -368,8 +392,10 @@ drive-dupe-destroyer/
 ├── README.md                   # This file
 ├── CHANGELOG.md                # Consolidated changelog (newest first)
 ├── LICENSE                     # PolyForm Noncommercial 1.0.0
+├── package.json                # Test harness only — the app ships no dependencies
 ├── .gitignore
-├── js/                         # Application modules (32 files)
+├── test/                       # node:test suite for the pure functions (`npm test`)
+├── js/                         # Application modules
 │   ├── app.js                  # Main application wiring
 │   ├── auth.js                 # Google OAuth flow
 │   ├── drive.js                # Google Drive API calls
@@ -405,6 +431,7 @@ drive-dupe-destroyer/
 | Sign-in fails | Confirm the OAuth Client ID and authorized JavaScript origin. |
 | Folder picker is empty | Confirm Google Drive API is enabled and the user granted Drive access. |
 | Scan finds 0 images | Confirm the folder has images; check the Min/Max size filters; check the **Image Types** panel (use *Select all* if you unchecked formats). |
+| RAW/PSD files show only exact duplicates | Expected — browsers cannot decode those formats, so they are matched by checksum rather than visual similarity. See **Features**. |
 | Scan is slow | Scan fewer folders, keep cache enabled, or lower scan limits. |
 | Too many false matches | Increase sensitivity or disable loose matching options. |
 | Too few matches | Lower sensitivity or enable crop, rotation, or pHash options. |

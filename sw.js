@@ -1,5 +1,5 @@
 /*
- * Drive Dupe Destroyer (DDD) v14.0 — sw.js
+ * Drive Dupe Destroyer (DDD) — sw.js
  *
  * Copyright (c) 2026 Carlos Camacho
  * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
@@ -15,34 +15,56 @@
 // Service Worker: cache-first for app assets + background hash queue keepalive (Feature #20)
 // When main tab is backgrounded, SW keeps Drive API fetch queue alive.
 
-const CACHE_NAME = "drive-dupe-destroyer-v14";
+// sw.js is a classic worker and cannot import ES modules, so the version is
+// duplicated here rather than read from util.js. app.js compares this value
+// against APP_VERSION at boot and warns if they diverge -- a mismatch means a
+// release bumped util.js without bumping the cache, which would serve stale JS.
+// Keep SW_VERSION in step with APP_VERSION in js/util.js.
+const SW_VERSION = "14.1";
+// Deriving the cache name from the version means every release gets a fresh
+// cache and the activate handler evicts the old one. Bumping the version is
+// now sufficient to invalidate; it is no longer a separate thing to remember.
+const CACHE_NAME = `drive-dupe-destroyer-v${SW_VERSION}`;
+// PRECACHE is generated from the contents of js/ — see tools/gen_precache.py.
+// It was hand-maintained and had drifted in both directions: nine modules the
+// app statically imports were missing (so offline loaded the shell and then
+// failed on the first missing import), while two files nothing imported were
+// still listed. Regenerate with `python3 tools/gen_precache.py` after adding or
+// removing a module; CI fails if the list is stale.
 const PRECACHE = [
   "./",
   "./index.html",
   "./styles.css",
+  "./js/actions.js",
+  "./js/aimd.js",
   "./js/app.js",
-  "./js/util.js",
-  "./js/common.js",
   "./js/auth.js",
-  "./js/drive.js",
-  "./js/scan.js",
-  "./js/hashing.js",
-  "./js/worker-hash.js",
-  "./js/lsh.js",
-  "./js/db.js",
-  "./js/ui.js",
-  "./js/render.js",
+  "./js/common.js",
   "./js/compare.js",
   "./js/crop.js",
+  "./js/db.js",
+  "./js/drive.js",
   "./js/exporter.js",
-  "./js/settings.js",
-  "./js/telemetry.js",
-  "./js/undo.js",
-  "./js/resume.js",
+  "./js/folderPicker.js",
+  "./js/hashing.js",
+  "./js/keyboard.js",
+  "./js/lsh.js",
+  "./js/paths.js",
+  "./js/queue.js",
   "./js/rejection.js",
-  "./js/aimd.js",
+  "./js/render.js",
+  "./js/resume.js",
+  "./js/scan.js",
   "./js/security.js",
-  "./js/phash.js",
+  "./js/settings.js",
+  "./js/shared-worker-pool.js",
+  "./js/telemetry.js",
+  "./js/ui.js",
+  "./js/undo.js",
+  "./js/unionfind.js",
+  "./js/util.js",
+  "./js/wasm-hash.js",
+  "./js/worker-hash.js",
 ];
 
 // ============================================================================
@@ -78,14 +100,14 @@ self.addEventListener("activate", (ev) => {
         })
       ))
       .then(() => {
-        console.log("[SW] v14.0 activated, claiming all clients");
+        console.log(`[SW] v${SW_VERSION} activated, claiming all clients`);
         return self.clients.claim();  // Take over open tabs immediately
       })
       .then(() => {
         // Notify all open tabs to reload so they get the new SW immediately
         return self.clients.matchAll({ type: "window" }).then(clients => {
           clients.forEach(client => {
-            client.postMessage({ type: "SW_UPDATED", version: "14.0" });
+            client.postMessage({ type: "SW_UPDATED", version: SW_VERSION });
           });
         });
       })
@@ -147,8 +169,12 @@ self.addEventListener("fetch", (ev) => {
   // Each app must be in its own subfolder (e.g. /destroyer/ and /decimator/) for
   // complete isolation. If in the root, SW scopes overlap — serve from cache only
   // if the requested path matches a known Destroyer asset.
+  // Anything we do not precache is none of our business, whatever its origin.
+  // The previous condition was `!known && sameOrigin`, so a cross-origin request
+  // (cdnjs, for instance) failed the test and fell THROUGH into the cache-first
+  // handler below — the opposite of what the comment above describes.
   const knownAssets = new Set(PRECACHE.map(p => new URL(p, self.location.href).pathname));
-  if (!knownAssets.has(url.pathname) && url.origin === self.location.origin) {
+  if (url.origin !== self.location.origin || !knownAssets.has(url.pathname)) {
     return; // Not our asset — let the browser (or the other app's SW) handle it
   }
 
@@ -212,7 +238,7 @@ self.addEventListener("message", async (ev) => {
   }
 
   if (type === "VERSION_CHECK") {
-    ev.source?.postMessage({ type: "VERSION", version: "14.0", cacheName: CACHE_NAME });
+    ev.source?.postMessage({ type: "VERSION", version: SW_VERSION, cacheName: CACHE_NAME });
     return;
   }
 });

@@ -1,0 +1,17 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Python (serve_secure.py, tools/)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Node (test harness only — the app itself ships no dependencies)
+node_modules/
+
+# Editors
+.vscode/
+.idea/
+*.swp

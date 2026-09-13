@@ -1,5 +1,5 @@
 /*
- * Drive Dupe Destroyer (DDD) v14.0 — actions.js
+ * Drive Dupe Destroyer (DDD) — actions.js
  *
  * Copyright (c) 2026 Carlos Camacho
  * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
@@ -18,6 +18,7 @@ import { batchTrash } from "./drive.js";
 import { selectedIds, getIdToFile } from "./render.js";
 import { setStatus, setProgress, showSpinner, refreshActionButtons, showToast } from "./ui.js";
 import { getExclusions } from "./folderPicker.js";
+import { pushUndoDeleteBatch } from "./undo.js";
 
 export function wireActions() {
   const btnTrashNow = el("btnTrashNow");
@@ -73,10 +74,15 @@ export async function trashSelectedNow() {
     setProgress(100);
     
     if (result.success.length > 0) {
+      // Record the whole batch as ONE undo operation before telling the UI the
+      // files are gone. Bulk delete is the most destructive path in the app and
+      // previously recorded nothing at all, so Undo had nothing to restore.
+      pushUndoDeleteBatch(result.success.map(id => idToFile.get(id)).filter(Boolean));
+
       window.dispatchEvent(new CustomEvent("ddd:trashed", { 
         detail: { ids: result.success } 
       }));
-      showToast(`Trashed ${result.success.length} file(s)`, "success");
+      showToast(`Trashed ${result.success.length} file(s) — use Undo to restore`, "success");
     }
     
     if (result.failed.length > 0) {

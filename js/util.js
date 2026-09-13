@@ -1,5 +1,5 @@
 /*
- * Drive Dupe Destroyer (DDD) v14.0 — util.js
+ * Drive Dupe Destroyer (DDD) — util.js
  *
  * Copyright (c) 2026 Carlos Camacho
  * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
@@ -12,6 +12,16 @@
  * https://polyformproject.org/licenses/noncommercial/1.0.0/
  */
 // Centralized utilities and constants
+
+// The single source of truth for the app version.
+// Everything that displays or reports a version reads it from here:
+//   - ui.js       -> the header badge and document.title
+//   - exporter.js -> the `version` field in JSON exports
+//   - app.js      -> the boot log, and the service-worker version check
+// sw.js cannot import ES modules, so it carries its own SW_VERSION literal;
+// app.js compares the two at boot and warns on a mismatch (a stale cache).
+// serve_secure.py parses this line at startup, so keep the format as-is.
+export const APP_VERSION = "14.1";
 
 // Configuration constants
 export const CONFIG = {
@@ -80,7 +90,11 @@ export function clamp(n, min, max) {
 
 export function bytesToHuman(n) {
   const x = Number(n);
-  if (!isFinite(x) || x <= 0) return "—";
+  // Distinguish "no size information" from "genuinely empty". Collapsing both to
+  // an em dash made a 0-byte file indistinguishable from one whose size Drive
+  // did not report, which matters when deciding whether a file is worth keeping.
+  if (!isFinite(x) || x < 0) return "—";
+  if (x === 0) return "0 B";
   const u = ["B", "KB", "MB", "GB", "TB"];
   let i = 0, v = x;
   while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
@@ -128,12 +142,24 @@ export function chunk(arr, n) {
   return out;
 }
 
+/**
+ * Concurrency limiter whose limit can change while jobs are in flight.
+ *
+ * `limit.setConcurrency(n)` is what lets the AIMD controller actually throttle:
+ * the limit was previously captured as a constant, so nothing could reduce
+ * in-flight work when Drive started returning 429s.
+ *
+ * Lowering the limit never cancels running jobs — it just stops new ones from
+ * starting until enough have drained. Raising it immediately starts as many
+ * queued jobs as the new headroom allows.
+ */
 export function makeLimiter(concurrency) {
+  let limit_ = Math.max(1, concurrency | 0);
   let active = 0;
   const q = [];
-  
+
   const runNext = () => {
-    if (active >= concurrency) return;
+    if (active >= limit_) return;
     const job = q.shift();
     if (!job) return;
     active++;
@@ -148,13 +174,28 @@ export function makeLimiter(concurrency) {
       }
     })();
   };
-  
-  return function limit(fn) {
+
+  function limit(fn) {
     return new Promise((resolve, reject) => {
       q.push({ fn, resolve, reject });
       runNext();
     });
+  }
+
+  limit.setConcurrency = (n) => {
+    const next = Math.max(1, Math.floor(n) || 1);
+    if (next === limit_) return;
+    const raised = next > limit_;
+    limit_ = next;
+    // Fill the new headroom right away; a reduction just lets actives drain.
+    if (raised) for (let i = active; i < limit_; i++) runNext();
   };
+
+  limit.getConcurrency = () => limit_;
+  limit.pending = () => q.length;
+  limit.active = () => active;
+
+  return limit;
 }
 
 export function humanDuration(ms) {
