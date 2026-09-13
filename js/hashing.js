@@ -430,7 +430,18 @@ async function computeHashForFileWithRetry(file, {
     } catch (e) {
       lastError = e;
       if (signal?.aborted || e.message === "Scan stopped.") throw e;
-      
+
+      // A decode failure is deterministic: the bytes will not become decodable
+      // on a second attempt, and each retry re-downloads the whole file. With
+      // maxRetries=3 that tripled the transfer cost of every unsupported format
+      // before giving up.
+      const undecodable =
+        e?.name === "InvalidStateError" ||
+        /source image|decode|unsupported|could not be decoded/i.test(e?.message || "");
+      if (undecodable) {
+        throw Object.assign(e, { code: "UNDECODABLE" });
+      }
+
       if (attempt < maxRetries) {
         let delay = retryDelayMs * Math.pow(2, attempt - 1);
         if (e.message?.includes("429")) delay = Math.max(delay, 5000);
@@ -463,7 +474,7 @@ export async function computeHashesForFiles(files, {
   hashingStats.startTime = nowMs();
   
   await initHashModule();
-  
+
   const limit = makeLimiter(concurrency);
 
   // Adaptive throttle. Without this, a 429 only slowed the one file that hit it:

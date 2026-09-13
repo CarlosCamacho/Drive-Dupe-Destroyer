@@ -19,6 +19,7 @@ import {
   isImageMime,
   isImageFileName,
   getFileExtension,
+  canBrowserDecode,
   hammingDistance,
   hammingBytes32,
   thresholdFromEasy,
@@ -307,5 +308,47 @@ describe("aspectRatioCompatible", () => {
     const landscape = file("a", { w: 4000, h: 3000 });
     const portrait = file("b", { w: 3000, h: 4000 });
     assert.equal(aspectRatioCompatible(landscape, portrait), true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// canBrowserDecode — gates whether a file is downloaded for perceptual hashing
+// ---------------------------------------------------------------------------
+
+describe("canBrowserDecode", () => {
+  test("rejects formats no mainstream browser decodes", () => {
+    // Downloading these is guaranteed waste — a 300 MB PSD or a 60 MB CR2
+    // fetched only for createImageBitmap to reject it.
+    for (const name of [
+      "layered.psd", "sprite.tga", "amiga.ilbm", "old.pcx",
+      "netpbm.ppm", "gray.pgm", "bw.pbm",
+      "scan.jp2", "future.jxl",
+      "IMG_1234.cr2", "IMG_1234.nef", "IMG_1234.arw", "IMG_1234.dng",
+    ]) {
+      assert.equal(canBrowserDecode({ name }), false, name);
+    }
+  });
+
+  test("accepts the formats every browser decodes", () => {
+    for (const name of ["a.jpg", "a.jpeg", "a.png", "a.gif", "a.webp", "a.bmp", "a.ico"]) {
+      assert.equal(canBrowserDecode({ name }), true, name);
+    }
+  });
+
+  // TIFF/HEIC/AVIF are genuinely browser-dependent. We attempt them rather than
+  // guessing: a wrong "no" silently loses real matches for Safari users, and the
+  // retry loop no longer re-downloads on a decode failure, so a wrong "yes"
+  // costs one request.
+  test("attempts the ambiguous formats rather than guessing", () => {
+    for (const name of ["a.tif", "a.tiff", "a.heic", "a.heif", "a.avif"]) {
+      assert.equal(canBrowserDecode({ name }), true, name);
+    }
+  });
+
+  test("unknown extensions are attempted, and bad input does not throw", () => {
+    assert.equal(canBrowserDecode({ name: "a.weirdext" }), true);
+    assert.equal(canBrowserDecode({ name: "no-extension" }), true);
+    assert.equal(canBrowserDecode({}), true);
+    assert.equal(canBrowserDecode(null), true);
   });
 });

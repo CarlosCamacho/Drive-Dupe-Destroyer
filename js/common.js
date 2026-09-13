@@ -91,6 +91,46 @@ export const SUPPORTED_IMAGE_EXTENSIONS = new Set([
   '.pcx'                     // PiCture eXchange
 ]);
 
+// Extensions no browser's createImageBitmap can decode.
+//
+// The app lists and downloads these formats, then fails to hash them. For a
+// photographer's Drive that is gigabytes of transfer -- a 60 MB CR2, a 300 MB
+// layered PSD -- for zero results. They are still scanned, but via MD5 only:
+// exact-duplicate detection needs no decoder and works perfectly for them,
+// which is also where byte-identical copies are most likely (camera imports,
+// backup folders, "Copy of" duplicates).
+const UNDECODABLE_EXTENSIONS = new Set([
+  '.psd',                                     // Photoshop
+  '.tga', '.targa',                           // Truevision TGA
+  '.iff', '.ilbm', '.lbm',                    // Amiga IFF / ILBM
+  '.pcx',                                     // PiCture eXchange
+  '.ppm', '.pgm', '.pbm',                     // Netpbm
+  '.jp2', '.jpx',                             // JPEG 2000 (Safari only)
+  '.jxl',                                     // JPEG XL (shipped disabled)
+  '.cr2', '.crw', '.nef', '.arw', '.raw',     // RAW
+  '.orf', '.raf', '.dng',
+]);
+
+/**
+ * Can this browser turn the file into pixels?
+ *
+ * False only for formats NO mainstream browser decodes, where the download is
+ * guaranteed to be wasted. Everything else returns true and we simply try —
+ * including the genuinely ambiguous ones (TIFF, HEIC, AVIF), which Safari
+ * decodes and others do not.
+ *
+ * An earlier version tried to probe those three at runtime. It was unsound:
+ * the check leaned on ImageDecoder.isTypeSupported, which is absent in Safari —
+ * the very browser that CAN decode TIFF and HEIC — so Safari users would have
+ * had those files skipped and lost real matches. Guessing wrong in that
+ * direction costs more than one failed decode, and computeHashForFileWithRetry
+ * no longer retries a decode failure, so the cost of trying is a single
+ * download rather than three.
+ */
+export function canBrowserDecode(file) {
+  return !UNDECODABLE_EXTENSIONS.has(getFileExtension(file?.name));
+}
+
 export function getFileExtension(name) {
   if (!name || typeof name !== 'string') return '';
   const clean = name.toLowerCase().split(/[?#]/)[0];
