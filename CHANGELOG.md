@@ -10,48 +10,102 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [14.1] - 2026-09-13
 
-Maintenance release: correctness fixes in the logic that decides what gets
-deleted, the first automated tests, and an About dialog.
+Correctness and efficiency release. Every open issue filed against 14.0 is
+addressed. The headline changes are that Undo now works at all, the logic
+deciding which file to delete has been corrected, and a large scan no longer
+downloads and retains every image at full resolution.
 
-### Fixed
-- **Undo now records every delete.** It previously recorded none: `compare.js`
-  imported `pushUndoDelete` and never called it, and the results-table, bulk
-  and crop delete paths called `batchTrash` directly. The Undo button was
-  therefore always disabled. The stack now holds *operations* rather than
-  individual files (one click restores a whole bulk delete) and is persisted to
-  IndexedDB, so a refresh no longer discards it.
-- **Keep-file selection.** The "highest resolution" rule compared a pixel count
-  against a byte count whenever Drive omitted image dimensions, so a large file
-  with no metadata could beat a genuine higher-resolution original. The folder
-  priority rule matched patterns against Drive folder IDs and file names rather
-  than folder paths, and ran before paths were resolved, so it silently did
-  nothing. Ties now break deterministically instead of depending on scan order.
-- **Non-image files are no longer downloaded.** Files Drive typed as
-  `application/octet-stream` passed the format filter on the MIME type alone,
-  so archives and installers were downloaded in full before failing to decode.
-  An ambiguous MIME type now requires a recognised extension.
-- **Batch trash actually batches.** The parser for Google's batch response
-  never matched its angle-bracketed `Content-ID` header, so every chunk fell
-  back to 100 individual requests.
-- **Consistent keep rule.** The scan and render pipelines defaulted to
-  different rules and could nominate different files to keep.
-- `bytesToHuman(0)` returns `0 B` rather than an em dash, so an empty file is
-  distinguishable from one of unknown size.
+### Fixed — safety
+
+- **Undo recorded nothing.** No delete path called into the undo stack:
+  `compare.js` imported `pushUndoDelete` and never invoked it, and the
+  results-table, bulk and crop paths called `batchTrash` directly. The button
+  was permanently disabled. It now records every path, stores *operations*
+  rather than individual files (one click restores a whole bulk delete), and
+  persists to IndexedDB so a refresh no longer discards it.
+- **Keep-file selection.** "Highest resolution" compared a pixel count against
+  a byte count whenever Drive omitted image dimensions, so a large file with no
+  metadata could beat a genuine higher-resolution original. Folder priority
+  matched patterns against Drive folder IDs and file names rather than folder
+  paths, and ran before paths were resolved, so it silently did nothing. Ties
+  now break deterministically instead of depending on scan order.
+- **Per-row delete now confirms**, matching the KEEP row.
+- **Crop no longer destroys metadata silently.** It re-encoded through a canvas,
+  uploaded under the original's exact name and auto-trashed the original. The
+  crop is now saved as a separate `(cropped)` file, trashing the original is a
+  confirmation that states what the re-encode did not carry over, and the
+  uploaded file declares the type it actually is — `toBlob` silently falls back
+  to PNG for formats browsers cannot encode.
+
+### Fixed — the app running at all
+
+- **`serve_secure.py` broke Google sign-in.** `COOP: same-origin` severs
+  `window.opener`, which is how the OAuth popup returns the token, so sign-in
+  hung until it timed out — on the documented way to run the app. It now sends
+  `same-origin-allow-popups`.
+- **`COEP: require-corp` blocked every Drive thumbnail**, so the results table
+  showed placeholders and the thumbnail fast-path failed on every file. No
+  longer sent. Both headers existed only to enable SharedArrayBuffer, which
+  cannot coexist with the sign-in popup; the postMessage fallback is used.
+- **Batch trash actually batches.** The parser never matched Google's
+  angle-bracketed `Content-ID`, so every chunk fell back to 100 individual
+  requests.
+- **Non-image files are no longer downloaded.** Files Drive typed
+  `application/octet-stream` passed the format filter on MIME alone, so
+  archives and installers were fetched in full before failing to decode.
+- **Resume actually resumes.** The prompt discarded the user's answer and ran a
+  full rescan, and only cleared its state on Cancel, so it reappeared on every
+  load for 24 hours. It now checkpoints the folder frontier during collection
+  and restarts from it.
+- **Delta scan stays in scope.** It added changed files from anywhere in Drive,
+  including folders the user had excluded, and bypassed the size and Image
+  Types filters entirely.
+
+### Changed — performance
+
+- Hashing no longer retains the downloaded image. The blob cache was bounded by
+  entry count, not bytes, and the hashing and display paths shared a cache key —
+  so the results table painted full-resolution originals into 44px thumbnails.
+- The WASM hash path decoded at full resolution and read the pixels back twice;
+  it now downsamples first. Cached hashes carry a version and are recomputed
+  when the scheme changes.
+- Thumbnails come from Drive's own `thumbnailLink` first, which costs no memory
+  and no API quota, with the authenticated download as fallback.
+- The thumbnail fast-path is probed once per session rather than attempted and
+  failed per file.
+- Exact duplicates found by checksum are no longer re-downloaded and re-hashed,
+  and formats no browser can decode (PSD, RAW, TGA, PCX, Netpbm, JPEG 2000,
+  JPEG XL) are matched by checksum instead of being downloaded to fail.
+- Folder traversal makes one API call per folder instead of two.
+- The adaptive concurrency throttle described in the source since v12 is now
+  actually connected, so a 429 reduces global concurrency instead of making six
+  workers back off and resume independently.
+- Rejected pairs have their own object store; recording one no longer rewrites
+  the entire collection.
 
 ### Added
-- **About dialog**, reachable from a new button beside Donate. Shows the
-  version, copyright, repository link, donation prompt and a bug-report link.
-- **Test suite** (`npm test`, no dependencies) covering the pure functions, and
-  a CI workflow that runs it on every push.
-- **Deletion confirmation** on the per-row trash button, matching the KEEP row.
-- `.gitignore`, which the README's Project Structure had always listed.
 
-### Changed
-- The header subtitle is now just "Google Drive Similar Image Finder"; the
-  copyright moved into the About dialog.
+- **About dialog** reachable from a new button beside Donate, with the version,
+  copyright, repository link, donation prompt and a bug-report link.
+- **Test suite** (`npm test`, no dependencies) and CI. Four of the bugs above
+  were in pure functions a test would have caught immediately.
+- Storage-quota handling: a full cache is reported once rather than silently
+  ending caching, and the app requests persistent storage so the browser does
+  not evict the cache and the user's rejected-pairs list without warning.
+
+### Removed
+
+- Dead code: `js/pool.js` and `js/phash.js`, plus an unused token store,
+  hand-rolled CSRF helpers, a postMessage guard with no listener, and a
+  `Permissions-Policy` meta tag that browsers ignore. Several header comments
+  claimed protections that were not in effect.
+
+### Internal
+
 - The version lives in one constant (`APP_VERSION` in `js/util.js`) instead of
-  ~56 hardcoded strings. The service worker cache name derives from it, so
-  bumping the version now invalidates stale caches as a side effect.
+  ~56 hardcoded strings; the service worker cache name derives from it.
+- The service worker precache list is generated and CI-verified — it was
+  missing nine modules the app statically imports, breaking offline.
 
 ## [14.0] - 2026-06-07
 
