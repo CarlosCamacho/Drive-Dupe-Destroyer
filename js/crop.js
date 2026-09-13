@@ -17,7 +17,7 @@
 import { el, bytesToHuman, formatDate } from "./util.js";
 import { lockBodyScroll, showToast } from "./ui.js";
 import { pushUndoDeleteBatch } from "./undo.js";
-import { batchTrash, uploadFile, getAccessToken } from "./drive.js";
+import { batchTrash, uploadFile, downloadFileBlob } from "./drive.js";
 import { openCompare } from "./compare.js";
 
 let currentFile = null;
@@ -302,15 +302,17 @@ async function loadImageForCrop(file) {
   if (cropCanvas) cropCanvas.style.display = "none";
   
   try {
-    const token = await getAccessToken();
-    const response = await fetch(
-      `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-    
-    if (!response.ok) throw new Error("Failed to download image");
-    
-    const blob = await response.blob();
+    // Release the previous image before loading the next. closeCropModal only
+    // revoked the current one, so stepping through a group with the next/prev
+    // buttons leaked one full-resolution blob per step.
+    if (originalImage?.src?.startsWith("blob:")) {
+      try { URL.revokeObjectURL(originalImage.src); } catch {}
+    }
+
+    // downloadFileBlob goes through authedFetch, which refreshes and retries on
+    // a 401. The raw fetch here surfaced an expired token as
+    // "Failed to download image".
+    const blob = await downloadFileBlob(file.id);
     const imageUrl = URL.createObjectURL(blob);
     
     originalImage = new Image();
@@ -809,6 +811,45 @@ async function handleCropDelete() {
   }
 }
 
+/**
+ * Choose a canvas-encodable MIME type, and the extension that goes with it.
+ *
+ * Browsers encode PNG, JPEG and WebP. Anything else must be re-encoded as one
+ * of those, so pick deliberately rather than letting toBlob fall back silently:
+ * lossless sources become PNG, everything else JPEG.
+ */
+function chooseEncoding(sourceMime, sourceName) {
+  const mime = (sourceMime || "").toLowerCase();
+  const ext = (sourceName || "").toLowerCase().slice((sourceName || "").lastIndexOf("."));
+
+  if (mime === "image/png" || ext === ".png") return { mime: "image/png", ext: ".png" };
+  if (mime === "image/webp" || ext === ".webp") return { mime: "image/webp", ext: ".webp" };
+  if (mime === "image/jpeg" || ext === ".jpg" || ext === ".jpeg") return { mime: "image/jpeg", ext: ".jpg" };
+
+  // Lossless or unknown sources (PNG-like, BMP, TIFF, PSD…) keep detail as PNG.
+  if (mime === "image/bmp" || mime === "image/gif" || mime === "image/tiff" || !mime) {
+    return { mime: "image/png", ext: ".png" };
+  }
+  return { mime: "image/jpeg", ext: ".jpg" };
+}
+
+/** "photo.heic" + ".jpg" -> "photo (cropped).jpg" */
+function croppedFileName(originalName, ext) {
+  const name = originalName || "image";
+  const dot = name.lastIndexOf(".");
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  return `${stem} (cropped)${ext}`;
+}
+
+/** Clear the crop UI state and refresh the group list after a save. */
+function resetAfterCrop() {
+  rotation = 0;
+  zoomLevel = 1;
+  updateZoomButtons();
+  selection = null;
+  refreshGroups();
+}
+
 async function performCrop() {
   if (!selection || !originalImage || !currentFile) {
     showToast("No selection made", "error");
@@ -864,19 +905,59 @@ async function performCrop() {
     
     croppedCtx.drawImage(tempCanvas, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
     
-    const mimeType = currentFile.mimeType || "image/jpeg";
-    const quality = mimeType === "image/jpeg" ? 0.92 : undefined;
-    
-    const blob = await new Promise(resolve => croppedCanvas.toBlob(resolve, mimeType, quality));
-    
+    // Pick an encoder the canvas can actually honour.
+    //
+    // toBlob silently falls back to image/png for any type the browser cannot
+    // encode, and browsers encode only PNG, JPEG and WebP. Passing the
+    // original's MIME straight through meant a file Drive typed image/tiff,
+    // image/heic or application/octet-stream was uploaded as PNG bytes under
+    // the original's name AND the original's declared MIME — extension,
+    // declared type and actual bytes all disagreeing.
+    const { mime: encodeMime, ext: encodeExt } = chooseEncoding(currentFile.mimeType, currentFile.name);
+    const quality = encodeMime === "image/jpeg" ? 0.92 : undefined;
+
+    const blob = await new Promise(resolve => croppedCanvas.toBlob(resolve, encodeMime, quality));
+    if (!blob) throw new Error("The browser could not encode the cropped image");
+
+    // Trust the blob, not what we asked for: if the browser fell back anyway,
+    // name and declare what we actually got.
+    const actualMime = blob.type || encodeMime;
+    const actualExt = actualMime === "image/png" ? ".png"
+                    : actualMime === "image/webp" ? ".webp"
+                    : actualMime === "image/jpeg" ? ".jpg"
+                    : encodeExt;
+
     const parentId = currentFile.parents?.[0];
     if (!parentId) throw new Error("Cannot determine parent folder");
-    
+
+    // Save alongside the original rather than shadowing it. The crop is a
+    // canvas re-encode: EXIF, ICC profile, GPS, capture date and orientation
+    // are all gone. Writing it under the original's exact name and then
+    // trashing the original made that loss silent and unrecoverable.
+    const newName = croppedFileName(currentFile.name, actualExt);
+
     showToast("Uploading cropped image...", "info", 2000);
-    const uploadedFile = await uploadFile(blob, currentFile.name, parentId, mimeType);
-    
+    const uploadedFile = await uploadFile(blob, newName, parentId, actualMime);
+
     if (!uploadedFile || !uploadedFile.id) throw new Error("Upload failed");
     
+    // Trashing the original is now the user's call, and it is stated plainly
+    // what the crop did and did not keep. This used to happen automatically,
+    // with no warning that the replacement had lost every piece of metadata.
+    const alsoTrash = confirm(
+      `Saved the crop as "${newName}".\n\n` +
+      `Move the original "${currentFile.name}" to Google Drive Trash?\n\n` +
+      `Note: the crop is a re-encode, so EXIF, colour profile, GPS and capture ` +
+      `date are NOT carried over. Keep the original if you need them.`
+    );
+
+    if (!alsoTrash) {
+      showToast(`Saved "${newName}". Original kept.`, "success", 4000);
+      window.dispatchEvent(new CustomEvent("ddd:fileReplaced", { detail: { oldId: currentFile.id, newFile: uploadedFile } }));
+      resetAfterCrop();
+      return;
+    }
+
     showToast("Moving original to trash...", "info", 1500);
     const trashResult = await batchTrash([currentFile.id]);
     
@@ -900,15 +981,8 @@ async function performCrop() {
     window.dispatchEvent(new CustomEvent("ddd:trashed", { detail: { ids: [currentFile.id] } }));
     
     showToast("Image cropped and saved!", "success");
-    
-    // Reset for next image
-    rotation = 0;
-    zoomLevel = 1;
-    updateZoomButtons();
-    selection = null;
-    
-    // Navigate to next image
-    refreshGroups();
+
+    resetAfterCrop();
     
     if (currentGroup.length > 1) {
       currentGroup = currentGroup.filter(f => f.id !== currentFile.id);
