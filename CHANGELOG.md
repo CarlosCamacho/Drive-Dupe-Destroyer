@@ -8,6 +8,35 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 > The detailed, original per-version notes are archived in
 > [`docs/changelog/`](docs/changelog/). This file is the consolidated summary.
 
+## [14.1.1] - 2026-09-13
+
+Completes 14.1. Three authentication issues were listed as fixed in the 14.1
+pull request but were not actually addressed; this release fixes them.
+
+### Fixed
+
+- **Concurrent token requests no longer hang.** `tokenClient.callback` is a
+  single mutable slot, and every caller overwrote it before calling
+  `requestAccessToken`. Google fires only the last-installed callback, so when
+  the token went stale mid-scan the other in-flight requests — up to sixteen,
+  given the hashing and path-building concurrency — waited out their timeouts
+  and failed. All callers now share one in-flight request.
+- **Cancelling sign-in no longer deletes the stored Client ID.** Any failure
+  used to clear it, so closing the Google popup once meant fetching the ID from
+  Cloud Console again. Only errors that indicate the ID itself is wrong clear
+  it now.
+- **Token expiry comes from Google's `expires_in`** instead of a hardcoded 55
+  minutes, so a shorter-lived token is no longer treated as valid until a
+  request fails. The staleness buffer also scales down for short tokens; the
+  old flat five-minute subtraction went negative below that, marking a live
+  token already expired.
+- A 401 now invalidates only the token the failing request actually carried.
+  Clearing it unconditionally discarded a fresh token a parallel request had
+  just obtained, sending every other in-flight request through a needless
+  refresh.
+- `signOut` clears the current Client ID and any in-flight token request, which
+  were both left behind.
+
 ## [14.1] - 2026-09-13
 
 Correctness and efficiency release. Every open issue filed against 14.0 is

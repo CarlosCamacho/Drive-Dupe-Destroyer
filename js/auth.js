@@ -212,102 +212,148 @@ function startKeepalive() {
   }
 }
 
-async function silentRefreshToken() {
-  if (!tokenClient) throw new Error("No token client");
-  
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error("Silent refresh timeout"));
-    }, 10000);
-    
-    tokenClient.callback = (resp) => {
-      clearTimeout(timeout);
-      if (resp?.access_token) {
-        accessToken = resp.access_token;
-        tokenExpiresAt = Date.now() + 55 * 60 * 1000;
-        resolve();
-      } else {
-        reject(new Error(resp?.error || "Silent refresh failed"));
-      }
-    };
-    
-    tokenClient.requestAccessToken({ prompt: '' });
-  });
+// GIS errors that mean "the user or the browser declined this attempt", as
+// opposed to "your Client ID is wrong". The distinction matters because the
+// stored Client ID used to be deleted on ANY failure: closing the popup once
+// meant re-fetching it from Google Cloud Console, the most tedious step in the
+// whole setup.
+const RECOVERABLE_AUTH_ERRORS = new Set([
+  "popup_closed_by_user",
+  "popup_failed_to_open",
+  "access_denied",
+  "user_cancel",
+  "immediate_failed",
+  "interaction_required",
+  "consent_required",
+  "login_required",
+]);
+
+/** Seconds the token is good for, from GIS if it says, with a safety floor. */
+function expiryFromResponse(resp) {
+  // expires_in is what GIS actually returns. This was hardcoded to 55 minutes,
+  // so a shorter-lived token left isSignedIn() and the ensureValidToken fast
+  // path both believing a dead token was fine; only the 401 retry caught it,
+  // one wasted round-trip per request.
+  const seconds = Number(resp?.expires_in);
+  const usable = Number.isFinite(seconds) && seconds > 0 ? seconds : 3600;
+  // Refresh a little early, but never compute a negative lifetime for a
+  // short-lived token.
+  const buffer = Math.min(300, Math.floor(usable * 0.1));
+  return Date.now() + (usable - buffer) * 1000;
 }
 
-export async function ensureToken({ forcePrompt = false } = {}) {
-  console.log("ensureToken called, forcePrompt:", forcePrompt);
-  
-  // Check if token is still valid (with 5-minute buffer)
-  if (accessToken && tokenExpiresAt > Date.now() + 5 * 60 * 1000) {
-    console.log("Using existing valid token");
-    return accessToken;
-  }
+// ---------------------------------------------------------------------------
+// Single-flight token acquisition
+// ---------------------------------------------------------------------------
+//
+// tokenClient.callback is a single mutable slot, and both ensureToken and
+// silentRefreshToken assigned to it before calling requestAccessToken. Hashing
+// runs at HASH_CONCURRENCY (6) and path building at PATH_CONCURRENCY (10), so
+// when the token went stale mid-scan up to 16 in-flight requests could each
+// install their own callback. GIS fires only the last one; every earlier caller
+// waited out its timeout and then rejected. This funnels all of them onto one
+// in-flight promise.
+let _tokenRequest = null;
 
-  // Wait for GIS to load
-  console.log("Waiting for GIS...");
-  await waitForGis();
-  console.log("GIS ready");
-  
-  if (!tokenClient) {
-    console.log("No token client, need to initialize");
-    let clientId = await getStoredClientId();
-    console.log("Stored client ID:", clientId ? "found" : "not found");
-    
-    if (!clientId) {
-      clientId = await showClientIdModal();
-      if (!clientId) throw new Error("Sign-in cancelled.");
-    }
-    
-    initTokenClient(clientId);
-  }
+function requestTokenOnce(options, { timeoutMs = CONFIG.AUTH_TIMEOUT_MS } = {}) {
+  if (_tokenRequest) return _tokenRequest;
+  if (!tokenClient) return Promise.reject(new Error("No token client"));
 
-  console.log("Requesting access token...");
-  
-  await new Promise((resolve, reject) => {
-    let done = false;
-    
+  _tokenRequest = new Promise((resolve, reject) => {
+    let settled = false;
+
     const timer = setTimeout(() => {
-      if (done) return;
-      done = true;
-      console.error("Token request timed out");
-      reject(new Error(
-        "Sign-in timed out. If you see a Google popup, complete the sign-in there. " +
-        "If not, check if popups are blocked."
-      ));
-    }, CONFIG.AUTH_TIMEOUT_MS);
+      if (settled) return;
+      settled = true;
+      reject(Object.assign(new Error("Sign-in timed out."), { code: "AUTH_TIMEOUT" }));
+    }, timeoutMs);
 
-    tokenClient.callback = async (resp) => {
-      console.log("[Auth] Token callback received:", resp?.access_token ? "granted" : "denied");
-      
-      if (done) return;
-      done = true;
+    tokenClient.callback = (resp) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
 
       if (resp?.access_token) {
         accessToken = resp.access_token;
-        tokenExpiresAt = Date.now() + 55 * 60 * 1000;
-        await storeClientId(currentClientId);
-        startKeepalive();
-        resolve();
+        tokenExpiresAt = expiryFromResponse(resp);
+        resolve(resp);
       } else {
-        const err = resp?.error ? ` (${resp.error})` : "";
-        await clearStoredClientId();
-        reject(new Error("Failed to obtain access token" + err));
+        const err = resp?.error || "unknown_error";
+        reject(Object.assign(new Error(`Failed to obtain access token (${err})`), {
+          code: "AUTH",
+          authError: err,
+          recoverable: RECOVERABLE_AUTH_ERRORS.has(err),
+        }));
       }
     };
 
-    console.log("Calling requestAccessToken with prompt:", forcePrompt ? "consent" : "default");
-    
-    if (forcePrompt) {
-      tokenClient.requestAccessToken({ prompt: "consent" });
-    } else {
-      tokenClient.requestAccessToken({});
+    try {
+      tokenClient.requestAccessToken(options);
+    } catch (e) {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(e);
+      }
     }
+  }).finally(() => {
+    _tokenRequest = null;
   });
 
-  console.log("Token obtained successfully");
-  return accessToken;
+  return _tokenRequest;
+}
+
+async function silentRefreshToken() {
+  if (!tokenClient) throw new Error("No token client");
+  // prompt:'' asks GIS to complete without showing consent. It can still need to
+  // open a popup, which the browser blocks when there is no user activation --
+  // so this is best-effort and its failure must never be fatal.
+  await requestTokenOnce({ prompt: "" }, { timeoutMs: 10000 });
+}
+
+export async function ensureToken({ forcePrompt = false } = {}) {
+  // Check if token is still valid (with 5-minute buffer)
+  if (accessToken && tokenExpiresAt > Date.now() + 5 * 60 * 1000) {
+    return accessToken;
+  }
+
+  await waitForGis();
+
+  if (!tokenClient) {
+    let clientId = await getStoredClientId();
+    if (!clientId) {
+      clientId = await showClientIdModal();
+      if (!clientId) throw Object.assign(new Error("Sign-in cancelled."), { code: "AUTH", recoverable: true });
+    }
+    initTokenClient(clientId);
+  }
+
+  try {
+    // Single-flight: parallel callers share this one request rather than each
+    // overwriting tokenClient.callback and then timing out.
+    await requestTokenOnce(forcePrompt ? { prompt: "consent" } : {});
+    await storeClientId(currentClientId);
+    startKeepalive();
+    return accessToken;
+  } catch (e) {
+    // Only discard the stored Client ID when the ID itself is the problem.
+    // Previously ANY failure cleared it, so closing the popup or declining
+    // consent once forced the user back to Google Cloud Console to re-copy it.
+    if (e?.code === "AUTH" && !e.recoverable) {
+      console.warn(`[Auth] Clearing stored Client ID after unrecoverable error: ${e.authError}`);
+      await clearStoredClientId();
+      tokenClient = null;
+      currentClientId = null;
+    }
+
+    if (e?.code === "AUTH_TIMEOUT") {
+      throw new Error(
+        "Sign-in timed out. If you see a Google popup, complete the sign-in there. " +
+        "If not, check whether popups are blocked."
+      );
+    }
+    throw e;
+  }
 }
 
 export async function ensureValidToken() {
@@ -336,36 +382,46 @@ export async function authedFetch(url, { method = "GET", headers = {}, body = nu
   // ordinary TypeError. fetch throws TypeError on a network error, but so does
   // every "x is not a function" bug in the codebase — scan.js used to report
   // both as "Network error. Check your internet connection."
+  // Returns the response AND the token it was sent with, so a 401 can be
+  // attributed to a specific token rather than to whatever happens to be in the
+  // module variable by the time the response comes back.
   const doFetch = async () => {
+    const sentWith = accessToken;
     try {
-      return await fetch(url, {
+      const response = await fetch(url, {
         method,
-        headers: { ...headers, Authorization: "Bearer " + accessToken },
+        headers: { ...headers, Authorization: "Bearer " + sentWith },
         body,
         signal
       });
+      return { response, sentWith };
     } catch (e) {
       if (e?.name === "AbortError") throw e;
       throw Object.assign(new Error("Network request failed: " + (e?.message || e)), { code: "NETWORK" });
     }
   };
 
-  let res = await doFetch();
-  
+  let { response: res, sentWith } = await doFetch();
+
   if (res.status === 401) {
-    console.warn("Got 401, attempting token refresh...");
-    accessToken = null;
-    tokenExpiresAt = 0;
-    
+    // Invalidate only the token that actually failed. Clearing accessToken
+    // unconditionally threw away a fresh token that a parallel request had just
+    // obtained, sending every other in-flight request back through a refresh it
+    // did not need.
+    if (accessToken === sentWith) {
+      accessToken = null;
+      tokenExpiresAt = 0;
+    }
+
     try {
       await ensureValidToken();
-      res = await doFetch();
+      ({ response: res } = await doFetch());
     } catch (e) {
       showToast("Session expired. Please sign in again.", "error");
       throw e;
     }
   }
-  
+
   return res;
 }
 
@@ -394,11 +450,13 @@ export async function signOut() {
   }
   
   clearAllTimers();
-  
+
   accessToken = null;
   tokenClient = null;
   tokenExpiresAt = 0;
-  
+  currentClientId = null;   // was left set, so the UI still showed a signed-in client
+  _tokenRequest = null;     // drop any in-flight request; it belongs to the old session
+
   setSignedInUi(false);
   showToast("Signed out successfully", "info");
 }
