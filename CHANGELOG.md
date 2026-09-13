@@ -30,6 +30,20 @@ Two regressions introduced by 14.1 itself, found in a review of that release.
   order of two lines. Walked folders are now tracked separately from the
   skip-list.
 
+### Corrected
+
+- **The 14.1 claim that `COOP: same-origin` broke Google sign-in was wrong.**
+  It was asserted from Google's documentation and never observed. Tested
+  directly by restoring the old header: sign-in works. The related claim that
+  `COEP: require-corp` blocked Drive thumbnails was likewise never tested and
+  should be treated as an open question.
+
+  The headers stay as they are — `same-origin-allow-popups` is documented for
+  the popup flow and strictly more permissive, and not sending COEP only
+  removes a restriction — but the source comments, the startup banner
+  ("incompatible with Google sign-in") and this changelog no longer present
+  either claim as established fact.
+
 ### Internal
 
 - The backoff decision moved into `common.js` as `isBackpressureError`, so its
@@ -95,14 +109,15 @@ downloads and retains every image at full resolution.
 
 ### Fixed — the app running at all
 
-- **`serve_secure.py` broke Google sign-in.** `COOP: same-origin` severs
-  `window.opener`, which is how the OAuth popup returns the token, so sign-in
-  hung until it timed out — on the documented way to run the app. It now sends
-  `same-origin-allow-popups`.
-- **`COEP: require-corp` blocked every Drive thumbnail**, so the results table
-  showed placeholders and the thumbnail fast-path failed on every file. No
-  longer sent. Both headers existed only to enable SharedArrayBuffer, which
-  cannot coexist with the sign-in popup; the postMessage fallback is used.
+- **Browser isolation headers changed** in `serve_secure.py`: COOP is now
+  `same-origin-allow-popups` (the value Google documents for the sign-in popup
+  flow) and COEP is no longer sent.
+  > **Corrected in 14.1.2.** This entry originally said the old headers *broke*
+  > sign-in and *blocked* Drive thumbnails. The sign-in claim was tested
+  > afterwards and is false — sign-in works under `COOP: same-origin`. The
+  > thumbnail claim was never tested. Both came from documentation rather than
+  > observation. The change is still fine (it only relaxes restrictions) but it
+  > fixed no observed defect.
 - **Batch trash actually batches.** The parser never matched Google's
   angle-bracketed `Content-ID`, so every chunk fell back to 100 individual
   requests.
