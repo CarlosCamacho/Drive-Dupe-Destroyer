@@ -8,6 +8,28 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 > The detailed, original per-version notes are archived in
 > [`docs/changelog/`](docs/changelog/). This file is the consolidated summary.
 
+## [14.2.0] - 2026-09-13
+
+### Fixed
+
+- **Transparent images never matched their flattened copies.** Hashes were
+  computed on a transparent canvas, and transparent pixels read back as black —
+  so a PNG with a transparent background hashed as though it were on black,
+  while the same picture saved as JPEG hashed as white. Measured on an identical
+  drawing rendered both ways, the two were 22 apart out of 144; the loosest
+  sensitivity setting only accepts 20, so **the pair could not match at any
+  setting**.
+
+  This is one of the most common ways a real duplicate arises: JPEG has no
+  transparency, so every PNG→JPEG export produces exactly this pair. Images are
+  now composited onto white before hashing, which is the conventional base for
+  perceptual hashing. The same pair now measures 0, while two images that
+  genuinely differ in background still measure 22 — background information is
+  normalised, not discarded.
+
+  Minor version bump because this changes which files are reported as
+  duplicates. Cached hashes are recomputed automatically on the next scan.
+
 ## [14.1.4] - 2026-09-13
 
 ### Fixed
