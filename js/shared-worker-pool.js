@@ -19,10 +19,13 @@
 // ============================================================================
 
 /**
- * Check if SharedArrayBuffer is available
- * Requires specific security headers:
- * - Cross-Origin-Opener-Policy: same-origin
- * - Cross-Origin-Embedder-Policy: require-corp
+ * Check if SharedArrayBuffer is available.
+ *
+ * It requires cross-origin isolation (COOP: same-origin + COEP: require-corp),
+ * which this app deliberately does not enable — see getSecurityHeadersStatus()
+ * below for why. Expect this to return false; the postMessage path is the
+ * supported route and the detection exists so a future isolated context (e.g. a
+ * dedicated hashing document) would light up automatically.
  */
 function isSharedArrayBufferAvailable() {
   try {
@@ -633,35 +636,33 @@ export function terminateSharedWorkerPool() {
 // ============================================================================
 
 /**
- * Check if the required security headers are set
- * Returns guidance on how to enable SharedArrayBuffer
+ * Report whether SharedArrayBuffer is in use.
+ *
+ * This used to hand back instructions telling the operator to set
+ * COOP: same-origin + COEP: require-corp. Do not do that. Those headers make
+ * the document cross-origin isolated, which:
+ *
+ *   1. Breaks Google sign-in. GIS returns the OAuth token from a popup to its
+ *      opener; COOP "same-origin" severs window.opener, so the token never
+ *      arrives and sign-in hangs until it times out.
+ *   2. Blocks every Drive thumbnail. COEP "require-corp" requires a
+ *      Cross-Origin-Resource-Policy header that lh3.googleusercontent.com does
+ *      not send, so the results table renders placeholders and the thumbnail
+ *      fast-path in downloadFileBlob falls back to a full-resolution download
+ *      for every single file.
+ *
+ * SAB and the GIS popup cannot coexist on one document, and the postMessage
+ * path below is a correct fallback, so SAB is simply not available here.
+ * serve_secure.py sends COOP: same-origin-allow-popups and no COEP.
  */
 export function getSecurityHeadersStatus() {
-  const headersNeeded = `
-To enable SharedArrayBuffer for maximum performance, add these headers to your server:
-
-Apache (.htaccess):
-  Header set Cross-Origin-Opener-Policy "same-origin"
-  Header set Cross-Origin-Embedder-Policy "require-corp"
-
-Nginx:
-  add_header Cross-Origin-Opener-Policy same-origin;
-  add_header Cross-Origin-Embedder-Policy require-corp;
-
-Node.js/Express:
-  app.use((req, res, next) => {
-    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
-    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
-    next();
-  });
-
-Note: These headers may break some third-party embeds (iframes, images from other domains).
-`;
-
   return {
     sabAvailable: SAB_AVAILABLE,
     atomicsAvailable: ATOMICS_AVAILABLE,
     usingSharedMemory: USE_SHARED_MEMORY,
-    guidance: !USE_SHARED_MEMORY ? headersNeeded : 'SharedArrayBuffer is enabled!'
+    guidance: USE_SHARED_MEMORY
+      ? 'SharedArrayBuffer is enabled.'
+      : 'Using postMessage transfers. SharedArrayBuffer needs cross-origin isolation, ' +
+        'which is incompatible with the Google sign-in popup — this is expected, not a misconfiguration.'
   };
 }

@@ -49,9 +49,31 @@ def app_version(default="unknown"):
 
 class SecureHandler(SimpleHTTPRequestHandler):
     def end_headers(self):
-        # COOP + COEP: required for SharedArrayBuffer
-        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
-        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
+        # Cross-Origin-Opener-Policy: same-origin-allow-popups, NOT same-origin.
+        #
+        # Google Identity Services delivers the OAuth token from a popup window
+        # back to its opener. COOP "same-origin" puts that popup in a different
+        # browsing context group, severing window.opener, so the token never
+        # arrives and sign-in hangs until ensureToken's 60s timeout fires.
+        # Google documents "same-origin-allow-popups" as the required value for
+        # the popup flow.
+        #
+        # This means SharedArrayBuffer is NOT available: SAB requires
+        # crossOriginIsolated, which requires COOP to be exactly "same-origin"
+        # plus COEP "require-corp". Those two requirements are mutually
+        # exclusive with the GIS popup on the same document -- you cannot have
+        # both. Sign-in wins; it is the app's front door.
+        #
+        # Cross-Origin-Embedder-Policy is deliberately NOT sent. It only existed
+        # to enable SAB, and require-corp additionally blocked every Drive
+        # thumbnail: lh3.googleusercontent.com sends no Cross-Origin-Resource-
+        # Policy header, so the results table showed placeholders instead of
+        # images and downloadFileBlob's thumbnail fast-path failed every time,
+        # forcing a full-resolution download per file.
+        #
+        # shared-worker-pool.js already detects SAB at runtime and falls back to
+        # postMessage transfers, so nothing breaks by its absence.
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin-allow-popups")
         # Standard security headers
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -91,8 +113,8 @@ if __name__ == "__main__":
     print(f"\n  Drive Dupe Destroyer v{version}")
     print(f"  ─────────────────────────────────────────")
     print(f"  Serving at:          http://localhost:{PORT}")
-    print(f"  Security headers:    ✓ COOP/COEP/CSP")
-    print(f"  SharedArrayBuffer:   ✓ Enabled")
+    print(f"  Security headers:    ✓ COOP (allow-popups) + CSP")
+    print(f"  SharedArrayBuffer:   — disabled (incompatible with Google sign-in)")
     print(f"")
     print(f"  ⚠  ISOLATION NOTE:")
     print(f"  If Drive Dupe Decimator also runs on port 8080,")
