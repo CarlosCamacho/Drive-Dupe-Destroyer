@@ -5,7 +5,7 @@
 ### A browser-based Google Drive duplicate image finder with safe review, side-by-side comparison, export, and undo support.
 
 <p>
-  <img alt="Version" src="https://img.shields.io/badge/version-14.0-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-14.1-blue">
   <img alt="App Type" src="https://img.shields.io/badge/app-static%20web%20app-brightgreen">
   <img alt="Google Drive" src="https://img.shields.io/badge/API-Google%20Drive-orange">
   <img alt="Privacy" src="https://img.shields.io/badge/privacy-browser%20local-lightgrey">
@@ -152,6 +152,21 @@ Paste your Google OAuth Client ID when prompted. The Client ID normally ends wit
 ### 5. Select folders and scan
 
 Choose one or more Google Drive folders, set your scan options (optionally narrow the formats in the **Image Types** panel), then click **Start Scan**.
+
+---
+
+## Running the Tests
+
+The app itself ships no dependencies. The test suite uses Node's built-in
+runner, so it needs no install step:
+
+```bash
+npm test
+```
+
+It covers the pure functions — keep-file selection, format gating, Hamming
+distance, the batch-response parser — which is where a mistake means the wrong
+file is offered for deletion. CI runs it on every push.
 
 ---
 
@@ -368,8 +383,10 @@ drive-dupe-destroyer/
 ├── README.md                   # This file
 ├── CHANGELOG.md                # Consolidated changelog (newest first)
 ├── LICENSE                     # PolyForm Noncommercial 1.0.0
+├── package.json                # Test harness only — the app ships no dependencies
 ├── .gitignore
-├── js/                         # Application modules (32 files)
+├── test/                       # node:test suite for the pure functions (`npm test`)
+├── js/                         # Application modules
 │   ├── app.js                  # Main application wiring
 │   ├── auth.js                 # Google OAuth flow
 │   ├── drive.js                # Google Drive API calls

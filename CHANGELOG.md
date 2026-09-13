@@ -8,6 +8,51 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 > The detailed, original per-version notes are archived in
 > [`docs/changelog/`](docs/changelog/). This file is the consolidated summary.
 
+## [14.1] - 2026-09-13
+
+Maintenance release: correctness fixes in the logic that decides what gets
+deleted, the first automated tests, and an About dialog.
+
+### Fixed
+- **Undo now records every delete.** It previously recorded none: `compare.js`
+  imported `pushUndoDelete` and never called it, and the results-table, bulk
+  and crop delete paths called `batchTrash` directly. The Undo button was
+  therefore always disabled. The stack now holds *operations* rather than
+  individual files (one click restores a whole bulk delete) and is persisted to
+  IndexedDB, so a refresh no longer discards it.
+- **Keep-file selection.** The "highest resolution" rule compared a pixel count
+  against a byte count whenever Drive omitted image dimensions, so a large file
+  with no metadata could beat a genuine higher-resolution original. The folder
+  priority rule matched patterns against Drive folder IDs and file names rather
+  than folder paths, and ran before paths were resolved, so it silently did
+  nothing. Ties now break deterministically instead of depending on scan order.
+- **Non-image files are no longer downloaded.** Files Drive typed as
+  `application/octet-stream` passed the format filter on the MIME type alone,
+  so archives and installers were downloaded in full before failing to decode.
+  An ambiguous MIME type now requires a recognised extension.
+- **Batch trash actually batches.** The parser for Google's batch response
+  never matched its angle-bracketed `Content-ID` header, so every chunk fell
+  back to 100 individual requests.
+- **Consistent keep rule.** The scan and render pipelines defaulted to
+  different rules and could nominate different files to keep.
+- `bytesToHuman(0)` returns `0 B` rather than an em dash, so an empty file is
+  distinguishable from one of unknown size.
+
+### Added
+- **About dialog**, reachable from a new button beside Donate. Shows the
+  version, copyright, repository link, donation prompt and a bug-report link.
+- **Test suite** (`npm test`, no dependencies) covering the pure functions, and
+  a CI workflow that runs it on every push.
+- **Deletion confirmation** on the per-row trash button, matching the KEEP row.
+- `.gitignore`, which the README's Project Structure had always listed.
+
+### Changed
+- The header subtitle is now just "Google Drive Similar Image Finder"; the
+  copyright moved into the About dialog.
+- The version lives in one constant (`APP_VERSION` in `js/util.js`) instead of
+  ~56 hardcoded strings. The service worker cache name derives from it, so
+  bumping the version now invalidates stale caches as a side effect.
+
 ## [14.0] - 2026-06-07
 
 ### Added
