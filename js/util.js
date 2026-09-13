@@ -21,7 +21,7 @@
 // sw.js cannot import ES modules, so it carries its own SW_VERSION literal;
 // app.js compares the two at boot and warns on a mismatch (a stale cache).
 // serve_secure.py parses this line at startup, so keep the format as-is.
-export const APP_VERSION = "14.1.1";
+export const APP_VERSION = "14.1.2";
 
 // Configuration constants
 export const CONFIG = {

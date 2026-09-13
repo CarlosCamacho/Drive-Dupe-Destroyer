@@ -131,6 +131,34 @@ export function canBrowserDecode(file) {
   return !UNDECODABLE_EXTENSIONS.has(getFileExtension(file?.name));
 }
 
+/**
+ * Should a failed request make us reduce global concurrency?
+ *
+ * Only for failures that mean the SERVER is under pressure from us. This
+ * matters because AIMDController.onError halves concurrency unconditionally —
+ * its isThrottle argument only changes the log line — so calling it on every
+ * per-file failure dragged a whole scan down to concurrency 1 the moment a Drive
+ * contained a few undecodable or corrupt images, with five consecutive
+ * successes needed to climb back by one step. A file the browser cannot decode
+ * says nothing about how hard we are hitting Drive.
+ */
+export function isBackpressureError(e) {
+  const status = e?.status;
+  const msg = e?.message || "";
+  const throttled = status === 429 || /\b429\b|rate limit|too many requests/i.test(msg);
+  const overloaded =
+    (status >= 500 && status < 600) ||
+    e?.code === "NETWORK" ||
+    /timeout|timed out/i.test(msg);
+  return throttled || overloaded;
+}
+
+/** True only for rate limiting specifically, for stats and log wording. */
+export function isThrottleError(e) {
+  const msg = e?.message || "";
+  return e?.status === 429 || /\b429\b|rate limit|too many requests/i.test(msg);
+}
+
 export function getFileExtension(name) {
   if (!name || typeof name !== 'string') return '';
   const clean = name.toLowerCase().split(/[?#]/)[0];

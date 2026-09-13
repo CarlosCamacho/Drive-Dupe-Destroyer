@@ -5,7 +5,7 @@
 ### A browser-based Google Drive duplicate image finder with safe review, side-by-side comparison, export, and undo support.
 
 <p>
-  <img alt="Version" src="https://img.shields.io/badge/version-14.1.1-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-14.1.2-blue">
   <img alt="App Type" src="https://img.shields.io/badge/app-static%20web%20app-brightgreen">
   <img alt="Google Drive" src="https://img.shields.io/badge/API-Google%20Drive-orange">
   <img alt="Privacy" src="https://img.shields.io/badge/privacy-browser%20local-lightgrey">

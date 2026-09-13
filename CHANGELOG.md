@@ -8,6 +8,33 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 > The detailed, original per-version notes are archived in
 > [`docs/changelog/`](docs/changelog/). This file is the consolidated summary.
 
+## [14.1.2] - 2026-09-13
+
+Two regressions introduced by 14.1 itself, found in a review of that release.
+
+### Fixed
+
+- **A few unreadable images no longer collapse scan throughput.** Wiring up the
+  adaptive throttle in 14.1 called it on every per-file failure. The controller
+  halves concurrency unconditionally, so a Drive containing a handful of corrupt
+  or undecodable images dragged the whole scan down to one file at a time — and
+  climbing back needs five consecutive successes per step. Backoff is now
+  limited to signals that actually mean Drive is under pressure: rate limiting,
+  server errors, network failures and timeouts. A file the browser cannot decode
+  says nothing about how hard we are hitting the API.
+- **Delta scan's containment check no longer depends on statement order.** The
+  recursive collector returned its BFS de-duplication set as "folders visited",
+  but that set is seeded with the user's *excluded* folders so the walk skips
+  them — so excluded folders counted as in scope. A separate guard happened to
+  run first and kept files from leaking back in, but the guarantee rested on the
+  order of two lines. Walked folders are now tracked separately from the
+  skip-list.
+
+### Internal
+
+- The backoff decision moved into `common.js` as `isBackpressureError`, so its
+  tests exercise the real function rather than a copy that could drift from it.
+
 ## [14.1.1] - 2026-09-13
 
 Completes 14.1. Three authentication issues were listed as fixed in the 14.1

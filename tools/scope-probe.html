@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<!--
+  Drive Dupe Destroyer (DDD) — tools/scope-probe.html
+
+  Copyright (c) 2026 Carlos Camacho
+  SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
+  DEVELOPER TOOL — not part of the app. Answers one question, empirically:
+
+    With ONLY the non-sensitive `drive.file` scope, does selecting a FOLDER in
+    the Google Picker grant access to the files INSIDE it, and to subfolders
+    below it?
+
+  That single answer decides issue #28. If descendants are reachable, DDD can
+  drop the restricted `auth/drive` scope — removing OAuth verification, the
+  annual CASA assessment, and the bring-your-own-Client-ID setup that is
+  currently the biggest barrier to anyone else using this app. If they are not,
+  the restricted scope is load-bearing and #28 should be closed as won't-fix.
+
+  Why this file exists rather than a documented answer: Google's own docs are
+  the only authoritative source and the secondary write-ups contradict each
+  other — some assert drive.file cannot enumerate a folder at all, others that a
+  picked folder behaves like any other granted item. Rather than pick a side,
+  run the experiment.
+
+  HOW TO RUN
+    1. python3 serve_secure.py
+    2. Open http://localhost:8080/tools/scope-probe.html
+    3. Paste an OAuth Client ID and an API key from the SAME Google Cloud
+       project (Picker needs the API key; see notes at the bottom of the page).
+    4. Pick a folder that contains at least one image AND one subfolder.
+    5. Read the verdict.
+
+  It requests drive.file ONLY. It never writes, never deletes, and never
+  touches the app's stored settings.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DDD — drive.file scope probe</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #12121e; --card: #1b1b2c; --fg: #eaeaea; --muted: #9a9ab0;
+      --line: #2a2a4a; --blue: #4361ee; --ok: #06d6a0; --bad: #ef476f; --warn: #ffc439;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 24px 16px;
+      font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: var(--bg); color: var(--fg);
+    }
+    main { max-width: 760px; margin: 0 auto; }
+    h1 { font-size: 1.35rem; margin: 0 0 4px; }
+    .sub { color: var(--muted); margin: 0 0 20px; }
+    .card {
+      background: var(--card); border: 1px solid var(--line);
+      border-radius: 8px; padding: 16px; margin-bottom: 16px;
+    }
+    label { display: block; font-weight: 600; margin: 10px 0 4px; font-size: .9rem; }
+    input {
+      width: 100%; padding: 9px 10px; border-radius: 5px;
+      border: 1px solid var(--line); background: #0f0f18; color: var(--fg);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85rem;
+    }
+    button {
+      background: var(--blue); color: #fff; border: 0; border-radius: 5px;
+      padding: 10px 18px; font-weight: 600; font-size: .9rem; cursor: pointer;
+      margin-top: 14px;
+    }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    #log {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: .82rem; white-space: pre-wrap; word-break: break-word;
+      margin: 0; max-height: 340px; overflow: auto;
+    }
+    .ok { color: var(--ok); } .bad { color: var(--bad); }
+    .warn { color: var(--warn); } .muted { color: var(--muted); }
+    .verdict { font-size: 1rem; font-weight: 700; padding: 14px; border-radius: 6px; margin-top: 4px; }
+    .verdict.yes { background: rgba(6,214,160,.14); border: 1px solid var(--ok); }
+    .verdict.no  { background: rgba(239,71,111,.14); border: 1px solid var(--bad); }
+    details { margin-top: 18px; }
+    summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
+    details p, details li { color: var(--muted); font-size: .88rem; }
+    code { background: #0f0f18; padding: 1px 5px; border-radius: 3px; font-size: .85em; }
+  </style>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="https://apis.google.com/js/api.js" async defer></script>
+</head>
+<body>
+<main>
+  <h1>drive.file scope probe</h1>
+  <p class="sub">
+    Does picking a <strong>folder</strong> with only the <code>drive.file</code> scope
+    grant access to what is inside it? Decides
+    <a href="https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/28"
+       target="_blank" rel="noopener noreferrer">issue #28</a>.
+  </p>
+
+  <div class="card">
+    <label for="clientId">OAuth Client ID</label>
+    <input id="clientId" placeholder="…apps.googleusercontent.com" autocomplete="off" spellcheck="false">
+
+    <label for="apiKey">API key <span class="muted">(same Cloud project — the Picker requires one)</span></label>
+    <input id="apiKey" placeholder="AIza…" autocomplete="off" spellcheck="false">
+
+    <button id="run" disabled>Loading Google libraries…</button>
+  </div>
+
+  <div class="card">
+    <pre id="log" class="muted">Waiting to start.</pre>
+    <div id="verdict"></div>
+  </div>
+
+  <details>
+    <summary>What this actually tests, and why it is worth running</summary>
+    <p>It requests <strong>only</strong> <code>drive.file</code> — never the restricted
+      <code>auth/drive</code> scope the app currently uses — then opens the Picker in
+      folder-selection mode and runs four checks against the folder you choose:</p>
+    <ol>
+      <li><code>files.get</code> on the folder itself — is the picked item readable at all?</li>
+      <li><code>files.list</code> with <code>'folderId' in parents</code> — are its direct children visible?</li>
+      <li>The same query filtered to images — is that enough to actually scan?</li>
+      <li>The same query one level deeper, into a subfolder — does the grant recurse?</li>
+    </ol>
+    <p>Check 4 is the one that matters most. DDD scans recursively; if the grant stops at
+      the picked folder's immediate children, the restricted scope stays necessary.</p>
+    <p><strong>Getting an API key:</strong> Google Cloud Console → APIs &amp; Services →
+      Credentials → Create credentials → API key. Enable the <em>Google Picker API</em> for
+      the project as well as the Drive API. Restrict the key to
+      <code>http://localhost:8080</code> if you like — it is not a secret in the way a client
+      secret is, but there is no reason to leave it open.</p>
+    <p><strong>Nothing is written.</strong> Read-only calls only; no delete, no upload, and
+      the app's own stored settings are untouched.</p>
+  </details>
+</main>
+
+<script src="./scope-probe.js"></script>
+</body>
+</html>
