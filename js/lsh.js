@@ -34,6 +34,10 @@ const LSH_CONFIGS = {
   }
 };
 
+// The sensitivity keys every LSH_CONFIGS entry defines. Used to validate a mode
+// coming from the UI before it is trusted as an object key.
+const VALID_SENSITIVITIES = new Set(['loose', 'normal', 'strict']);
+
 /**
  * Convert bytes to hex string (cached for performance)
  */
@@ -413,8 +417,23 @@ export function autoTuneLshSensitivity(distStats, hamThresh) {
  * Falls back to standard adaptive index if dataset too small to sample.
  */
 export function buildAutoTunedLshIndex(entriesById, { use12 = true, targetThreshold = 10, forceMode = 'auto' } = {}) {
+  // An explicit mode from the UI must actually be honoured. This used to hand
+  // off to buildAdaptiveLshIndex, which has no sensitivity parameter at all and
+  // derives one from dataset size -- so Loose, Normal and Strict all produced
+  // identical band configurations and the dropdown did nothing. LSH decides
+  // which pairs are compared, so a user picking "Loose (more candidates)"
+  // because they were seeing too few matches got no change whatsoever.
   if (forceMode !== 'auto') {
-    return buildAdaptiveLshIndex(entriesById, { use12, targetThreshold });
+    const sensitivity = VALID_SENSITIVITIES.has(forceMode) ? forceMode : 'normal';
+    if (!VALID_SENSITIVITIES.has(forceMode)) {
+      console.warn(`[LSH] Unknown mode "${forceMode}" — falling back to normal.`);
+    }
+    console.log(`[LSH] Forced ${sensitivity} sensitivity (user selection)`);
+    return {
+      ...buildLshIndex(entriesById, { use12, sensitivity }),
+      autoTuned: false,
+      sensitivity
+    };
   }
 
   const n = entriesById.size;
@@ -430,6 +449,5 @@ export function buildAutoTunedLshIndex(entriesById, { use12 = true, targetThresh
     console.log(`[LSH AutoTune] n=${n} p10=${distStats.p10} p50=${distStats.p50} p90=${distStats.p90} → sensitivity=${sensitivity}`);
   }
 
-  const bitsCount = use12 ? 144 : 64;
   return { ...buildLshIndex(entriesById, { use12, sensitivity }), autoTuned: true, distStats, sensitivity };
 }
