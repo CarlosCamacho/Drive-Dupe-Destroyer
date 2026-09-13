@@ -30,6 +30,11 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 PORT = 8080
 
+# Google script hosts. apis.google.com serves the Picker loader and is a
+# DIFFERENT registrable domain from googleapis.com, so "*.googleapis.com" does
+# not cover it -- the same reason accounts.google.com is listed separately.
+SCRIPT_HOSTS = "https://accounts.google.com https://apis.google.com https://*.googleapis.com"
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -82,7 +87,7 @@ class SecureHandler(SimpleHTTPRequestHandler):
         # CSP
         self.send_header("Content-Security-Policy",
             "default-src 'self'; "
-            "script-src 'self' https://accounts.google.com https://*.googleapis.com; "
+            "script-src 'self' " + SCRIPT_HOSTS + "; "
             "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "
             "font-src 'self' https://cdnjs.cloudflare.com data:; "
             "connect-src 'self' https://www.googleapis.com https://oauth2.googleapis.com "

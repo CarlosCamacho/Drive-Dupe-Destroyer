@@ -138,7 +138,7 @@ export function applyContentSecurityPolicy() {
   const csp = [
     "default-src 'self'",
     // Google GIS script + any scripts it needs
-    "script-src 'self' https://accounts.google.com https://*.googleapis.com",
+    "script-src 'self' https://accounts.google.com https://apis.google.com https://*.googleapis.com",
     // Font Awesome from cdnjs, inline styles for the app
     "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com",
     // Font Awesome web fonts

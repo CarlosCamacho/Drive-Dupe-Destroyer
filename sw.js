@@ -137,7 +137,7 @@ function addSecurityHeaders(response) {
   // Only applied to HTML responses when served via the secure server
   headers.set("Content-Security-Policy",
     "default-src 'self'; " +
-    "script-src 'self' https://accounts.google.com https://*.googleapis.com; " +
+    "script-src 'self' https://accounts.google.com https://apis.google.com https://*.googleapis.com; " +
     "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; " +
     "font-src 'self' https://cdnjs.cloudflare.com data:; " +
     "connect-src 'self' https://www.googleapis.com https://oauth2.googleapis.com https://accounts.google.com https://content.googleapis.com; " +
