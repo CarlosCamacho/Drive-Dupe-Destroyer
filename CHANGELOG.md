@@ -8,6 +8,17 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 > The detailed, original per-version notes are archived in
 > [`docs/changelog/`](docs/changelog/). This file is the consolidated summary.
 
+## [14.1.4] - 2026-09-13
+
+### Fixed
+
+- **The LSH Mode dropdown did nothing.** Loose, Normal and Strict all produced
+  the same internal configuration, so choosing one had no effect on results.
+  This setting controls which image pairs get compared at all, so it is the one
+  the troubleshooting table points at for "too few matches" — and it was inert.
+  Each mode now behaves as labelled, with an unrecognised value falling back to
+  Normal rather than failing.
+
 ## [14.1.3] - 2026-09-13
 
 Two bugs found reviewing modules that earlier releases never looked at.
