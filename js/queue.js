@@ -18,6 +18,7 @@ import { el, escapeHtml, bytesToHuman } from "./util.js";
 import { queueList, queueAdd, queueDel, queueClear } from "./db.js";
 import { batchTrash } from "./drive.js";
 import { setStatus, showSpinner, showToast, lockBodyScroll } from "./ui.js";
+import { pushUndoDeleteBatch } from "./undo.js";
 
 export async function renderQueue() {
   const list = el("queueList");
@@ -78,7 +79,9 @@ export async function addToQueue(file) {
       id: file.id,
       name: file.name || "",
       size: file.size || 0,
-      path: file.path || ""
+      // The app stores the resolved folder path as _path (render.js); plain
+      // `path` was always undefined, so every queued row persisted "".
+      path: file._path || file.path || ""
     });
     await renderQueue();
     showToast(`Added "${file.name}" to queue`, "success", 1500);
@@ -105,7 +108,15 @@ export async function processQueue() {
   try {
     const ids = items.map(i => i.id);
     const result = await batchTrash(ids);
-    
+
+    // Record BEFORE clearing the queue rows -- they are the only place the file
+    // names live at this point. This was the one delete path never wired to the
+    // undo stack, and it is the bulk one: the queue exists to accumulate
+    // deletions across many groups and run them in a single batch, which is
+    // exactly the case undo.js was built for.
+    const trashed = new Set(result.success);
+    pushUndoDeleteBatch(items.filter(i => trashed.has(i.id)));
+
     for (const id of result.success) {
       await queueDel(id);
     }
@@ -114,7 +125,7 @@ export async function processQueue() {
     
     if (result.success.length > 0) {
       window.dispatchEvent(new CustomEvent("ddd:trashed", { detail: { ids: result.success } }));
-      showToast(`Trashed ${result.success.length} file(s)`, "success");
+      showToast(`Trashed ${result.success.length} file(s) — use Undo to restore`, "success");
     }
     
     if (result.failed.length > 0) {
@@ -161,8 +172,12 @@ export function wireQueue() {
     queueModal.addEventListener("click", (e) => {
       if (e.target === queueModal) closeModal();
     });
-    queueModal.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") closeModal();
+    // Listen on document, not the modal. A <div> is not focusable, so it
+    // receives no key events unless the user has tabbed onto a control inside
+    // it -- Escape simply did nothing. The auth and About modals both listen on
+    // document for the same reason.
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && queueModal.style.display === "flex") closeModal();
     });
   }
   
