@@ -11,11 +11,11 @@
  * Full terms: see the LICENSE file, or
  * https://polyformproject.org/licenses/noncommercial/1.0.0/
  */
-// Security: folder IDs validated before API calls
 // Main scanning logic with PROGRESSIVE RESULTS
 // v12.0: MD5 fast-path, AIMD throttle, resume, delta scan, aspect filter, pHash, LSH auto-tune, rejection filter
 
 import { el, nowMs, humanDuration, CONFIG } from "./util.js";
+import { validateFolderId, sanitizeText } from "./security.js";
 import { setStatus, setPhase, setProgress, showSpinner, updateStats, setSearchSummary, showEmptyState, setScanningState, showToast, setHashingErrors, updateEta, resetEta, showCollectingSpinner } from "./ui.js";
 import { driveFetch, fetchChangesSince, getChangesStartToken, isFolderMime } from "./drive.js";
 
@@ -92,9 +92,26 @@ const NON_IMAGE_MIME_QUERIES = Array.from(SUPPORTED_IMAGE_MIMES)
   .map(mt => `mimeType = '${mt}'`)
   .join(' or ');
 
+/**
+ * Escape a Drive folder ID for interpolation into a `q` expression.
+ *
+ * Drive IDs are [-\w] in practice, but the ID reaches here from API responses
+ * and from the folder picker, and a stray quote would silently corrupt the
+ * query rather than fail loudly. validateFolderId was imported by drive.js and
+ * never called, while three files carried a header comment claiming "all
+ * file/folder IDs validated before API calls".
+ */
+function quoteFolderId(folderId) {
+  const id = String(folderId ?? "");
+  if (!validateFolderId(id)) {
+    throw new Error(`Refusing to query with a malformed folder ID: ${sanitizeText(id.slice(0, 64))}`);
+  }
+  return id;
+}
+
 function buildQuery(folderId) {
   const extra = NON_IMAGE_MIME_QUERIES ? ` or ${NON_IMAGE_MIME_QUERIES}` : '';
-  return `'${folderId}' in parents and trashed = false and (mimeType contains 'image/'${extra})`;
+  return `'${quoteFolderId(folderId)}' in parents and trashed = false and (mimeType contains 'image/'${extra})`;
 }
 
 /**
@@ -118,7 +135,7 @@ async function listFolderContents(folderId, pageSize, signal) {
 
     const res = await driveFetch("files", {
       params: {
-        q: `'${folderId}' in parents and trashed = false`,
+        q: `'${quoteFolderId(folderId)}' in parents and trashed = false`,
         fields: FIELDS,
         pageSize: String(pageSize),
         pageToken: token || undefined,
@@ -168,10 +185,15 @@ async function listFolderLevel(folderId, pageSize, signal) {
 // File Collection
 // ============================================================================
 
-async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSize, signal, onStatus }) {
+async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSize, signal, onStatus, resume = null, onCheckpoint = null }) {
+  // Resuming means picking up the BFS frontier where it stopped: the folders
+  // already walked stay walked, and the queue restarts from what was still
+  // pending. Previously the resume state recorded neither, so "Resume" ran a
+  // full rescan from the selected roots.
   const visited = new Set(exclusions);
-  const allFiles = [];
-  const queue = [...folderIds];
+  const allFiles = resume?.files ? [...resume.files] : [];
+  if (resume?.visitedFolderIds) for (const id of resume.visitedFolderIds) visited.add(id);
+  const queue = resume?.pendingFolderIds?.length ? [...resume.pendingFolderIds] : [...folderIds];
   let foldersScanned = 0;
   let totalSubfoldersFound = 0;
   let lastTokenCheck = Date.now();
@@ -214,6 +236,13 @@ async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSi
       for (const sub of subfolders) {
         if (!visited.has(sub.id)) queue.push(sub.id);
       }
+
+      // Checkpoint the frontier, not just a count. Writing this once at the end
+      // of collection (as before) was useless: a crash during the long phase
+      // had nothing to resume from.
+      if (onCheckpoint && foldersScanned % 25 === 0) {
+        onCheckpoint({ files: allFiles, visitedFolderIds: Array.from(visited), pendingFolderIds: [...queue] });
+      }
     } catch (e) {
       if (signal?.aborted || e.message === "Scan stopped.") throw e;
       console.warn(`Error scanning folder ${folderId}:`, e.message);
@@ -222,7 +251,11 @@ async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSi
 
   if (onStatus) onStatus(`Collection complete: ${allFiles.length} images in ${foldersScanned} folders (${totalSubfoldersFound} subfolders traversed)`);
   console.log(`[DDD] Recursive scan: ${foldersScanned} folders scanned, ${totalSubfoldersFound} subfolders discovered, ${allFiles.length} images found`);
-  return allFiles;
+  // `visited` is the set of folders we actually walked. The delta scan needs it
+  // to tell whether a changed file lies inside the user's selection, and the
+  // resume state needs it to describe what was covered -- it previously stored
+  // the parent folders of found files, which is not the same thing.
+  return { files: allFiles, visitedFolderIds: visited };
 }
 
 async function fetchAllImagesFlat({ folderIds, exclusions, maxItems, pageSize, signal, onStatus }) {
@@ -254,7 +287,7 @@ async function fetchAllImagesFlat({ folderIds, exclusions, maxItems, pageSize, s
     }
   }
 
-  return allFiles;
+  return { files: allFiles, visitedFolderIds: new Set(folderIds.filter(id => !excludedSet.has(id))) };
 }
 
 // ============================================================================
@@ -713,7 +746,8 @@ export async function runScan({
   signal, 
   renderCb,           // Final render callback
   onProgressiveMatch, // NEW: Progressive match callback
-  emitGroupsCb 
+  emitGroupsCb,
+  resume = null       // Saved collection frontier from an interrupted scan
 }) {
   const start = nowMs();
   showSpinner(true);
@@ -793,15 +827,37 @@ export async function runScan({
     setStatus("Collecting files from Drive…");
     await ensureValidToken();
     
+    if (resume) {
+      setStatus(`Resuming: ${resume.files?.length || 0} image(s) already collected, ${resume.pendingFolderIds?.length || 0} folder(s) left…`);
+      console.log(`[DDD] Resuming collection from ${resume.pendingFolderIds?.length || 0} pending folder(s)`);
+    }
+
     const fetcher = recursive ? fetchAllImagesRecursive : fetchAllImagesFlat;
-    let allItems = await fetcher({
+    const collected = await fetcher({
       folderIds,
       exclusions,
       maxItems,
       pageSize,
       signal,
-      onStatus: setStatus
+      onStatus: setStatus,
+      resume: recursive ? resume : null,
+      // Checkpoint through the collection phase so an interruption has
+      // something to resume from. Fire-and-forget: a failed write must not
+      // stall the walk.
+      onCheckpoint: (state) => {
+        saveResumeState({
+          folderIds,
+          exclusions: exclusions instanceof Set ? Array.from(exclusions) : (exclusions || []),
+          visitedFolderIds: state.visitedFolderIds,
+          pendingFolderIds: state.pendingFolderIds,
+          files: state.files,
+          totalImagesFound: state.files.length,
+          options: { recursive, maxItems, pageSize, withVariants, withCropDetect, withColorMatch, withPHash, withRotation }
+        }).catch(() => {});
+      }
     });
+    let allItems = collected.files;
+    const visitedFolderIds = collected.visitedFolderIds;
     
     if (signal?.aborted) throw new Error("Scan stopped.");
 
@@ -810,15 +866,18 @@ export async function runScan({
       await saveResumeState({
         folderIds,
         exclusions: exclusions instanceof Set ? Array.from(exclusions) : (exclusions || []),
-        visitedFolderIds: Array.from(allItems.map(f => f.parents?.[0]).filter(Boolean)),
-        hashedFileIds: [],
+        visitedFolderIds: Array.from(visitedFolderIds),
+        pendingFolderIds: [],
+        files: allItems,
         totalImagesFound: allItems.length,
         options: { recursive, maxItems, pageSize, withVariants, withCropDetect, withColorMatch, withPHash, withRotation }
       });
     } catch {}
 
-    // Filter by size and mime type
-    images = allItems.filter(f => {
+    // One predicate, applied everywhere a file can enter the scan set. It used
+    // to be inlined here only, so delta-added files below bypassed the size
+    // limits and the Image Types selection entirely.
+    const passesFilters = (f) => {
       const sz = Number(f.size || 0);
       if (!(isSupportedImageFile(f) && sz >= minBytes && sz <= maxBytes)) return false;
       // v14: honour the user's per-format selection. We match on extension; a
@@ -829,7 +888,9 @@ export async function runScan({
         if (ext && !enabledExts.has(ext)) return false;
       }
       return true;
-    });
+    };
+
+    images = allItems.filter(passesFilters);
 
     setStatus(`Found ${images.length} image(s).`);
     setProgress(10);
@@ -886,15 +947,40 @@ export async function runScan({
           const { files: changed, nextToken } = await fetchChangesSince(savedToken, { signal });
           const removedIds = changed.filter(f => f._removed).map(f => f.id);
           deltaRemovedIds = new Set(removedIds);
-          // Add changed files not already in our list
+          // The Changes API reports changes across the ENTIRE Drive, not just
+          // the selected folders. Without a containment check this pulled in
+          // images from anywhere -- including folders the user had explicitly
+          // excluded -- and presented them as delete candidates.
+          const excludedSet = exclusions instanceof Set ? exclusions : new Set(exclusions || []);
+          const inScope = (f) => {
+            const parent = f.parents?.[0];
+            if (!parent) return false;
+            if (excludedSet.has(parent)) return false;
+            return visitedFolderIds.has(parent);
+          };
+
           const existingIds = new Set(images.map(f => f.id));
+          let added = 0, outOfScope = 0, filteredOut = 0;
+
           for (const cf of changed.filter(f => f._changed)) {
-            if (!existingIds.has(cf.id)) images.push(cf);
+            if (existingIds.has(cf.id)) continue;
+            if (!inScope(cf)) { outOfScope++; continue; }
+            // Same size/format rules as the main collection path.
+            if (!passesFilters(cf)) { filteredOut++; continue; }
+            images.push(cf);
+            added++;
+          }
+
+          if (outOfScope || filteredOut) {
+            console.log(
+              `[DDD] Delta scan: ignored ${outOfScope} change(s) outside the selected folders ` +
+              `and ${filteredOut} that did not pass the size/type filters.`
+            );
           }
           // Remove deleted files
           images = images.filter(f => !deltaRemovedIds.has(f.id));
           if (nextToken) await setChangesToken(nextToken);
-          setStatus(`Delta scan: ${changed.length} changes, ${removedIds.length} removed, ${images.length} images to process`);
+          setStatus(`Delta scan: ${changed.length} change(s), ${added} added, ${removedIds.length} removed, ${images.length} image(s) to process`);
         } else {
           // First run: get start token for future delta scans
           const startToken = await getChangesStartToken({ signal });

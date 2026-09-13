@@ -151,11 +151,16 @@ function wireScanControls() {
       abortCtrl = new AbortController();
       
       try {
+        // Consume the resume offer on the first scan after boot; a later scan in
+        // the same session starts clean.
+        const resume = takePendingResume();
+
         await runScan({
           folderIds,
           folders: getIncludedFolders(), // For scan history tracking
           exclusions: getExclusions(),
           signal: abortCtrl.signal,
+          resume,
           renderCb: async (data) => {
             // Final, authoritative render (includes folder paths + final sort).
             endProgressive();
@@ -416,9 +421,32 @@ function wireUndoButton() {
   loadUndoStack().catch(e => console.warn("[Undo] Load failed:", e?.message || e));
 }
 
+// Collection frontier offered to the next scan, or null. Set by
+// checkResumeState() at boot and consumed exactly once by the scan handler.
+//
+// The comment that used to sit at the bottom of this function claimed "the
+// scan.js layer will detect the state and use it". It did not — nothing read
+// the saved state, so clicking OK ran a full rescan. Worse, the state was only
+// cleared on Cancel, so the prompt reappeared on every load for its full 24h
+// lifetime.
+let pendingResume = null;
+
+export function takePendingResume() {
+  const r = pendingResume;
+  pendingResume = null;
+  return r;
+}
+
 async function checkResumeState() {
   const state = await loadResumeState().catch(() => null);
   if (!state) return;
+
+  // Only worth offering if there is actually work left to skip.
+  if (!state.pendingFolderIds?.length) {
+    await clearResumeState();
+    return;
+  }
+
   const desc = formatResumeDescription(state);
   const confirmed = confirm(
     `Resume previous scan?
@@ -427,10 +455,12 @@ ${desc}
 
 Click OK to resume, Cancel to start fresh.`
   );
-  if (!confirmed) {
+
+  if (confirmed) {
+    pendingResume = state;
+  } else {
     await clearResumeState();
   }
-  // If confirmed, the scan.js layer will detect the state and use it
 }
 
 // Register service worker (non-blocking)

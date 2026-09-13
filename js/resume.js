@@ -19,8 +19,12 @@ import { stateSet, stateGet } from "./db.js";
 const RESUME_KEY = "destroyer_scan_resume_v1";
 
 export async function saveResumeState(state) {
-  // state: { folderIds, exclusions, visitedFolderIds, hashedFileIds, 
-  //          options, savedAt, totalImagesFound }
+  // state: { folderIds, exclusions, visitedFolderIds, pendingFolderIds,
+  //          files, options, savedAt, totalImagesFound }
+  //
+  // pendingFolderIds is the BFS frontier and `files` what has been collected so
+  // far — together they are what makes a resume an actual resume rather than a
+  // rescan. Written periodically during collection, not once at the end.
   await stateSet(RESUME_KEY, {
     ...state,
     savedAt: Date.now()
@@ -45,7 +49,9 @@ export async function clearResumeState() {
 export function formatResumeDescription(state) {
   if (!state) return "";
   const age = Math.round((Date.now() - state.savedAt) / 60000);
-  const ageStr = age < 60 ? `${age}m ago` : `${Math.round(age/60)}h ago`;
+  const ageStr = age < 60 ? `${age}m ago` : `${Math.round(age / 60)}h ago`;
+  const pending = state.pendingFolderIds?.length || 0;
   return `${(state.totalImagesFound || 0).toLocaleString()} images found, ` +
-         `${(state.visitedFolderIds?.length || 0)} folders scanned (${ageStr})`;
+         `${(state.visitedFolderIds?.length || 0)} folders scanned, ` +
+         `${pending} still to go (${ageStr})`;
 }

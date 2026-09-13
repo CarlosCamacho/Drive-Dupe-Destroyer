@@ -11,19 +11,24 @@
  * Full terms: see the LICENSE file, or
  * https://polyformproject.org/licenses/noncommercial/1.0.0/
  */
-// Centralised security policy enforcement for Google OAuth verification.
+// Security policy helpers actually used by the app.
 //
-// Google's verification checklist requires:
-//   1. Minimal scopes — request only what you need
-//   2. Token storage — never in localStorage; use sessionStorage or in-memory
-//   3. State parameter in OAuth flows (CSRF protection)
-//   4. Origin validation on postMessage
-//   5. No eval() / innerHTML with user data
-//   6. Content-Security-Policy headers / meta tag
-//   7. Referrer-Policy
-//   8. Input sanitisation before any DOM insertion
-//   9. Scopes clearly disclosed in Privacy Policy
-//  10. Token revocation on sign-out
+// This file used to carry a checklist of OAuth-verification items with an
+// implementation for each, most of which nothing called: an in-memory token
+// store (auth.js keeps its own), hand-rolled CSRF state (GIS manages its own),
+// a postMessage origin guard (there is no postMessage listener), and a
+// Permissions-Policy <meta> tag (that header is response-header-only; the meta
+// form is inert). They have been removed rather than left to imply protections
+// that were not in effect — serve_secure.py and sw.js send the real headers.
+//
+// What remains and is wired up:
+//   - applyReferrerPolicy()        -> meta referrer, honoured by browsers
+//   - applyContentSecurityPolicy() -> defence-in-depth meta CSP for XSS only;
+//                                     the authoritative CSP is an HTTP header
+//   - stripTokensFromUrl()         -> keeps tokens out of the address bar
+//   - sanitizeText()               -> escaping for anything interpolated
+//   - validateClientId/FolderId()  -> input validation
+//   - isAllowedOrigin()            -> origin allow-list
 
 // ─── Allowed origins ─────────────────────────────────────────────────────────
 const ALLOWED_ORIGINS = new Set([
@@ -46,67 +51,6 @@ export function isAllowedOrigin(origin) {
   } catch { return false; }
 }
 
-// ─── postMessage guard ───────────────────────────────────────────────────────
-export function safeMessageListener(handler) {
-  return function(ev) {
-    if (!isAllowedOrigin(ev.origin)) {
-      console.warn("[Security] Blocked postMessage from untrusted origin:", ev.origin);
-      return;
-    }
-    handler(ev);
-  };
-}
-
-// ─── CSRF state token ────────────────────────────────────────────────────────
-let _csrfState = null;
-
-export function generateCsrfState() {
-  const arr = new Uint8Array(32);
-  crypto.getRandomValues(arr);
-  _csrfState = Array.from(arr).map(b => b.toString(16).padStart(2, "0")).join("");
-  // Store only for the duration of the OAuth flow — never persisted
-  sessionStorage.setItem("destroyer_oauth_csrf_state", _csrfState);
-  return _csrfState;
-}
-
-export function validateCsrfState(returnedState) {
-  const stored = sessionStorage.getItem("destroyer_oauth_csrf_state");
-  sessionStorage.removeItem("destroyer_oauth_csrf_state");
-  if (!stored || !returnedState) return false;
-  // Constant-time comparison to avoid timing attacks
-  if (stored.length !== returnedState.length) return false;
-  let diff = 0;
-  for (let i = 0; i < stored.length; i++) {
-    diff |= stored.charCodeAt(i) ^ returnedState.charCodeAt(i);
-  }
-  return diff === 0;
-}
-
-// ─── Token storage (in-memory only, never localStorage) ──────────────────────
-// Tokens are kept in module-scope variables — they vanish on page close.
-// Client ID is the ONLY thing persisted (to IndexedDB, not localStorage).
-let _accessToken = null;
-let _tokenExpiry = 0;
-
-export function storeToken(token, expiresInSeconds = 3600) {
-  _accessToken = token;
-  _tokenExpiry = Date.now() + (expiresInSeconds - 300) * 1000; // 5-min buffer
-}
-
-export function getToken() {
-  if (_accessToken && Date.now() < _tokenExpiry) return _accessToken;
-  return null;
-}
-
-export function clearToken() {
-  _accessToken = null;
-  _tokenExpiry = 0;
-}
-
-export function isTokenValid() {
-  return _accessToken !== null && Date.now() < _tokenExpiry;
-}
-
 // ─── DOM sanitisation ────────────────────────────────────────────────────────
 // Safe alternative to innerHTML with user-controlled strings.
 export function sanitizeText(str) {
@@ -117,11 +61,6 @@ export function sanitizeText(str) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
-}
-
-// Safe DOM text insertion — never use innerHTML with this output.
-export function setTextContent(el, str) {
-  if (el) el.textContent = String(str ?? "");
 }
 
 // ─── Input validation ────────────────────────────────────────────────────────
@@ -135,19 +74,34 @@ export function validateClientId(clientId) {
   return true;
 }
 
+// Drive accepts these aliases wherever a folder ID is expected. "root" is the
+// one the folder picker uses for My Drive; it is four characters, so a
+// length-based ID check rejects it unless it is allowed explicitly.
+const FOLDER_ID_ALIASES = new Set(["root", "appDataFolder", "sharedWithMe"]);
+
 export function validateFolderId(folderId) {
   if (!folderId || typeof folderId !== "string") return false;
-  // Drive folder IDs are alphanumeric with hyphens and underscores, 25-44 chars
-  return /^[-\w]{10,64}$/.test(folderId.trim());
+  const id = folderId.trim();
+  if (FOLDER_ID_ALIASES.has(id)) return true;
+  // Real Drive folder IDs are alphanumeric with hyphens and underscores,
+  // typically 25-44 characters.
+  return /^[-\w]{10,64}$/.test(id);
 }
 
-// ─── Scope enforcement ───────────────────────────────────────────────────────
-// Minimal scope: read files + move to trash (no full delete, no Docs, no Gmail)
+// ─── Scope ───────────────────────────────────────────────────────────────────
+//
+// This is Google's RESTRICTED drive scope. It grants full read/write access to
+// the user's Drive, including permanent deletion — the previous comment here
+// described it as "read files + move to trash (no full delete)", which is the
+// drive.file scope, not this one.
+//
+// We request it because the app lists arbitrary user-chosen folders, which
+// drive.file cannot do. The cost is real: publishing beyond the 100-user
+// testing cap requires OAuth verification plus an annual CASA security
+// assessment, which is why the app ships no shared client and asks each user
+// for their own Client ID. See the Picker + drive.file issue for the
+// alternative.
 export const REQUIRED_SCOPE = "https://www.googleapis.com/auth/drive";
-export const MINIMAL_SCOPE  = "https://www.googleapis.com/auth/drive.file";
-
-// We use the full drive scope because we need to list arbitrary folders.
-// This is disclosed in the Privacy Policy and OAuth consent screen.
 export const APP_SCOPE = REQUIRED_SCOPE;
 
 // ─── Referrer leak prevention ─────────────────────────────────────────────────
@@ -211,15 +165,6 @@ export function applyContentSecurityPolicy() {
   document.head.prepend(m);
 }
 
-// ─── Permissions-Policy ───────────────────────────────────────────────────────
-export function applyPermissionsPolicy() {
-  if (document.querySelector('meta[http-equiv="Permissions-Policy"]')) return;
-  const m = document.createElement("meta");
-  m.httpEquiv = "Permissions-Policy";
-  m.content = "camera=(), microphone=(), geolocation=(), payment=()";
-  document.head.appendChild(m);
-}
-
 // ─── Token leak guards ────────────────────────────────────────────────────────
 // Ensure tokens never appear in URLs (would be logged by the server)
 export function stripTokensFromUrl() {
@@ -244,7 +189,6 @@ export function stripTokensFromUrl() {
 export function applyAllSecurityPolicies() {
   applyReferrerPolicy();
   applyContentSecurityPolicy();
-  applyPermissionsPolicy();
   stripTokensFromUrl();
   console.log("[Security] All policies applied");
 }

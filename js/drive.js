@@ -11,11 +11,10 @@
  * Full terms: see the LICENSE file, or
  * https://polyformproject.org/licenses/noncommercial/1.0.0/
  */
-// Security: all file/folder IDs validated before API calls
 // Google Drive API operations
 
 import { authedFetch, ensureValidToken } from "./auth.js";
-import { validateFolderId, sanitizeText } from "./security.js";
+import { sanitizeText } from "./security.js";
 import { isSupportedImageFile } from "./common.js";
 
 export function isFolderMime(m) {
@@ -61,8 +60,11 @@ function driveParamsBase() {
 }
 
 export async function driveFetch(path, { method = "GET", params = {}, body = null, signal = null } = {}) {
-  // Security: basic path sanity check - no traversal, no injection
-  if (typeof path !== "string" || path.length > 512 || /[<>"{}|\^`]/.test(path)) {
+  // Path sanity check. Note this is a guard against malformed input reaching
+  // the URL, not a security boundary: the caller already holds the user's own
+  // token and every path here is built from IDs Drive gave us. Rejects the
+  // characters that would break out of the path segment, plus traversal.
+  if (typeof path !== "string" || path.length > 512 || /[<>"{}|\^`?#\s]/.test(path) || path.includes("..")) {
     throw new Error("Invalid API path");
   }
   await ensureValidToken();

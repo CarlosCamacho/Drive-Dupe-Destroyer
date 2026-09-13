@@ -17,7 +17,7 @@
 import { toIso, chunk } from "./util.js";
 
 const DB_NAME = "drive_dupe_destroyer_db_v1";  // Namespaced: distinct from Drive Dupe Decimator
-const DB_VERSION = 1;  // Reset: new namespaced DB starts at version 1
+const DB_VERSION = 2;  // v2: dedicated "rejections" store (was a single settings blob)
 
 let dbp = null;
 let dbReady = false;
@@ -91,6 +91,18 @@ function openDb() {
       if (!db.objectStoreNames.contains("hashLookup")) {
         const hashStore = db.createObjectStore("hashLookup", { keyPath: "hash" });
         hashStore.createIndex("count", "count", { unique: false });
+      }
+
+      // Rejected pairs, one row each.
+      //
+      // These lived in a single settings value, so every rejection serialized
+      // and rewrote the whole collection — up to ~1 MB at the 10,000 cap, on
+      // the hot path of pressing "4" repeatedly in the compare modal. One row
+      // per pair makes a rejection a single small put, and trimming a cursor
+      // delete rather than a rebuild.
+      if (!db.objectStoreNames.contains("rejections")) {
+        const rejStore = db.createObjectStore("rejections", { keyPath: "key" });
+        rejStore.createIndex("ts", "ts", { unique: false });
       }
     };
     
@@ -692,4 +704,74 @@ export async function setChangesToken(token) {
 
 export async function clearChangesToken() {
   await settingDel("destroyer_drive_changes_token");
+}
+
+// ============================================================================
+// Rejected Pairs Store
+// ============================================================================
+
+/** All rejection keys, for the in-memory set rejection.js keeps. */
+export async function rejectionsAll() {
+  const store = await getStore("rejections");
+  const rows = await promisifyRequest(store.getAll());
+  return (rows || []).map(r => r.key);
+}
+
+/** Record one rejected pair. A single small put, not a whole-collection rewrite. */
+export async function rejectionAdd(key) {
+  const store = await getStore("rejections", "readwrite");
+  return promisifyRequest(store.put({ key, ts: Date.now() }));
+}
+
+export async function rejectionCount() {
+  const store = await getStore("rejections");
+  return promisifyRequest(store.count());
+}
+
+export async function rejectionsClear() {
+  const store = await getStore("rejections", "readwrite");
+  return promisifyRequest(store.clear());
+}
+
+/** Drop the oldest entries once the cap is exceeded. */
+export async function rejectionsTrim(maxEntries) {
+  const count = await rejectionCount();
+  const excess = count - maxEntries;
+  if (excess <= 0) return 0;
+
+  const store = await getStore("rejections", "readwrite");
+  const index = store.index("ts");
+  let removed = 0;
+
+  return new Promise((resolve, reject) => {
+    const req = index.openCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor || removed >= excess) return resolve(removed);
+      cursor.delete();
+      removed++;
+      cursor.continue();
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+/**
+ * One-time migration of the old single-blob rejection list into its own store.
+ * Returns the number of entries migrated.
+ */
+export async function migrateRejectionsFromSettings(settingsKey) {
+  const legacy = await settingGet(settingsKey, null).catch(() => null);
+  if (!Array.isArray(legacy) || legacy.length === 0) return 0;
+
+  const db = await openDb();
+  const tx = db.transaction("rejections", "readwrite");
+  const store = tx.objectStore("rejections");
+  const ts = Date.now();
+  for (const key of legacy) store.put({ key, ts });
+  await promisifyTransaction(tx);
+
+  await settingSet(settingsKey, []).catch(() => {});
+  console.log(`[DB] Migrated ${legacy.length} rejected pair(s) into the rejections store`);
+  return legacy.length;
 }
