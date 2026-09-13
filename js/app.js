@@ -164,7 +164,17 @@ function wireScanControls() {
           renderCb: async (data) => {
             // Final, authoritative render (includes folder paths + final sort).
             endProgressive();
-            setExportState({ groups: data.groups, pathMap: data.pathMap, idToEntry: data.idToEntry });
+            // Pass the same options the table rendered with, so the export names
+            // the same keep file and reports the same similarity.
+            setExportState({
+              groups: data.groups,
+              pathMap: data.pathMap,
+              idToEntry: data.idToEntry,
+              keepRule: data.keepRule,
+              folderPriority: data.folderPriority,
+              bitsCount: data.bitsCount,
+              withVariants: data.withVariants
+            });
             await renderGroups(data);
           },
           onProgressiveMatch: (evt) => {

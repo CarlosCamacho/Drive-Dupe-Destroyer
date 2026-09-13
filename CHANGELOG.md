@@ -8,6 +8,30 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 > The detailed, original per-version notes are archived in
 > [`docs/changelog/`](docs/changelog/). This file is the consolidated summary.
 
+## [14.1.3] - 2026-09-13
+
+Two bugs found reviewing modules that earlier releases never looked at.
+
+### Fixed
+
+- **CSV/JSON export marked every file as a duplicate.** It read three properties
+  — `_isKeep`, `_matchDist` and `_matchType` — that nothing in the app ever set.
+  The keep-file lookup returned -1, so *no* row was labelled KEEP, and the
+  similarity column was always empty. Anyone using an export to decide what to
+  delete would have removed the originals along with the copies. The export now
+  derives the keep file and the similarity exactly the way the results table
+  does, so the two cannot disagree. The percentage also honours the configured
+  hash size instead of assuming 12×12, which overstated similarity by roughly
+  2.25× on the 8×8 setting.
+- **The trash queue recorded no undo.** 14.1 claimed undo covered every delete
+  path; it covered four of five. The queue — the bulk path, and the one the undo
+  code was designed around — was missed. Trashing files from it now records an
+  undo entry like everywhere else.
+- **Escape now closes the queue window.** The key handler was attached to the
+  window element itself, which never receives key events, so the key did
+  nothing.
+- The queue stored an always-empty folder path for each file.
+
 ## [14.1.2] - 2026-09-13
 
 Two regressions introduced by 14.1 itself, found in a review of that release.
