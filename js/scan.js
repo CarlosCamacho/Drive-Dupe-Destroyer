@@ -302,6 +302,50 @@ async function fetchAllImagesFlat({ folderIds, exclusions, maxItems, pageSize, s
 // Hash Computation with DB Cache
 // ============================================================================
 
+/**
+ * Whether a cached record is unusable for THIS run and the file must be hashed
+ * again. Every optional hash is computed only when its feature is on, so a
+ * record cached with the feature off is a miss once it is turned on -- that is
+ * what makes enabling crop, colour or pHash matching on an already-scanned
+ * library actually do something (#84).
+ */
+export function cacheRecordNeedsRecompute(rec, { withCropDetect = false, withColorMatch = false, withPHash = false } = {}) {
+  if (!rec?.base12) return true;
+  if (withCropDetect && !rec.cropHashes) return true;
+  if (withColorMatch && (!rec.colorHist || !rec.edgeHist)) return true;
+  if (withPHash && !rec.pHashBits) return true;
+  // Records written before the current hashing scheme are not comparable with
+  // freshly computed ones. Treating them as misses is cheaper than wiping the
+  // whole cache, and it self-heals as files are rescanned.
+  if ((rec.hv || 1) !== HASH_VERSION) return true;
+  return false;
+}
+
+/**
+ * Rebuild a hash entry from a cached record.
+ *
+ * Every optional field the matcher can read must be restored here. pHashBits
+ * was written on every save since the feature shipped and never once read back,
+ * so a cache hit silently downgraded the file to dHash-only (#84).
+ */
+export function entryFromCacheRecord(rec) {
+  return {
+    base8: new Uint8Array(rec.base8),
+    base12: new Uint8Array(rec.base12),
+    variants: (rec.variants || []).map(v => ({
+      base8: new Uint8Array(v.base8),
+      base12: new Uint8Array(v.base12)
+    })),
+    cropHashes: rec.cropHashes ? rec.cropHashes.map(ch => ({
+      name: ch.name,
+      hash: new Uint8Array(ch.hash)
+    })) : null,
+    colorHist: rec.colorHist ? new Uint8Array(rec.colorHist) : null,
+    edgeHist: rec.edgeHist ? new Uint8Array(rec.edgeHist) : null,
+    pHashBits: rec.pHashBits ? new Uint8Array(rec.pHashBits) : null
+  };
+}
+
 async function computeHashesWithDb(images, { 
   useDb = true, 
   withVariants = false,
@@ -326,36 +370,11 @@ async function computeHashesWithDb(images, {
       
       for (const f of images) {
         const rec = dbRecords.get(f.id);
-        if (rec?.base12) {
-          // If crop/color detection was requested but not in cache, need to recompute
-          const needsCrop = withCropDetect && !rec.cropHashes;
-          const needsColor = withColorMatch && (!rec.colorHist || !rec.edgeHist);
-          // Records written before the current hashing scheme are not comparable
-          // with freshly computed ones, so treat them as misses. Cheaper than
-          // wiping the whole cache, and it self-heals as files are rescanned.
-          const staleHash = (rec.hv || 1) !== HASH_VERSION;
-
-          if (needsCrop || needsColor || staleHash) {
-            toCompute.push(f);
-          } else {
-            cacheHits++;
-            idToEntry.set(f.id, {
-              base8: new Uint8Array(rec.base8),
-              base12: new Uint8Array(rec.base12),
-              variants: (rec.variants || []).map(v => ({
-                base8: new Uint8Array(v.base8),
-                base12: new Uint8Array(v.base12)
-              })),
-              cropHashes: rec.cropHashes ? rec.cropHashes.map(ch => ({
-                name: ch.name,
-                hash: new Uint8Array(ch.hash)
-              })) : null,
-              colorHist: rec.colorHist ? new Uint8Array(rec.colorHist) : null,
-              edgeHist: rec.edgeHist ? new Uint8Array(rec.edgeHist) : null
-            });
-          }
-        } else {
+        if (cacheRecordNeedsRecompute(rec, { withCropDetect, withColorMatch, withPHash })) {
           toCompute.push(f);
+        } else {
+          cacheHits++;
+          idToEntry.set(f.id, entryFromCacheRecord(rec));
         }
       }
     } catch (e) {

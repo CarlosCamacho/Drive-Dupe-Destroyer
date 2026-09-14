@@ -8,6 +8,35 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 > The detailed, original per-version notes are archived in
 > [`docs/changelog/`](docs/changelog/). This file is the consolidated summary.
 
+## [14.7.3] - 2026-09-14
+
+### Fixed
+
+- **pHash mode did nothing at all** (#84). The hasher writes `pHashBits` and
+  `bestDistWithPHash` reads `pHashBits`, but the worker payload carried
+  `pHash` — a field nothing set and nothing read. Every entry arrived in the
+  match worker with no pHash, so the `withPHash` branch fell straight through
+  to the plain dHash distance. Since #75 moved matching into a worker, that was
+  the only path a scan took. Measured on a pair 12 dHash bits apart with
+  identical pHash: 1 group before the pack, 0 after it.
+- **The hash cache dropped pHash too.** `pHashBits` was written on every save
+  since the feature shipped and never read back, so a cache hit silently
+  downgraded the file to dHash-only even on the main-thread fallback. And with
+  no `needsPHash` recompute check beside the existing `needsCrop` /
+  `needsColor` ones, turning pHash **on** after a scan had already cached a
+  file never recomputed anything — the feature could only ever apply to files
+  being hashed for the first time.
+
+### Changed
+
+- `tools/matcher-parity.mjs` now checks worker/main-thread parity **with the
+  optional fields present**, through a real worker. The existing run carried
+  none, which is why it agreed on both paths for four releases while pHash was
+  being dropped in transit.
+- The hash-cache decision and the cache-hit entry rebuild are now
+  `cacheRecordNeedsRecompute()` and `entryFromCacheRecord()`, so both are
+  covered by `npm test` rather than only reachable through a full scan.
+
 ## [14.7.2] - 2026-09-14
 
 ### Fixed
