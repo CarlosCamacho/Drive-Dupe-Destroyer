@@ -73,7 +73,40 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   forever, however far you dragged it.
   ([#48](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/48))
 
+- **The side-by-side view kept a different file than the list and the export.**
+  `compare.js` carried its own private copy of the keep-selection logic, and it
+  had drifted from the shared one in four ways: under the "hires" rule it
+  compared a byte count against a pixel count, so a 5 MB file Drive gave no
+  dimensions for beat a known 800×600 original; the folder-priority term was
+  matched against the opaque parent ID and against the file's own name, so
+  `originals` matched a file called `originals-backup.jpg` sitting in
+  `/Downloads`; an unrecognised rule silently kept whichever file came first;
+  and genuine ties were broken by array order, which comes from union-find
+  iteration and is not stable between runs. On the same group, all four cases
+  picked a different file from the list and the CSV export.
+
+  The consequence was not only a confusing badge. The compare view hard-coded
+  the LEFT pane as the keeper, so whenever the copy disagreed, the file the rest
+  of the app wanted kept sat on the right — where `rightIsKeep` was `false` and
+  the "⚠️ deleting the KEEP file" warning is disabled. Deleting it was undoable,
+  but nothing said anything had happened.
+
+  The copy is gone; the keeper is decided in `common.js` alone. Which pane holds
+  it is now derived from that one decision rather than asserted by the caller,
+  which also fixes the crop editor's return path — it passed `group[0]` and
+  `group[1]` in whatever order they happened to be in and labelled the left one
+  KEEP regardless. A source-level test now fails if any module reimplements the
+  rules privately again.
+  ([#50](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/50))
+
 ### Known
+
+- The side-by-side view shows only two members of a group. For a cluster of
+  three or more near-identical images it pairs the keeper with the first other
+  file and ignores the rest, then reports "All groups processed!" — which reads
+  as having seen everything. Noted in
+  [#50](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/50); it
+  needs a decision (cycle through pairs, or show N panes) rather than a patch.
 
 - The WebAssembly hashing path has never been able to run: `js/dhash.wasm` is
   not in the repository, has never been in its history, and nothing builds it.
