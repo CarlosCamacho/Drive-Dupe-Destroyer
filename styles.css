@@ -2294,3 +2294,58 @@ input[type="checkbox"] {
   white-space: nowrap;
   margin-right: 10px;
 }
+
+/* ============================================================
+   Section header icons and collapse chevrons (#60, #62)
+   ============================================================ */
+
+/* The headers used emoji, which the OS renders in its own fixed colours -- so
+   they could not follow the theme, which is what #60 is actually about. These
+   are Font Awesome glyphs instead: one colour, inheriting from the header. */
+.sectionTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.sectionIcon {
+  width: 1em;
+  text-align: center;
+  color: var(--accent-blue);
+}
+
+/* White in dark mode, blue in light mode, per #60. The dark palette is the
+   unconditional default on :root, so the blue above is the light-mode value and
+   this overrides it wherever dark is in effect -- explicit choice and OS
+   preference alike. */
+:root:not([data-theme="light"]) .sectionIcon { color: #ffffff; }
+[data-theme="dark"] .sectionIcon { color: #ffffff; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]):not([data-theme="light"]) .sectionIcon { color: var(--accent-blue); }
+}
+[data-theme="light"] .sectionIcon { color: var(--accent-blue); }
+
+/* The expand/collapse affordance (#62): the headers were clickable with nothing
+   to say so. Points down when open, right when collapsed. */
+.sectionChevron {
+  margin-left: auto;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--text-muted);
+  border-bottom: 2px solid var(--text-muted);
+  transform: rotate(45deg);
+  transform-origin: center;
+  margin-top: -4px;
+  transition: transform var(--transition);
+}
+
+.section.collapsed .sectionChevron {
+  transform: rotate(-45deg);
+  margin-top: 0;
+}
+
+/* The Folders header carries a count badge as well, so the chevron must not
+   push it around. */
+.sectionHeader .badge + .sectionChevron { margin-left: 8px; }

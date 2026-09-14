@@ -85,8 +85,9 @@
         <!-- Folder Selection -->
         <div class="section">
           <div class="sectionHeader">
-            <span>📁 Folders</span>
+            <span class="sectionTitle"><i class="fa-solid fa-folder sectionIcon" aria-hidden="true"></i>Folders</span>
             <span class="badge" id="includedCount">0</span>
+            <span class="sectionChevron" aria-hidden="true"></span>
           </div>
           <div class="sectionBody">
             <div id="foldersSummary" class="muted">None selected</div>
@@ -98,7 +99,8 @@
         <!-- Scan Settings -->
         <div class="section">
           <div class="sectionHeader">
-            <span>⚙️ Scan Settings</span>
+            <span class="sectionTitle"><i class="fa-solid fa-sliders sectionIcon" aria-hidden="true"></i>Scan Settings</span>
+            <span class="sectionChevron" aria-hidden="true"></span>
           </div>
           <div class="sectionBody">
             <div class="formRow">
@@ -130,10 +132,10 @@
             <div class="formRow">
               <label>Min image size <span class="helpIcon" data-help="imgMinSize">?</span></label>
               <div class="sizeInputGroup">
-                <input type="number" id="imgMinSize" value="0" min="0" step="1">
+                <input type="number" id="imgMinSize" value="50" min="0" step="1">
                 <select id="imgMinUnit">
-                  <option value="KB">KB</option>
-                  <option value="MB" selected>MB</option>
+                  <option value="KB" selected>KB</option>
+                  <option value="MB">MB</option>
                 </select>
               </div>
             </div>
@@ -154,8 +156,9 @@
         <!-- Image Types (v14) -->
         <div class="section">
           <div class="sectionHeader">
-            <span>🖼️ Image Types</span>
+            <span class="sectionTitle"><i class="fa-solid fa-image sectionIcon" aria-hidden="true"></i>Image Types</span>
             <span class="badge" id="imgTypeCount">18</span>
+            <span class="sectionChevron" aria-hidden="true"></span>
           </div>
           <div class="sectionBody">
             <div class="muted" style="margin-bottom:6px;">Only the checked formats are included in a scan.</div>
@@ -186,7 +189,8 @@
         <!-- Matching Mode (Combined Quick Scan + Matching) -->
         <div class="section">
           <div class="sectionHeader">
-            <span>🎯 Matching Mode</span>
+            <span class="sectionTitle"><i class="fa-solid fa-crosshairs sectionIcon" aria-hidden="true"></i>Matching Mode</span>
+            <span class="sectionChevron" aria-hidden="true"></span>
           </div>
           <div class="sectionBody">
             <div class="radioGroup matchModeGroup">
@@ -279,7 +283,8 @@
         <!-- Keep Rules -->
         <div class="section">
           <div class="sectionHeader">
-            <span>🏆 Keep Rule</span>
+            <span class="sectionTitle"><i class="fa-solid fa-trophy sectionIcon" aria-hidden="true"></i>Keep Rule</span>
+            <span class="sectionChevron" aria-hidden="true"></span>
           </div>
           <div class="sectionBody">
             <div class="formRow">
@@ -303,7 +308,8 @@
         <!-- Cache -->
         <div class="section">
           <div class="sectionHeader">
-            <span>💾 Cache</span>
+            <span class="sectionTitle"><i class="fa-solid fa-database sectionIcon" aria-hidden="true"></i>Cache</span>
+            <span class="sectionChevron" aria-hidden="true"></span>
           </div>
           <div class="sectionBody">
             <div class="formRow">
@@ -423,11 +429,11 @@
         <div class="bottomBar">
           <div class="bottomBarItem">
             <button type="button" id="btnExportCsv" class="btn btn-sm" title="Export as CSV spreadsheet">CSV</button>
-                  <button type="button" id="btnExportJson" class="btnGhost">📥 Export Results</button>
+                  <button type="button" id="btnExportJson" class="btnGhost">📥 Export Results</button><span class="helpIcon" data-help="exportResults">?</span>
             <span class="helpIcon" data-help="exportResults">?</span>
           </div>
           <div class="bottomBarItem">
-            <button type="button" id="btnQueueOpen" class="btnGhost">📋 Queue (<span id="queueCount">0</span>)</button>
+            <button type="button" id="btnQueueOpen" class="btnGhost">📋 Queue (<span id="queueCount">0</span>)</button><span class="helpIcon" data-help="queue">?</span>
             <span class="helpIcon" data-help="queue">?</span>
           </div>
         </div>
