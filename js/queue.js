@@ -105,10 +105,14 @@ export async function processQueue() {
   showSpinner(true);
   setStatus(`Processing queue: ${items.length} file(s)…`);
   
-  try {
-    const ids = items.map(i => i.id);
-    const result = await batchTrash(ids);
-
+  // A file that is in Drive's trash has to be recorded whether the run finished
+  // or not. batchTrash works in chunks of 100 and a run can stop part-way -- the
+  // token expires, the silent refresh needs an interaction the browser will not
+  // allow without user activation, and it throws at the next chunk boundary.
+  // This used to live inside the try, so that throw skipped all of it: the
+  // queue still listed 250 files, 100 of them were already in the trash, and
+  // Undo had no record of any of them (#81).
+  const settle = async (result) => {
     // Record BEFORE clearing the queue rows -- they are the only place the file
     // names live at this point. This was the one delete path never wired to the
     // undo stack, and it is the bulk one: the queue exists to accumulate
@@ -118,20 +122,53 @@ export async function processQueue() {
     pushUndoDeleteBatch(items.filter(i => trashed.has(i.id)));
 
     for (const id of result.success) {
-      await queueDel(id);
+      // One row that will not delete must not cost us the rest of the cleanup,
+      // the event, or the toast.
+      try { await queueDel(id); } catch (e) { console.warn("Queue row not removed:", id, e); }
     }
-    
+
     await renderQueue();
-    
+
     if (result.success.length > 0) {
       window.dispatchEvent(new CustomEvent("ddd:trashed", { detail: { ids: result.success } }));
+    }
+  };
+
+  try {
+    const ids = items.map(i => i.id);
+
+    let result;
+    let stoppedBy = null;
+    try {
+      result = await batchTrash(ids);
+    } catch (e) {
+      // batchTrash attaches what it had already done to any error that stops
+      // it. Without that record those deletions are invisible to the app.
+      if (!e?.partial) throw e;
+      result = e.partial;
+      stoppedBy = e;
+    }
+
+    await settle(result);
+
+    if (result.success.length > 0) {
       showToast(`Trashed ${result.success.length} file(s) — use Undo to restore`, "success");
     }
-    
+
+    if (stoppedBy) {
+      console.error("Queue processing stopped part-way:", stoppedBy);
+      const trailer = result.success.length > 0
+        ? ` ${result.success.length} file(s) were trashed and can be restored with Undo.`
+        : "";
+      showToast(`Queue stopped: ${stoppedBy.message}.${trailer}`, "error", 6000);
+      setStatus(`Queue stopped after ${result.success.length} trashed.`);
+      return;
+    }
+
     if (result.failed.length > 0) {
       showToast(`Failed to trash ${result.failed.length} file(s)`, "error");
     }
-    
+
     setStatus(`Queue processed: ${result.success.length} trashed.`);
   } catch (e) {
     console.error("Queue processing failed:", e);

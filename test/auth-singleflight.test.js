@@ -159,3 +159,133 @@ describe("expiryFromResponse", () => {
     assert.equal(expiryFromResponse({ expires_in: "nonsense" }, NOW), NOW + (3600 - 300) * 1000);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Sign-out against an in-flight token request (#82)
+// ---------------------------------------------------------------------------
+//
+// Same constraint as above: js/auth.js cannot be imported under node:test, so
+// this reproduces the exact structure -- a GIS callback that fires after the
+// user has signed out, writing into the module state signOut() just cleared.
+// The browser-side proof of the real thing is tools/trash-partial.mjs.
+
+/** The auth module's token state and the two operations that race for it. */
+function makeSession(client) {
+  const s = {
+    accessToken: null,
+    tokenExpiresAt: 0,
+    generation: 0,
+    inFlight: null,
+    requestId: 0,
+    revoked: [],
+    guard: true,            // flipped off to reproduce the pre-fix behaviour
+  };
+
+  s.requestTokenOnce = () => {
+    if (s.inFlight) return s.inFlight;
+    const myGeneration = s.generation;
+    const myId = ++s.requestId;
+    s.inFlight = new Promise((resolve, reject) => {
+      client.callback = (resp) => {
+        if (s.guard && myGeneration !== s.generation) {
+          s.revoked.push(resp.access_token);
+          reject(Object.assign(new Error("Signed out before sign-in completed."), {
+            code: "AUTH", authError: "superseded", recoverable: true,
+          }));
+          return;
+        }
+        s.accessToken = resp.access_token;
+        s.tokenExpiresAt = Date.now() + 3600_000;
+        resolve(resp);
+      };
+      client.requestAccessToken();
+    }).finally(() => { if (s.requestId === myId) s.inFlight = null; });
+    return s.inFlight;
+  };
+
+  s.signOut = () => {
+    s.generation++;
+    s.accessToken = null;
+    s.tokenExpiresAt = 0;
+    s.inFlight = null;
+  };
+
+  s.isSignedIn = () => !!s.accessToken && s.tokenExpiresAt > Date.now();
+  return s;
+}
+
+const settle = (ms = 40) => new Promise(r => setTimeout(r, ms));
+
+describe("sign-out against an in-flight token request", () => {
+  test("a callback that lands after sign-out does not sign the user back in", async () => {
+    const client = makeFakeTokenClient({ latencyMs: 25 });
+    const s = makeSession(client);
+
+    const p = s.requestTokenOnce().catch(e => e);
+    s.signOut();
+    assert.equal(s.isSignedIn(), false, "sign-out clears the token immediately");
+
+    const err = await p;
+    await settle();
+    assert.equal(s.accessToken, null, "the stale callback must not write a token back");
+    assert.equal(s.isSignedIn(), false);
+    assert.equal(err.authError, "superseded");
+    assert.equal(err.recoverable, true, "recoverable, so the stored Client ID survives");
+    assert.deepEqual(s.revoked, ["tok"], "the token minted for the ended session is handed back");
+  });
+
+  // The pre-fix behaviour, kept so the test proves it really was broken.
+  test("without the guard the user is silently signed back in", async () => {
+    const client = makeFakeTokenClient({ latencyMs: 25 });
+    const s = makeSession(client);
+    s.guard = false;
+
+    await s.requestTokenOnce();   // first sign-in
+    s.signOut();
+    const p = s.requestTokenOnce().catch(() => {});
+    s.signOut();
+    await p;
+    await settle();
+    assert.equal(s.isSignedIn(), true, "this is the bug #82 describes");
+  });
+
+  // The slot was cleared unconditionally, so a request cancelled by signOut()
+  // would later clear the slot belonging to whichever request had started in
+  // the meantime -- and the single-flight guard stopped holding from there on.
+  test("a superseded request does not clear the slot of the one that replaced it", async () => {
+    // Deliver the callbacks by hand. The single-slot fake above answers whoever
+    // installed LAST, which is the right model for the concurrency tests but
+    // would leave the first request here unsettled — and the thing under test
+    // is the slot, not the callback.
+    const client = { callback: null, requestAccessToken() {} };
+    const s = makeSession(client);
+
+    s.requestTokenOnce().catch(() => {});
+    const answerFirst = client.callback;
+
+    s.signOut();
+    const second = s.requestTokenOnce().catch(() => {});
+    const slot = s.inFlight;
+    assert.notEqual(slot, null, "the replacement owns the slot");
+
+    answerFirst({ access_token: "stale" });   // the superseded request answers late
+    await settle();
+    assert.equal(s.inFlight, slot, "and still owns it after the superseded one settles");
+
+    client.callback({ access_token: "fresh" });
+    await second;
+  });
+
+  test("a fresh sign-in after the superseded one still works", async () => {
+    const client = makeFakeTokenClient({ latencyMs: 15 });
+    const s = makeSession(client);
+
+    const p = s.requestTokenOnce().catch(() => {});
+    s.signOut();
+    await p;
+    await settle();
+
+    await s.requestTokenOnce();
+    assert.equal(s.isSignedIn(), true);
+  });
+});

@@ -8,6 +8,38 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 > The detailed, original per-version notes are archived in
 > [`docs/changelog/`](docs/changelog/). This file is the consolidated summary.
 
+## [14.7.2] - 2026-09-14
+
+### Fixed
+
+- **A queue run that stopped part-way lost every deletion it had already
+  made** (#81). `batchTrash` works in chunks of 100 and re-checks the token at
+  each chunk boundary — outside the `try`. When that check failed, the whole
+  function threw and took `results` with it, so `processQueue`'s `catch`
+  skipped the undo record, the queue cleanup and the `ddd:trashed` event for
+  files that really were in Drive's trash. Measured on 250 queued files with
+  the session expiring after the first batch: 100 files trashed, 250 still
+  shown in the queue, 0 recoverable by Undo. Any error that stops a run now
+  carries what it already did, and the queue settles on it before reporting the
+  failure.
+- **The per-file fallback kept going after the session was gone**, issuing a
+  doomed PATCH — and a fresh doomed sign-in attempt — for every remaining file:
+  204 attempts across a 100-file chunk, against 4 now.
+- **"Already gone" was decided by searching the error message** for `404`, and
+  that message embeds 200 characters of Drive's error body. A 403 naming a file
+  whose ID contains `404` was reported as trashed and dropped from the queue
+  while the file was still in Drive. Both the trash fallback and Undo's restore
+  loop now read the status `driveFetch` already attaches.
+- **Sign Out did not stick while a token request was in flight** (#82). The GIS
+  callback still wrote into the module state `signOut()` had just cleared, so
+  the app signed itself back in a moment later with a live, unrevoked token
+  behind a UI that said "Sign In". Measured: token `null` at sign-out, present
+  again 700 ms later. A generation counter now makes a stale callback decline
+  the token and hand it back to Google instead.
+- `ensureToken` no longer drops `code: "AUTH_TIMEOUT"` when it rewrites the
+  timeout message, and a superseded token request no longer clears the
+  single-flight slot belonging to the request that replaced it.
+
 ## [14.7.1] - 2026-09-14
 
 ### Fixed
