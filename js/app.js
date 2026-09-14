@@ -34,6 +34,7 @@ import { loadResumeState, clearResumeState, formatResumeDescription } from "./re
 import { wireQueue } from "./queue.js";
 import { dbClearImages, dbCountImages, dbExportImages, dbImportImages } from "./db.js";
 import { releaseAllThumbBlobs } from "./hashing.js";
+import { clearPathCaches } from "./paths.js";
 
 let abortCtrl = null;
 
@@ -297,6 +298,11 @@ function wireDbControls() {
         // Clear IndexedDB hash cache
         await dbClearImages();
         releaseAllThumbBlobs();
+        // And the resolved folder paths. This is now the only thing that empties
+        // them: a scan ending used to wipe the store, which meant the cache never
+        // survived to be used at all (#79). Clearing it belongs to the button the
+        // user presses to clear the cache.
+        await clearPathCaches();
         console.log("[DDD] Cleared IndexedDB cache");
         
         // Unregister service worker
