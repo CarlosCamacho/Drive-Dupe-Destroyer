@@ -1,9 +1,11 @@
 /*
- * Drive Dupe Destroyer (DDD) — test/phash-plumbing.test.js
+ * Drive Dupe Destroyer (DDD) — test/matcher-transport.test.js
  *
  * Copyright (c) 2026 Carlos Camacho
  * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
  */
+// What actually reaches the matcher (#84, #86).
+//
 // #84: pHash mode did nothing, because the field changed name in transit.
 //
 // The hasher writes `pHashBits` and bestDistWithPHash reads `pHashBits`, but
@@ -18,8 +20,11 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
-import { runMatching, packEntries, unpackEntries } from "../js/matcher.js";
-import { bestDist, pHashDistance } from "../js/common.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+import { runMatching, packEntries, unpackEntries, OPTIONAL_ENTRY_FIELDS } from "../js/matcher.js";
+import { bestDist, bestCropDist, pHashDistance } from "../js/common.js";
 import { cacheRecordNeedsRecompute, entryFromCacheRecord } from "../js/scan.js";
 import { HASH_VERSION } from "../js/hashing.js";
 
@@ -120,6 +125,15 @@ describe("cacheRecordNeedsRecompute", () => {
     assert.equal(cacheRecordNeedsRecompute(noPHash, { withPHash: false }), false, "and not when the feature is off");
   });
 
+  // #86: crop detection finds its candidates through the colour/edge histograms,
+  // because a crop shares no dHash bands with its original. A record cached by a
+  // run that had colour matching off therefore cannot serve a crop-detect run.
+  test("crop detection also requires the histograms it finds candidates with", () => {
+    const { colorHist, edgeHist, ...noHist } = full;
+    assert.equal(cacheRecordNeedsRecompute(noHist, { withCropDetect: true }), true);
+    assert.equal(cacheRecordNeedsRecompute(noHist, { withCropDetect: false, withColorMatch: false }), false);
+  });
+
   test("the same rule already held for crop and colour", () => {
     const { cropHashes, ...noCrop } = full;
     const { colorHist, ...noColor } = full;
@@ -168,5 +182,123 @@ describe("entryFromCacheRecord", () => {
     assert.equal(e.edgeHist, null);
     assert.equal(e.cropHashes, null);
     assert.deepEqual(e.variants, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The check that would have caught both #84 and #86
+// ---------------------------------------------------------------------------
+//
+// Both bugs were the same shape: the hasher computed a field, a comparator read
+// it, and the worker payload did not carry it -- so the feature ran, compared
+// undefined against undefined, and silently returned "no match". Neither was
+// visible from any single file.
+//
+// So assert the relationship directly. Read what common.js actually reaches for
+// on an entry, and require the transport to carry all of it. Over-inclusive by
+// design: a field named in a comment counts as read, which can only make this
+// stricter, never let a real omission through.
+
+describe("the worker payload carries every field the comparators read", () => {
+  const commonSrc = readFileSync(
+    fileURLToPath(new URL("../js/common.js", import.meta.url)), "utf8"
+  );
+
+  const fieldsRead = new Set();
+  for (const m of commonSrc.matchAll(/\bentry[AB]\.([A-Za-z_$][\w$]*)/g)) fieldsRead.add(m[1]);
+
+  // base12 and base8 ride in the flat buffers, not the extras map.
+  const PACKED_IN_BUFFERS = ["base12", "base8"];
+
+  test("the scan of common.js found the fields we expect", () => {
+    // A guard on the guard: if this regex ever stops matching, the test below
+    // would pass vacuously.
+    assert.ok(fieldsRead.size >= 6, `expected several fields, found ${[...fieldsRead]}`);
+    for (const f of PACKED_IN_BUFFERS) assert.ok(fieldsRead.has(f), `expected to see ${f}`);
+  });
+
+  test("every field a comparator reads is either packed or carried in extras", () => {
+    const carried = new Set([...PACKED_IN_BUFFERS, ...OPTIONAL_ENTRY_FIELDS]);
+    const missing = [...fieldsRead].filter((f) => !carried.has(f));
+    assert.deepEqual(
+      missing, [],
+      `common.js reads ${missing.join(", ")} but packEntries does not carry it — ` +
+      `that feature will silently find nothing in the worker (#84, #86)`
+    );
+  });
+
+  test("and every carried field actually survives a round trip", () => {
+    const e = { base12: new Uint8Array(18).fill(1), base8: new Uint8Array(8).fill(2) };
+    for (const f of OPTIONAL_ENTRY_FIELDS) {
+      e[f] = f === "cropHashes" ? [{ name: "center", hash: new Uint8Array(18).fill(3) }]
+           : f === "variants"   ? [{ base8: new Uint8Array(8), base12: new Uint8Array(18) }]
+           : new Uint8Array(8).fill(4);
+    }
+    const out = unpackEntries(viaPostMessage(packEntries(new Map([["x", e]])).payload)).get("x");
+    for (const f of OPTIONAL_ENTRY_FIELDS) {
+      assert.ok(out[f], `${f} must survive packEntries -> postMessage -> unpackEntries`);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Crop detection (#86)
+// ---------------------------------------------------------------------------
+
+describe("crop detection reaches the matcher and can find a candidate", () => {
+  const rnd = (seed, n) => {
+    const h = new Uint8Array(n);
+    let x = (seed * 2654435761) >>> 0;
+    for (let i = 0; i < n; i++) { x = (x * 1664525 + 1013904223) >>> 0; h[i] = (x >>> 16) & 0xff; }
+    return h;
+  };
+  // A photo and a crop of it: dHash unrelated, but the crop's own hash equals
+  // the original's centre-region hash, and the colour/edge profile survives.
+  const colorHist = new Uint8Array(32).fill(100);
+  const edgeHist = new Uint8Array(16).fill(50);
+  const nudge = (a) => { const b = new Uint8Array(a); b[0] = Math.min(255, b[0] + 2); return b; };
+  const centre = rnd(7, 18);
+  const A = { base12: rnd(1, 18), base8: rnd(1, 8), colorHist, edgeHist,
+              cropHashes: [{ name: "center", hash: centre }] };
+  const B = { base12: centre, base8: rnd(2, 8), colorHist: nudge(colorHist), edgeHist: nudge(edgeHist),
+              cropHashes: [{ name: "center", hash: rnd(9, 18) }] };
+
+  const cropGroups = (entries, withColorMatch) => {
+    const groups = [];
+    return runMatching({
+      entries, hamThresh: 8, withCropDetect: true, withColorMatch,
+      lshForceMode: "loose", allIds: [...entries.keys()],
+      onGroups: (p) => groups.push(...p.batch),
+    }).then(() => groups.length);
+  };
+
+  test("the fixture really is a crop-only match", () => {
+    assert.equal(bestDist(A, B, false, true) > 8, true, "dHash alone must reject it");
+    assert.equal(bestCropDist(A, B), 0, "the crop hashes must agree exactly");
+  });
+
+  test("cropHashes survives the trip to the worker", () => {
+    const out = unpackEntries(viaPostMessage(packEntries(new Map([["a", A]])).payload));
+    assert.ok(out.get("a").cropHashes, "not carried at all before #86");
+    assert.equal(out.get("a").cropHashes[0].name, "center");
+  });
+
+  test("the worker path finds the same group the main thread does", async () => {
+    const direct = new Map([["a", A], ["b", B]]);
+    const packed = unpackEntries(viaPostMessage(packEntries(direct).payload));
+    assert.equal(await cropGroups(direct, true), 1, "main-thread path groups the crop");
+    assert.equal(await cropGroups(packed, true), 1, "and so must the worker path");
+  });
+
+  // The second half of #86: a crop shares no dHash bands with its original, so
+  // without the widened candidate search the pair is never compared at all --
+  // and the widening used to require colour matching to be ticked as well.
+  test("crop detection works on its own, without colour matching ticked", async () => {
+    assert.equal(await cropGroups(new Map([["a", A], ["b", B]]), false), 1);
+  });
+
+  test("a pair with no crop hashes is left alone", async () => {
+    const strip = (e) => ({ base12: e.base12, base8: e.base8, colorHist: e.colorHist, edgeHist: e.edgeHist });
+    assert.equal(await cropGroups(new Map([["a", strip(A)], ["b", strip(B)]]), false), 0);
   });
 });
