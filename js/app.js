@@ -392,11 +392,38 @@ function wireDbControls() {
   }
 }
 
-function wireCollapsibles() {
-  document.querySelectorAll(".sectionHeader").forEach(header => {
+// Which sections the user has opened. Sections collapse by default (#59) --
+// six expanded panels put the controls that matter below the fold -- but a
+// choice to open one is remembered, so the default applies on a first visit
+// rather than on every load.
+const SECTIONS_KEY = "destroyer_open_sections";
+
+function sectionName(header) {
+  return header.querySelector(".sectionTitle")?.textContent.trim()
+      || header.textContent.trim().slice(0, 40);
+}
+
+async function wireCollapsibles() {
+  const headers = [...document.querySelectorAll(".sectionHeader")];
+  const open = new Set(await settingGet(SECTIONS_KEY, null).catch(() => null) || []);
+  const firstVisit = !(await settingGet(SECTIONS_KEY, null).catch(() => null));
+
+  const persist = () => settingSet(SECTIONS_KEY, [...open]).catch(() => {});
+
+  headers.forEach(header => {
+    const section = header.closest(".section");
+    const name = sectionName(header);
+    // First visit: everything collapsed. Afterwards: whatever was left open.
+    const shouldOpen = firstVisit ? false : open.has(name);
+    if (section) section.classList.toggle("collapsed", !shouldOpen);
+    header.setAttribute("aria-expanded", String(shouldOpen));
+
     header.addEventListener("click", () => {
-      const section = header.closest(".section");
-      if (section) section.classList.toggle("collapsed");
+      if (!section) return;
+      const collapsed = section.classList.toggle("collapsed");
+      header.setAttribute("aria-expanded", String(!collapsed));
+      if (collapsed) open.delete(name); else open.add(name);
+      persist();
     });
     
     header.setAttribute("tabindex", "0");
@@ -605,7 +632,7 @@ async function init() {
   wireScanControls();
   wireImageTypeToggles();
   wireDbControls();
-  wireCollapsibles();
+  await wireCollapsibles();
   wireScrollToTop();
   wireThemeToggle();
   wireTelemetryButton();

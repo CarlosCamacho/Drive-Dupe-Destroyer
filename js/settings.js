@@ -34,8 +34,10 @@ const PERSISTABLE = [
   { id: "folderPriority",  type: "text",     default: "" },
   { id: "matchMode",       type: "radio",    default: "similar", name: "matchMode" },
   { id: "dhashSize",       type: "select",   default: "12" },
-  { id: "imgMinSize",      type: "number",   default: "0" },
+  { id: "imgMinSize",      type: "number",   default: "50" },
+  { id: "imgMinUnit",      type: "select",   default: "KB" },
   { id: "imgMaxSize",      type: "number",   default: "0" },
+  { id: "imgMaxUnit",      type: "select",   default: "MB" },
   { id: "aspectFilter",    type: "checkbox", default: false },
   // 20, matching index.html -- the range is 0..50, so the old "2" here was a
   // copy of hamThresh's default and never a valid aspect tolerance.

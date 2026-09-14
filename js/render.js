@@ -15,7 +15,7 @@
 // Results rendering with VIRTUAL SCROLLING
 // Added: delete button on all rows, pathMap access for compare modal
 
-import { el, bytesToHuman, escapeHtml, throttle, IMAGE_PLACEHOLDER } from "./util.js";
+import { el, bytesToHuman, escapeHtml, throttle, debounce, IMAGE_PLACEHOLDER } from "./util.js";
 import { setStatus, refreshActionButtons, showEmptyState, showToast, updateFilterStats } from "./ui.js";
 import { releaseAllThumbBlobs, getThumbUrlForFile } from "./hashing.js";
 import { openCompare, setCompareCallbacks } from "./compare.js";
@@ -33,6 +33,36 @@ let scrollListenersAttached = false;
 
 let currentState = null;
 let allRows = [];
+
+// #73: per-group keeper overrides. Keyed by a signature of the group's member
+// ids rather than its position, because group numbering is re-derived on every
+// filter change and after every delete. The value is the id of the file the
+// user pinned. Deriving the keeper in one place (#50) is what makes this a
+// single consultation rather than four call sites to keep in step.
+const keepOverrides = new Map();
+
+const groupSignature = (g) => g.map(f => f.id).sort().join("|");
+
+function keeperFor(group, rule, folderPriority) {
+  const pinned = keepOverrides.get(groupSignature(group));
+  if (pinned) {
+    const match = group.find(f => f.id === pinned);
+    if (match) return match;
+    // The pin refers to a file no longer in this group -- it was deleted, or a
+    // rescan reshaped the group. Drop it rather than silently ignore it.
+    keepOverrides.delete(groupSignature(group));
+  }
+  return group[chooseKeepIndex(group, rule, folderPriority)] || group[0];
+}
+
+// #70: how the result set is ordered. Groups move as units -- sorting rows
+// independently would shred the groups the table exists to show -- and the
+// keeper stays first within each.
+let sortKey = null;       // null = the order matching produced
+let sortDir = "desc";
+
+// #72: free-text narrowing over name and folder path.
+let searchText = "";
 let selected = new Set();
 let idToFile = new Map();
 let visibleRange = { start: 0, end: 0 };
@@ -183,8 +213,14 @@ function createRowElement(rowData, rowIndex) {
   const folderPath = getFolderPath(file, pathMap);
   const folderUrl = driveFolderLink(file.parents?.[0]) || "";
 
-  // Store path on file object for compare modal
-  file._path = folderPath;
+  // Cache the resolved path on the file for the compare modal and the exporter.
+  //
+  // Only when we actually resolved one. This used to assign unconditionally, so
+  // rendering a row whose id is missing from pathMap OVERWROTE an already-known
+  // path with "" -- and `_path` is what folder-priority keep selection ranks on
+  // and what the CSV reports as a file's location, which is the whole point of
+  // #46. resolvePaths() twenty lines up is careful about this; this line was not.
+  if (folderPath) file._path = folderPath;
 
   // v14: folder cell is now a link that opens the containing Drive folder in a
   // new tab (so the user can see the file in context alongside its neighbours).
@@ -198,6 +234,14 @@ function createRowElement(rowData, rowIndex) {
   const deleteBtn = isKeep
     ? '<button class="btnMiniDanger btnDangerKeep" data-action="delete-keep" title="⚠️ KEEP file — click to delete anyway"><i class="fa-solid fa-trash"></i></button>'
     : '<button class="btnMiniDanger" data-action="delete" title="Move to trash"><i class="fa-solid fa-trash"></i></button>';
+  // #73: pin THIS file as the group's keeper, without changing the global rule
+  // and re-deriving every other group. The keeper row shows whether the current
+  // choice came from the rule or from a pin, and can release it.
+  const keepBtn = isKeep
+    ? (rowData.pinned
+        ? '<button class="btnMiniIcon btnPinned" data-action="unpin-keep" title="Kept by your choice — click to go back to the Keep rule">📌</button>'
+        : '')
+    : '<button class="btnMiniIcon" data-action="pin-keep" title="Keep this one instead"><i class="fa-solid fa-thumbtack"></i></button>';
   const downloadBtn = '<button class="btnMiniIcon" data-action="download" title="Download this image"><i class="fa-solid fa-download"></i></button>';
 
   tr.innerHTML = `
@@ -213,7 +257,7 @@ function createRowElement(rowData, rowIndex) {
     <td>${bytesToHuman(Number(file.size || 0))}</td>
     <td><span class="pill">${formatSimilarity(pctValue)}</span></td>
     <td class="cellGrp"><span class="groupBadge">${groupId}</span>${isFirstInGroup(rowData, rowIndex) ? makeSimilarityBadge(groupPct) : ""}</td>
-    <td class="cellActions">${downloadBtn}${deleteBtn}</td>
+    <td class="cellActions">${keepBtn}${downloadBtn}${deleteBtn}</td>
   `;
 
   return tr;
@@ -391,6 +435,32 @@ function handleTableClick(e) {
   if (target.matches('input[type="checkbox"]')) {
     if (target.checked) selected.add(fileId); else selected.delete(fileId);
     refreshActionButtons();
+    return;
+  }
+
+  // #73: pin or release this group's keeper. Both rebuild the table, because the
+  // keeper decides the badge, the checkbox column, the delete button's warning
+  // and which rows "Select all duplicates" will take.
+  if (target.matches('[data-action="pin-keep"]') || target.closest('[data-action="pin-keep"]')) {
+    e.stopPropagation();
+    const group = (currentState?.groups || []).find(g => g.some(f => f.id === file.id));
+    if (group) {
+      keepOverrides.set(groupSignature(group), file.id);
+      selected.delete(file.id);        // it is the keeper now; it cannot be a delete candidate
+      handleFilterChange();
+      showToast(`Keeping "${file.name}" in this group`, "success", 1800);
+    }
+    return;
+  }
+
+  if (target.matches('[data-action="unpin-keep"]') || target.closest('[data-action="unpin-keep"]')) {
+    e.stopPropagation();
+    const group = (currentState?.groups || []).find(g => g.some(f => f.id === file.id));
+    if (group) {
+      keepOverrides.delete(groupSignature(group));
+      handleFilterChange();
+      showToast("Back to the Keep rule for this group", "info", 1800);
+    }
     return;
   }
 
@@ -609,6 +679,46 @@ function handleBulkTrash(ids) {
 
 export function wireRenderControls() {
   setupThumbObserver();
+
+  // #70: clickable column headers. Clicking the active column flips direction;
+  // a third click returns to the order matching produced, which is otherwise
+  // unrecoverable without rescanning.
+  for (const th of document.querySelectorAll("th.sortable[data-sort]")) {
+    // Guard against double wiring: two listeners on one header means every
+    // click toggles twice and the order never changes, which looks exactly like
+    // sorting being broken.
+    if (th.dataset.sortWired) continue;
+    th.dataset.sortWired = "1";
+    const activate = () => {
+      const key = th.dataset.sort;
+      if (sortKey !== key) { sortKey = key; sortDir = key === "name" || key === "folder" ? "asc" : "desc"; }
+      else if (sortDir === (key === "name" || key === "folder" ? "asc" : "desc")) { sortDir = sortDir === "asc" ? "desc" : "asc"; }
+      else { sortKey = null; }
+      updateSortIndicators();
+      handleFilterChange();
+    };
+    th.addEventListener("click", activate);
+    th.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); activate(); }
+    });
+  }
+
+  // #72: free-text narrowing. Debounced with the shared helper rather than a
+  // second implementation, and re-filtering on every keystroke would rebuild
+  // every group.
+  const search = el("resultSearch");
+  if (search && !search.dataset.searchWired) {
+    search.dataset.searchWired = "1";
+    const run = debounce(() => {
+      searchText = search.value.trim();
+      handleFilterChange();
+    }, 200);
+    search.addEventListener("input", run);
+    search.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { e.stopPropagation(); search.value = ""; searchText = ""; handleFilterChange(); }
+    });
+  }
+
   
   const btnSelectAll = el("btnSelectAll");
   const btnSelectNone = el("btnSelectNone");
@@ -692,28 +802,35 @@ function handleFilterChange() {
   if (!currentState) return;
   
   allRows = [];
-  let groupId = 0;
-  
+
+  // Build one record per group first, so sorting can move groups as units.
+  const built = [];
   for (const g of currentState.groups) {
-    groupId++;
     // Use the rule this result set was built with rather than re-reading the
     // dropdown, so changing it mid-scan cannot make the filter disagree with the
     // table it is filtering.
     resolvePaths(g, currentState.pathMap);
-    const keepIdx = chooseKeepIndex(
+    const keepFile = keeperFor(
       g,
       currentState.keepRule || DEFAULT_KEEP_RULE,
       currentState.folderPriority || ""
     );
-    const keepFile = g[keepIdx] || g[0];
-    const sortedGroup = [keepFile, ...g.filter(f => f.id !== keepFile.id)];
-    
-    for (const f of sortedGroup) {
-      allRows.push({ 
-        file: f, groupId, keepFile, 
-        idToEntry: currentState.idToEntry, 
-        pathMap: currentState.pathMap, 
-        isKeep: f.id === keepFile.id,
+    const members = [keepFile, ...g.filter(f => f.id !== keepFile.id)];
+    built.push({ group: g, keepFile, members, pinned: keepOverrides.has(groupSignature(g)) });
+  }
+
+  sortGroups(built);
+
+  let groupId = 0;
+  for (const b of built) {
+    groupId++;
+    for (const f of b.members) {
+      allRows.push({
+        file: f, groupId, keepFile: b.keepFile,
+        idToEntry: currentState.idToEntry,
+        pathMap: currentState.pathMap,
+        isKeep: f.id === b.keepFile.id,
+        pinned: b.pinned,
         bitsCount: currentState.bitsCount,
         withVariants: currentState.withVariants,
         groupColorIdx: groupId - 1
@@ -735,18 +852,79 @@ function handleFilterChange() {
   setStatus(`Filtered: ${totalGroupsAfter} group(s), ${allRows.length} file(s).`);
 }
 
+// #70: order groups by a key derived from the whole group, never by moving rows
+// independently -- each group's rows must stay adjacent with its keeper first,
+// which is the structure the table exists to show.
+//
+// "size" is the space the group's DUPLICATES would free, not the largest file:
+// that is the number worth triaging by, and it did not exist as a column before.
+function groupSortValue(b, key) {
+  const n = (v) => Number(v || 0) || 0;
+  switch (key) {
+    case "name":   return (b.keepFile.name || "").toLowerCase();
+    case "folder": return (b.keepFile._path || "").toLowerCase();
+    case "dims": {
+      const m = b.keepFile.imageMediaMetadata;
+      return n(m?.width) * n(m?.height);
+    }
+    case "size":
+      return b.members.reduce((sum, f) => f.id === b.keepFile.id ? sum : sum + n(f.size), 0);
+    default:
+      return 0;
+  }
+}
+
+function sortGroups(built) {
+  if (!sortKey) return;                       // keep the order matching produced
+  const dir = sortDir === "asc" ? 1 : -1;
+  built.sort((x, y) => {
+    const a = groupSortValue(x, sortKey), b = groupSortValue(y, sortKey);
+    if (a === b) {
+      // Stable and reproducible: fall back to the keeper's id, which is unique.
+      return x.keepFile.id < y.keepFile.id ? -1 : x.keepFile.id > y.keepFile.id ? 1 : 0;
+    }
+    return (typeof a === "string" ? a.localeCompare(b) : a - b) * dir;
+  });
+}
+
+function updateSortIndicators() {
+  for (const th of document.querySelectorAll("th.sortable[data-sort]")) {
+    const active = th.dataset.sort === sortKey;
+    th.classList.toggle("sortAsc", active && sortDir === "asc");
+    th.classList.toggle("sortDesc", active && sortDir === "desc");
+    th.setAttribute("aria-sort", active ? (sortDir === "asc" ? "ascending" : "descending") : "none");
+  }
+}
+
 function applyFilter() {
   const filter = el("filterMode")?.value || "all";
-  if (filter === "all") return;
-  
-  const minPct = filter === "pct90" ? 90 : filter === "pct75" ? 75 : filter === "pct50" ? 50 : 0;
-  
-  allRows = allRows.filter(row => {
-    if (row.isKeep) return true;
-    const pct = computeSimilarity(row.keepFile, row.file, row.idToEntry, row.bitsCount, row.withVariants);
-    return pct !== null && pct >= minPct;
-  });
 
+  // #72: free text over name and folder path, applied at GROUP level. Matching
+  // one file of three and hiding its siblings would leave a lone row with
+  // nothing to compare against, which is not a useful thing to show -- so a
+  // group survives if any member matches, and survives whole.
+  if (searchText) {
+    const needle = searchText.toLowerCase();
+    const matched = new Set();
+    for (const row of allRows) {
+      const name = (row.file.name || "").toLowerCase();
+      const path = (row.file._path || "").toLowerCase();
+      if (name.includes(needle) || path.includes(needle)) matched.add(row.groupId);
+    }
+    allRows = allRows.filter(row => matched.has(row.groupId));
+  }
+
+  if (filter !== "all") {
+    const minPct = filter === "pct90" ? 90 : filter === "pct75" ? 75 : filter === "pct50" ? 50 : 0;
+
+    allRows = allRows.filter(row => {
+      if (row.isKeep) return true;
+      const pct = computeSimilarity(row.keepFile, row.file, row.idToEntry, row.bitsCount, row.withVariants);
+      return pct !== null && pct >= minPct;
+    });
+  }
+
+  // A group reduced to its keeper has nothing left to compare, in either path.
   const groupCounts = new Map();
   for (const row of allRows) groupCounts.set(row.groupId, (groupCounts.get(row.groupId) || 0) + 1);
   allRows = allRows.filter(row => groupCounts.get(row.groupId) > 1);

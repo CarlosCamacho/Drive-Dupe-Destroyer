@@ -8,6 +8,109 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 > The detailed, original per-version notes are archived in
 > [`docs/changelog/`](docs/changelog/). This file is the consolidated summary.
 
+## [14.5.0] - 2026-09-14
+
+A pass over everything open: the five UI issues you filed, plus ten performance
+and usability findings from reviewing the hot paths. Every figure below was
+measured, not estimated.
+
+### Added
+
+- **The results table sorts.** Name, Folder, Dims and Size are clickable; a
+  second click reverses, a third returns to the order matching produced. Groups
+  move as units — sorting rows independently would shred the groups the table
+  exists to show — and **Size** means the space a group's *duplicates* would
+  free, which is the number worth triaging by and did not exist as a column
+  before. ([#70](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/70))
+
+- **Search over file name and folder path.** Results could previously only be
+  narrowed by similarity, which is the one axis already chosen before the scan.
+  Matching applies at group level: hiding the siblings of a matched file would
+  leave a lone row with nothing to compare against.
+  ([#72](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/72))
+
+- **Keep this one instead.** The keeper came from a global rule with no
+  per-group override, so a rule right for 95% of groups and wrong for one left
+  only bad options. Each duplicate row now has a pin; the keeper shows whether
+  the choice came from the rule or from you, and can release it.
+  ([#73](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/73))
+
+- **The sidebar starts collapsed**, and remembers which sections you open.
+  ([#59](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/59)) Section
+  headers have Lineicons glyphs that follow the theme — white in dark mode, blue
+  in light — where emoji could not
+  ([#60](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/60)), and an
+  expand/collapse chevron drawn in CSS
+  ([#62](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/62)).
+
+- Help popovers for the eight controls that had none, and a CSP parity test
+  pinning the policy's three copies together.
+  ([#63](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/63))
+
+### Fixed
+
+- **The crop+colour matching path did up to 10x more work than it needed to, on
+  the main thread.** It scanned 2,000 array neighbours in each direction per
+  image — and over an ordering that had nothing to do with similarity, so two
+  crops of one photo 3,000 apart were never compared while 4,000 unrelated
+  images were. It now sorts by the luminance signature the pre-filter reads and
+  walks only the plausible run:
+
+  | images | before | after | |
+  |---|---|---|---|
+  | 2,000 | 3,998,000 | 619,195 | 0.15x |
+  | 5,000 | 15,995,000 | 1,885,919 | 0.12x |
+  | 10,000 | 35,990,000 | 3,896,481 | 0.11x |
+  | 20,000 | 75,980,000 | 7,905,378 | 0.10x |
+
+  It also improves with scale rather than degrading.
+  ([#65](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/65))
+
+- **Rendering a row could erase a file's folder path.** `_path` was overwritten
+  unconditionally from the path map, so a row whose id was missing from that map
+  lost an already-resolved path. That is what folder-priority keep selection
+  ranks on and what the CSV reports as a file's location.
+
+- **Hashing left workers idle or queued them up.** Concurrency was a flat 6
+  chosen with no reference to the worker pool, so an 8-core machine ran 7
+  workers for 6 slots and a 4-core machine queued 6 tasks behind 3. It is
+  derived from the pool now, and AIMD's ceiling no longer climbs to 12 against
+  as few as 2 workers.
+  ([#66](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/66))
+
+- Minimum image size defaults to 50 KB rather than 0 MB, and the unit selects
+  are remembered.
+  ([#61](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/61))
+
+- "Select All" is now "Select all duplicates" — it never selected keepers, and
+  the old name made a safe action sound dangerous.
+  ([#71](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/71))
+
+- Ancestor lookups during path resolution are batched a level at a time instead
+  of one request per folder.
+  ([#68](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/68))
+
+### Removed
+
+- `js/shared-worker-pool.js` — 666 lines whose pool was instantiated only inside
+  its own factory, which nothing called, while the real hashing pool lives in
+  `hashing.js`. The same shape as the WASM module removed in 14.3.0.
+  ([#64](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/64))
+
+### Changed
+
+- The "delta scan" checkbox now says what it does. It never fetched *only*
+  changed files — by the time it runs the folder listing is already complete —
+  so it reconciles at the edges and saves no round trip.
+  ([#67](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/67))
+
+### Known
+
+- The pair-matching loop still runs on the main thread with cooperative
+  yielding. Moving it into a worker is real work and touches the code that
+  decides which files are duplicates, so it is tracked rather than rushed:
+  [#69](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/69).
+
 ## [14.4.0] - 2026-09-14
 
 ### Fixed

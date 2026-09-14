@@ -86,8 +86,8 @@ class SecureHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Security-Policy",
             "default-src 'self'; "
             "script-src 'self' " + SCRIPT_HOSTS + "; "
-            "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "
-            "font-src 'self' https://cdnjs.cloudflare.com data:; "
+            "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.lineicons.com; "
+            "font-src 'self' https://cdnjs.cloudflare.com https://cdn.lineicons.com data:; "
             "connect-src 'self' https://www.googleapis.com https://oauth2.googleapis.com "
                 "https://accounts.google.com https://content.googleapis.com; "
             "img-src 'self' blob: data: https://lh3.googleusercontent.com "
