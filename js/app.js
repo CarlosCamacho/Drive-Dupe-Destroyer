@@ -19,7 +19,7 @@ import { el, APP_VERSION } from "./util.js";
 import { uiInit, setSignedInUi, setStatus, showEmptyState, setScanningState, showToast, wireErrorModal, setSelectedCountProvider, lockBodyScroll } from "./ui.js";
 import { wireAuth } from "./auth.js";
 import { runScan, setupBackgroundDetection } from "./scan.js";
-import { renderGroups, wireRenderControls, getSelectedCount, beginProgressive, pushProgressiveMatch, endProgressive } from "./render.js";
+import { renderGroups, wireRenderControls, getSelectedCount, beginProgressive, pushProgressiveMatch, endProgressive, mergeProgressivePaths } from "./render.js";
 import { wireCompare } from "./compare.js";
 import { wireCrop } from "./crop.js";
 import { wireFolderPicker, getIncludedFolderIds, getIncludedFolders, getExclusions } from "./folderPicker.js";
@@ -236,6 +236,11 @@ function wireScanControls() {
               showToast("Live results on — matches appear as they're found", "info", 4000);
             } else if (evt.type === "match") {
               pushProgressiveMatch(evt);
+            } else if (evt.type === "paths") {
+              // Folder paths for groups already on screen. The folder-priority
+              // keep rule ranks on these, so the live keeper is provisional
+              // until they land (#91).
+              mergeProgressivePaths(evt.entries);
             } else if (evt.type === "complete") {
               // renderCb runs right after and re-renders cleanly; just stop the
               // live session here as a safety net.

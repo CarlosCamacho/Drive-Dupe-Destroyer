@@ -527,6 +527,69 @@ function quickExactGroups(images) {
  * boundary to have them handed straight back would cost more than the matching
  * it is meant to speed up.
  */
+/**
+ * Resolve folder paths for groups as they stream out of the matcher.
+ *
+ * Batches rather than resolving per group: matches arrive in bursts, and
+ * buildPathsParallel is at its most efficient given many files at once (it
+ * fetches a whole ancestor level per request). A short debounce collects a
+ * burst; the queue drains one batch at a time so two runs never overlap.
+ *
+ * Every failure here is swallowed. This is an optimisation of WHEN the paths
+ * arrive, not whether -- phase 4 resolves them regardless, so a failed live
+ * batch costs nothing but the earlier keeper.
+ */
+export function makeLivePathResolver({ signal, onResolved, debounceMs = 400, build = buildPathsParallel } = {}) {
+  if (typeof onResolved !== "function") {
+    return { enqueue() {}, stop() {} };
+  }
+
+  const pending = new Map();      // id -> file, deduped across re-emitted groups
+  const done = new Set();
+  let timer = null;
+  let running = false;
+  let stopped = false;
+
+  const flush = async () => {
+    timer = null;
+    if (stopped || running || pending.size === 0) return;
+    running = true;
+    const batch = [...pending.values()];
+    pending.clear();
+    try {
+      const map = await build(batch, {
+        concurrency: CONFIG.PATH_CONCURRENCY,
+        signal,
+      });
+      if (!stopped && map?.size) onResolved([...map]);
+    } catch {
+      // Phase 4 will resolve these anyway.
+    } finally {
+      running = false;
+      if (!stopped && pending.size > 0) schedule();
+    }
+  };
+
+  const schedule = () => {
+    if (stopped || timer !== null) return;
+    timer = setTimeout(flush, debounceMs);
+  };
+
+  return {
+    enqueue(files) {
+      if (stopped) return;
+      for (const f of files) {
+        if (f?.id && !done.has(f.id)) { done.add(f.id); pending.set(f.id, f); }
+      }
+      if (pending.size > 0) schedule();
+    },
+    stop() {
+      stopped = true;
+      if (timer !== null) { clearTimeout(timer); timer = null; }
+    },
+  };
+}
+
 async function findMatchesProgressively({
   idToEntry,
   idToFile,
@@ -1052,6 +1115,20 @@ export async function runScan({
     if (onProgressiveMatch) {
       onProgressiveMatch({ type: 'start', total: idToEntry.size, idToEntry });
     }
+
+    // Resolve folder paths for live groups while matching runs.
+    //
+    // This costs nothing overall: matching is CPU-bound and runs after hashing,
+    // so the network is idle exactly when live groups appear, and
+    // buildPathsParallel memoises within a scan (and persists between them
+    // since #79) -- so phase 4 below finds the work already done rather than
+    // repeating it. The same requests, moved earlier and overlapped.
+    // Reported through the same channel as live matches, so there is one
+    // progressive callback rather than two.
+    const livePaths = makeLivePathResolver({
+      signal,
+      onResolved: onProgressiveMatch ? (entries) => onProgressiveMatch({ type: 'paths', entries }) : null,
+    });
     
     const matchResult = await findMatchesProgressively({
       idToEntry,
@@ -1077,6 +1154,11 @@ export async function runScan({
             ...match 
           });
         }
+        // Start resolving this group's folder paths now rather than waiting for
+        // phase 4. The folder-priority keep rule ranks on the resolved path, so
+        // until it arrives the live table nominates a keeper by tie-break and
+        // then silently changes its mind when the scan ends (#91).
+        if (Array.isArray(match?.group)) livePaths.enqueue(match.group);
       },
       onProgress: (current, total, matches, groups) => {
         const pct = 55 + (current / Math.max(1, total)) * 30;
@@ -1084,6 +1166,8 @@ export async function runScan({
         updateEta(pct);
       }
     });
+
+    livePaths.stop();
 
     const { groups, comparisons, matches } = matchResult;
     

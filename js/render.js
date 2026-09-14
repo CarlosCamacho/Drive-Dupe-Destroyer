@@ -956,8 +956,11 @@ export function beginProgressive({ idToEntry, keepRule = DEFAULT_KEEP_RULE, fold
   progressiveTrashed = new Set();
   progressiveOptions = { keepRule, folderPriority, bitsCount, withVariants };
 
-  // currentState is needed by Compare/delete handlers. pathMap is filled in
-  // later (paths are built in the final phase); an empty map is fine for now.
+  // currentState is needed by Compare/delete handlers. The path map starts
+  // empty and is filled in by mergeProgressivePaths as the scan resolves paths
+  // for live groups in the background (#91) -- it used to stay empty until the
+  // final phase, which silently broke the folder-priority keep rule for the
+  // whole time the live table was the thing the user was acting on.
   currentState = {
     groups: [],
     idToEntry: idToEntry || new Map(),
@@ -971,6 +974,35 @@ export function beginProgressive({ idToEntry, keepRule = DEFAULT_KEEP_RULE, fold
 
   showEmptyState(false);
   refreshActionButtons();
+}
+
+/**
+ * Merge freshly resolved folder paths into the live session and re-render.
+ *
+ * The keeper is the one file NOT offered for deletion, and the folder-priority
+ * rule ranks on the resolved path. While the live path map was empty every file
+ * scored "no folder match", so the live table nominated one file and the
+ * finished scan nominated another -- with nothing marking the first as
+ * provisional (#91).
+ */
+export function mergeProgressivePaths(entries) {
+  if (!progressiveActive || !entries) return;
+  const map = currentState?.pathMap;
+  if (!map) return;
+
+  let added = 0;
+  for (const [id, path] of entries) {
+    if (path && !map.has(id)) { map.set(id, path); added++; }
+  }
+  if (added === 0) return;
+
+  // `_path` is assigned once and then left alone, so anything already stamped
+  // during the empty-map window has to be cleared or the new path is ignored.
+  for (const group of progressiveGroups.values()) {
+    for (const f of group) if (f && map.has(f.id)) delete f._path;
+  }
+  clearSimCache();
+  scheduleProgressiveRender();
 }
 
 /**
