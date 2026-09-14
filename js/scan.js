@@ -26,7 +26,7 @@ import { runMatching, packEntries } from "./matcher.js";
 import { saveResumeState, clearResumeState } from "./resume.js";
 import { getRejectionStats, preloadRejections, getRejectionKeys } from "./rejection.js";
 import { updateTelemetry } from "./telemetry.js";
-import { thresholdFromEasy, isSupportedImageFile, SUPPORTED_IMAGE_MIMES, getFileExtension, DEFAULT_KEEP_RULE, canBrowserDecode } from "./common.js";
+import { thresholdFromEasy, isSupportedImageFile, SUPPORTED_IMAGE_MIMES, getFileExtension, DEFAULT_KEEP_RULE, canBrowserDecode, SIMILARITY_BITS } from "./common.js";
 import { buildPathsParallel, clearMemoryPathCaches } from "./paths.js";
 
 // ============================================================================
@@ -309,8 +309,13 @@ async function fetchAllImagesFlat({ folderIds, exclusions, maxItems, pageSize, s
  * what makes enabling crop, colour or pHash matching on an already-scanned
  * library actually do something (#84).
  */
-export function cacheRecordNeedsRecompute(rec, { withCropDetect = false, withColorMatch = false, withPHash = false } = {}) {
+export function cacheRecordNeedsRecompute(rec, { withVariants = false, withRotation = false, withCropDetect = false, withColorMatch = false, withPHash = false } = {}) {
   if (!rec?.base12) return true;
+  // Variants are two flips plus three rotations, each requested separately. A
+  // record cached by a run that wanted neither -- or wanted only the flips --
+  // cannot serve a run that wants more, and nothing used to notice (#88).
+  const wantVariants = (withVariants ? 2 : 0) + (withRotation ? 3 : 0);
+  if (wantVariants > 0 && (rec.variants?.length || 0) < wantVariants) return true;
   if (withCropDetect && !rec.cropHashes) return true;
   // Crop detection needs the histograms too: they are the only way a crop of an
   // image is ever offered as a candidate, since it shares no dHash bands with
@@ -373,7 +378,7 @@ async function computeHashesWithDb(images, {
       
       for (const f of images) {
         const rec = dbRecords.get(f.id);
-        if (cacheRecordNeedsRecompute(rec, { withCropDetect, withColorMatch, withPHash })) {
+        if (cacheRecordNeedsRecompute(rec, { withVariants, withRotation, withCropDetect, withColorMatch, withPHash })) {
           toCompute.push(f);
         } else {
           cacheHits++;
@@ -529,6 +534,7 @@ async function findMatchesProgressively({
   exactGroups = [],
   hamThresh,
   withVariants,
+  withRotation,
   withCropDetect,
   withColorMatch,
   withPHash,
@@ -546,7 +552,10 @@ async function findMatchesProgressively({
     allIds,
     exactGroupIds: exactGroups.map(g => g.map(f => f.id)),
     hamThresh,
-    withVariants,
+    // Rotation hashes are stored as variants, and bestDist returns before it
+    // looks at variants unless this is on. Ticking "Rotation variants" alone
+    // therefore cost four times the hashing work and changed nothing (#88).
+    withVariants: withVariants || withRotation,
     withCropDetect,
     withColorMatch,
     withPHash,
@@ -703,7 +712,6 @@ export async function runScan({
     const hamThresh = thresholdFromEasy(sensitivityLevel);
     const keepRule = el("keepRule")?.value || DEFAULT_KEEP_RULE;
     const folderPriority = el("folderPriority")?.value || "";
-    const dhashSize = parseInt(el("dhashSize")?.value || "12", 10);
     const withVariants = el("checkVariants")?.checked || el("checkVariants")?.value === "yes";
     const withCropDetect = el("cropDetect")?.checked || el("cropDetect")?.value === "yes";
     const withColorMatch = el("colorMatch")?.checked || el("colorMatch")?.value === "yes";
@@ -943,7 +951,7 @@ export async function runScan({
       setPhase("4/4 Rendering");
       await renderCb({ 
         groups, idToEntry: new Map(), pathMap, keepRule, folderPriority, 
-        bitsCount: 144, hamThresh, withVariants: false 
+        bitsCount: SIMILARITY_BITS, hamThresh, withVariants: false 
       });
       
       if (emitGroupsCb) emitGroupsCb(groups);
@@ -1052,6 +1060,7 @@ export async function runScan({
       exactGroups: exactDupeGroups,
       hamThresh,
       withVariants,
+      withRotation,
       withCropDetect,
       withColorMatch,
       withPHash,
@@ -1104,8 +1113,8 @@ export async function runScan({
       pathMap, 
       keepRule, 
       folderPriority, 
-      bitsCount: dhashSize * dhashSize, 
-      withVariants,
+      bitsCount: SIMILARITY_BITS,
+      withVariants: withVariants || withRotation,
       withCropDetect,
       withColorMatch
     });

@@ -691,7 +691,19 @@ export function chooseKeepIndex(group, keepRule, folderPriorityCsv = "") {
 /**
  * Convert similarity distance to percentage
  */
-export function distToPercent(dist, bits = 144) {
+/**
+ * The width of the hash every comparison is actually made over.
+ *
+ * bestDist is called with use12 = true everywhere -- in the matcher, in the
+ * results table and in the export -- so the distance is always a 144-bit one.
+ * The percentage has to be computed in the same space. It used to come from the
+ * "Hash size" select instead, so choosing 8x8 divided a 144-bit distance by 64
+ * and reported a similarity that was simply wrong, in the table and in the CSV
+ * (#89).
+ */
+export const SIMILARITY_BITS = 144;
+
+export function distToPercent(dist, bits = SIMILARITY_BITS) {
   if (dist === null || dist === undefined || !isFinite(dist)) return null;
   if (dist === 0) return 100;
   const pct = 100 * (1 - dist / bits);

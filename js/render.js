@@ -21,7 +21,7 @@ import { releaseAllThumbBlobs, getThumbUrlForFile } from "./hashing.js";
 import { openCompare, setCompareCallbacks } from "./compare.js";
 import { setCropCallbacks } from "./crop.js";
 import { batchTrash, driveFilePreviewLink, driveFolderLink, downloadFileBlob, thumbLinkSized } from "./drive.js";
-import { chooseKeepIndex, distToPercent, bestDist, DEFAULT_KEEP_RULE } from "./common.js";
+import { chooseKeepIndex, distToPercent, bestDist, DEFAULT_KEEP_RULE, SIMILARITY_BITS } from "./common.js";
 import { pushUndoDeleteBatch } from "./undo.js";
 
 const ROW_HEIGHT = 58;
@@ -939,7 +939,7 @@ function applyFilter() {
  * Resets the table and switches the renderer into "progressive" mode so that
  * pushProgressiveMatch() can stream groups into the SAME interactive table.
  */
-export function beginProgressive({ idToEntry, keepRule = DEFAULT_KEEP_RULE, folderPriority = "", bitsCount = 144, withVariants = false } = {}) {
+export function beginProgressive({ idToEntry, keepRule = DEFAULT_KEEP_RULE, folderPriority = "", bitsCount = SIMILARITY_BITS, withVariants = false } = {}) {
   releaseAllThumbBlobs();
   loadedThumbs.clear();
   clearSimCache();
@@ -1073,7 +1073,7 @@ export function endProgressive() {
   progressiveRenderScheduled = false;
 }
 
-export async function renderGroups({ groups, idToEntry, pathMap, keepRule = DEFAULT_KEEP_RULE, folderPriority = "", bitsCount = 144, withVariants = false }) {
+export async function renderGroups({ groups, idToEntry, pathMap, keepRule = DEFAULT_KEEP_RULE, folderPriority = "", bitsCount = SIMILARITY_BITS, withVariants = false }) {
   releaseAllThumbBlobs();
   loadedThumbs.clear();
   clearSimCache();

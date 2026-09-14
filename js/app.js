@@ -14,6 +14,7 @@
 // Security-hardened: localStorage replaced with IndexedDB for all persistence
 // Main application entry point
 
+import { SIMILARITY_BITS } from "./common.js";
 import { el, APP_VERSION } from "./util.js";
 import { uiInit, setSignedInUi, setStatus, showEmptyState, setScanningState, showToast, wireErrorModal, setSelectedCountProvider, lockBodyScroll } from "./ui.js";
 import { wireAuth } from "./auth.js";
@@ -220,13 +221,16 @@ function wireScanControls() {
             // user open / Compare / select / delete them while the scan runs.
             if (!evt) return;
             if (evt.type === "start") {
-              const dhashSize = parseInt(el("dhashSize")?.value || "12", 10);
-              const withVariants = el("checkVariants")?.checked || el("checkVariants")?.value === "yes";
+              // Must match what the final render uses, or a group's similarity
+              // changes when the scan finishes. Both are the width the distance
+              // is actually measured over (#89).
+              const withVariants = (el("checkVariants")?.checked || el("checkVariants")?.value === "yes")
+                || (el("rotationVariants")?.checked || false);
               beginProgressive({
                 idToEntry: evt.idToEntry || undefined,
                 keepRule: el("keepRule")?.value || "hires",
                 folderPriority: el("folderPriority")?.value || "",
-                bitsCount: dhashSize * dhashSize,
+                bitsCount: SIMILARITY_BITS,
                 withVariants
               });
               showToast("Live results on — matches appear as they're found", "info", 4000);
