@@ -8,6 +8,47 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 > The detailed, original per-version notes are archived in
 > [`docs/changelog/`](docs/changelog/). This file is the consolidated summary.
 
+## [14.7.0] - 2026-09-14
+
+### Added
+
+- **The crop tool remembers your selection between images.** Cropping the same
+  region out of a run of pictures meant drawing the same rectangle by hand every
+  time. The area now carries over to the next image, with a note saying so and a
+  way to clear it. On by default; the toggle sits next to the fixed-size
+  controls and your choice is remembered.
+
+  The area is stored as **fractions of the picture, not pixels**. The canvas is
+  scaled to fit your window, so pixels from one image land somewhere arbitrary
+  on the next. Fractions mean "the same part of the picture" — which for a run
+  of same-size images, the case this is for, is the identical rectangle, and for
+  differently sized ones maps proportionally.
+
+  Nothing is ever cropped without pressing **Crop**, and the restored rectangle
+  is drawn on screen first, so a remembered area is always visible and
+  adjustable before it is used. An area that does not fit is clamped rather than
+  discarded, tiny selections are never remembered, the existing fixed-size lock
+  keeps priority, and the area survives zoom and rotate.
+  ([#77](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/77))
+
+### Fixed
+
+- **The `drive.file` scope probe could have given the wrong answer, in the
+  expensive direction.** Google's own API description — fetched from the
+  discovery document, revision 20260904 — lists `drive.file` among the scopes
+  `files.list` accepts, and describes it as *"only the specific Google Drive
+  files you use with this app"*. So under that scope the call is **permitted**
+  and returns only files the app was granted: a folder whose contents were never
+  picked answers with HTTP 200 and an empty list, not an error.
+
+  The probe counted a successful call as access. It would therefore have
+  reported **"drive.file is sufficient"** for precisely the result that proves
+  it is not — and acting on that means a migration that cannot scan anything. It
+  now distinguishes "permitted but empty" as its own verdict, says what an empty
+  folder would mean, and the verifier covers both new cases. Confirmed against
+  the previous version, which fails them.
+  ([#28](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/28))
+
 ## [14.6.1] - 2026-09-14
 
 ### Fixed

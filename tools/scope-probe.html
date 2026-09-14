@@ -28,7 +28,9 @@
     2. Open http://localhost:8080/tools/scope-probe.html
     3. Paste an OAuth Client ID and an API key from the SAME Google Cloud
        project (Picker needs the API key; see notes at the bottom of the page).
-    4. Pick a folder that contains at least one image AND one subfolder.
+    4. Pick a folder that contains at least one image AND one subfolder, and make
+       sure the subfolder has a file in it too. An empty folder produces an empty
+       result that proves nothing either way.
     5. Read the verdict.
 
   It requests drive.file ONLY. It never writes, never deletes, and never
@@ -126,6 +128,11 @@
     </ol>
     <p>Check 4 is the one that matters most. DDD scans recursively; if the grant stops at
       the picked folder's immediate children, the restricted scope stays necessary.</p>
+    <p><strong>Pick a folder that is not empty</strong>, and whose subfolder is not empty either.
+      Under <code>drive.file</code> these calls are <em>permitted</em> — Google's discovery document
+      lists the scope among those <code>files.list</code> accepts — and simply return the files the
+      app was granted. So "allowed, returned nothing" is the expected signature of per-file access,
+      and is indistinguishable from "the folder really is empty" unless you know it is not.</p>
     <p><strong>Getting an API key:</strong> Google Cloud Console → APIs &amp; Services →
       Credentials → Create credentials → API key. Enable the <em>Google Picker API</em> for
       the project as well as the Drive API. Restrict the key to
