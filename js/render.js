@@ -409,9 +409,9 @@ function handleTableClick(e) {
 
       if (file.id === keepFile.id) {
         const other = groups[groupIndex]?.find(x => x.id !== file.id) || keepFile;
-        openCompare(file, other, { leftIsKeep: true, rightIsKeep: false, groupIndex, allGroups: groups });
+        openCompare(file, other, { groupIndex, allGroups: groups });
       } else {
-        openCompare(keepFile, file, { leftIsKeep: true, rightIsKeep: false, groupIndex, allGroups: groups });
+        openCompare(keepFile, file, { groupIndex, allGroups: groups });
       }
     }
     return;

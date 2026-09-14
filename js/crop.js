@@ -1047,9 +1047,9 @@ function closeCropReturnToCompare() {
   if (allGroups.length > 0 && currentGroupIndex < allGroups.length) {
     const group = allGroups[currentGroupIndex];
     if (group && group.length >= 2) {
+      // group[0] is whatever order the group happens to be in, so asserting it
+      // is the keeper was simply wrong here. openCompare derives it.
       openCompare(group[0], group[1], {
-        leftIsKeep: true,
-        rightIsKeep: false,
         groupIndex: currentGroupIndex,
         allGroups: allGroups
       });

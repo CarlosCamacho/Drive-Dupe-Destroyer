@@ -13,7 +13,7 @@
  */
 // Keyboard navigation
 
-import { el } from "./util.js";
+import { el, anyModalOpen } from "./util.js";
 import { showToast } from "./ui.js";
 
 function focusRow(row) {
@@ -95,13 +95,19 @@ export function wireKeyboard() {
       return;
     }
     
+    // Escape clears the selection ONLY when nothing is stacked on top. Every
+    // modal already closes itself on Escape; without this guard the same
+    // keypress also discarded the user's entire deletion selection, which has
+    // no undo. One keypress, one action.
     if (e.key === "Escape") {
+      if (anyModalOpen()) return;
       const btnSelectNone = el("btnSelectNone");
       if (btnSelectNone && !btnSelectNone.disabled) btnSelectNone.click();
       return;
     }
     
     if (e.key === "?") {
+      if (anyModalOpen()) return;
       showKeyboardHelp();
       return;
     }

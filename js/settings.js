@@ -17,8 +17,6 @@
 import { settingGet, settingSet } from "./db.js";
 import { el } from "./util.js";
 
-const SETTINGS_VERSION = 1;
-
 // All persistable controls with their defaults
 const PERSISTABLE = [
   { id: "recursiveMode",   type: "checkbox", default: true },
@@ -39,26 +37,53 @@ const PERSISTABLE = [
   { id: "imgMinSize",      type: "number",   default: "0" },
   { id: "imgMaxSize",      type: "number",   default: "0" },
   { id: "aspectFilter",    type: "checkbox", default: false },
-  { id: "aspectTolerance", type: "range",    default: "2" },
+  // 20, matching index.html -- the range is 0..50, so the old "2" here was a
+  // copy of hamThresh's default and never a valid aspect tolerance.
+  { id: "aspectTolerance", type: "range",    default: "20" },
   { id: "lshMode",         type: "select",   default: "auto" },
 ];
+
+// Assigning `.value` or `.checked` from script does NOT fire input/change, so
+// every handler that derives state from a control keeps whatever it computed
+// from the HTML default. That is not cosmetic. The "Max images" and "Page size"
+// sliders are indexes into a lookup table and keep their real value in
+// `dataset.actualValue`, written only by their `oninput` handler -- and
+// scan.js reads that attribute, not the slider. A restored "Max images" of
+// 5,000 was therefore scanned as unlimited and a restored page size of 100 as
+// 500, while the sliders sat at the positions the user had chosen.
+//
+// Dispatch what a real interaction would, so a restore is indistinguishable
+// from the user moving the control.
+function notifyRestored(node) {
+  if (!node) return;
+  node.dispatchEvent(new Event("input", { bubbles: true }));
+  node.dispatchEvent(new Event("change", { bubbles: true }));
+}
 
 async function loadSettings() {
   const saved = await settingGet("destroyer_scan_settings_v1", null).catch(() => null);
   if (!saved) return;
+
+  const restored = [];
   for (const def of PERSISTABLE) {
     const val = saved[def.id];
     if (val === undefined || val === null) continue;
     if (def.type === "radio") {
       const radio = document.querySelector(`input[name="${def.name}"][value="${val}"]`);
-      if (radio) radio.checked = true;
+      if (radio) { radio.checked = true; restored.push(radio); }
     } else {
       const el2 = el(def.id);
       if (!el2) continue;
       if (def.type === "checkbox") el2.checked = val;
       else el2.value = val;
+      restored.push(el2);
     }
   }
+
+  // Dispatch only once every control holds its restored value. A handler that
+  // reads a sibling control -- the match-mode panels do -- would otherwise see
+  // a half-applied mixture of saved and default state.
+  for (const node of restored) notifyRestored(node);
 }
 
 async function saveSettings() {

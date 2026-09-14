@@ -18,6 +18,7 @@ import { el, escapeHtml, debounce, formatDate } from "./util.js";
 import { driveFetch, driveFolderLink } from "./drive.js";
 import { setStatus, lockBodyScroll, showToast } from "./ui.js";
 import { getFolderScanHistory } from "./db.js";
+import { validateFolderId, sanitizeText } from "./security.js";
 
 const ROOT = "root";
 let currentId = ROOT;
@@ -29,16 +30,46 @@ let isLoading = false;
 let scanHistory = {}; // Cache of folder scan history
 let visibleFolders = []; // Currently visible folders in the list (for Include/Exclude All)
 
+// The picker interpolated its folder ID straight into the `q` expression with
+// no validation, while scan.js guards the identical interpolation. IDs here come
+// from API responses, but that is a property of today's call sites rather than
+// of the function, so check it where it is used.
+function quoteFolderId(folderId) {
+  const id = String(folderId ?? "");
+  if (!validateFolderId(id)) {
+    throw new Error(`Refusing to list a malformed folder ID: ${sanitizeText(id.slice(0, 64))}`);
+  }
+  return id;
+}
+
+// A single page held 500 subfolders and nextPageToken was requested and then
+// discarded, so a wider folder was silently truncated -- and Include All then
+// acted on 500 of N while reporting "Included 500 folders", which reads as
+// completeness. Follow the token.
+const FOLDER_PAGE_SIZE = 500;
+const MAX_FOLDER_PAGES = 40;   // 20,000 subfolders; a stop, not an expectation
+
 async function listFolderChildren(folderId) {
-  const res = await driveFetch("files", {
-    params: {
-      q: `'${folderId}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'`,
+  const out = [];
+  let pageToken = null;
+  let pages = 0;
+
+  do {
+    const params = {
+      q: `'${quoteFolderId(folderId)}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'`,
       fields: "files(id,name,parents),nextPageToken",
-      pageSize: "500",
+      pageSize: String(FOLDER_PAGE_SIZE),
       orderBy: "folder,name"
-    }
-  });
-  return res.files || [];
+    };
+    if (pageToken) params.pageToken = pageToken;
+
+    const res = await driveFetch("files", { params });
+    if (res.files?.length) out.push(...res.files);
+    pageToken = res.nextPageToken || null;
+  } while (pageToken && ++pages < MAX_FOLDER_PAGES);
+
+  out.truncated = Boolean(pageToken);
+  return out;
 }
 
 async function getFolderMeta(id) {
@@ -58,7 +89,7 @@ function renderIncluded() {
     for (const f of included.values()) {
       const chip = document.createElement("span");
       chip.className = "chip chipInclude";
-      chip.innerHTML = `<span>✓ ${escapeHtml(f.name)}</span> <button title="remove" aria-label="Remove ${f.name}">✕</button>`;
+      chip.innerHTML = `<span>✓ ${escapeHtml(f.name)}</span> <button title="remove" aria-label="Remove ${escapeHtml(f.name)}">✕</button>`;
       chip.querySelector("button").onclick = () => {
         included.delete(f.id);
         renderIncluded();
@@ -70,7 +101,7 @@ function renderIncluded() {
     for (const f of excluded.values()) {
       const chip = document.createElement("span");
       chip.className = "chip chipExclude";
-      chip.innerHTML = `<span>✗ ${escapeHtml(f.name)}</span> <button title="remove" aria-label="Remove ${f.name}">✕</button>`;
+      chip.innerHTML = `<span>✗ ${escapeHtml(f.name)}</span> <button title="remove" aria-label="Remove ${escapeHtml(f.name)}">✕</button>`;
       chip.querySelector("button").onclick = () => {
         excluded.delete(f.id);
         renderIncluded();
@@ -132,6 +163,13 @@ async function renderList(seq = 0) {
 
       if (filtered.length === 0) {
         folderList.innerHTML = '<div class="emptyFolder">No subfolders found</div>';
+      } else if (kids.truncated) {
+        // Only reachable past MAX_FOLDER_PAGES. Say so rather than let Include
+        // All claim a count that is not the whole folder.
+        const note = document.createElement("div");
+        note.className = "emptyFolder";
+        note.textContent = `Showing the first ${kids.length.toLocaleString()} subfolders — this folder has more.`;
+        folderList.appendChild(note);
       }
 
       for (const f of filtered) {
@@ -296,6 +334,9 @@ export function wireFolderPicker() {
     folderSearch.oninput = debouncedSearch;
     folderSearch.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
+        // Without this the keypress also reached the modal's own Escape
+        // handler, so clearing the search closed the entire picker.
+        e.stopPropagation();
         folderSearch.value = "";
         debouncedSearch();
       }
