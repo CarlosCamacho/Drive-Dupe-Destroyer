@@ -171,6 +171,81 @@ ck(ph.controlGroups === 0, '#84 control: without pHash these pairs are too far a
 ck(ph.mainGroups.length === 30, `#84 pHash groups the 30 pairs on the main thread (got ${ph.mainGroups.length})`);
 ck(JSON.stringify(ph.mainGroups) === JSON.stringify(ph.workerGroups), '#84 and the worker produces the IDENTICAL grouping');
 
+// ---------------------------------------------------------------------------
+// The same property with crop detection on (#86)
+// ---------------------------------------------------------------------------
+//
+// cropHashes was not carried by the payload at all, so bestCropDist returned
+// Infinity for every pair in the worker. Same class as #84, same blind spot:
+// the parity fixture carried no optional fields.
+const cr = await page.evaluate(async () => {
+  const { runMatching, packEntries } = await import('/js/matcher.js');
+
+  const rnd = (seed, n) => {
+    const h = new Uint8Array(n);
+    let x = (seed * 2654435761) >>> 0;
+    for (let i = 0; i < n; i++) { x = (x * 1664525 + 1013904223) >>> 0; h[i] = (x >>> 16) & 0xff; }
+    return h;
+  };
+  // 20 photo/crop pairs. Unrelated dHashes -- a crop shares no bands with its
+  // original, which is the premise -- but the crop's own hash equals the
+  // original's centre-region hash, and the colour/edge profile survives cropping.
+  const entries = new Map();
+  for (let p = 0; p < 20; p++) {
+    const centre = rnd(1000 + p, 18);
+    const colorHist = new Uint8Array(32).fill(80 + (p % 5));
+    const edgeHist = new Uint8Array(16).fill(40 + (p % 5));
+    entries.set(`orig${p}`, {
+      base12: rnd(p + 1, 18), base8: rnd(p + 1, 8), colorHist, edgeHist,
+      cropHashes: [{ name: 'center', hash: centre }],
+    });
+    const c2 = new Uint8Array(colorHist); c2[0] += 2;
+    const e2 = new Uint8Array(edgeHist); e2[0] += 2;
+    entries.set(`crop${p}`, {
+      base12: centre, base8: rnd(500 + p, 8), colorHist: c2, edgeHist: e2,
+      cropHashes: [{ name: 'center', hash: rnd(9000 + p, 18) }],
+    });
+  }
+  const allIds = [...entries.keys()];
+  const opts = { hamThresh: 8, withCropDetect: true, withColorMatch: true, allIds, emitInterval: 5, lshForceMode: 'loose' };
+  const norm = (groups) => groups.map(g => [...g].sort().join(',')).sort();
+
+  const mainRes = await runMatching({ entries, ...opts });
+
+  const w = new Worker('/js/worker-match.js', { type: 'module' });
+  const workerRes = await new Promise((resolve, reject) => {
+    w.onmessage = (ev) => {
+      if (ev.data.type === 'done') resolve(ev.data);
+      else if (ev.data.type === 'error') reject(new Error(ev.data.message));
+    };
+    w.onerror = (e) => reject(new Error(e.message || 'worker error'));
+    const { payload: packed, transfer } = packEntries(entries);
+    w.postMessage({ type: 'run', payload: { packed, ...opts } }, transfer);
+  });
+  w.terminate();
+
+  // The control: identical entries with the crop hashes removed must NOT group.
+  const stripped = new Map([...entries].map(([id, e]) =>
+    [id, { base12: e.base12, base8: e.base8, colorHist: e.colorHist, edgeHist: e.edgeHist }]));
+  const controlRes = await runMatching({ entries: stripped, ...opts });
+
+  // And crop detection on its own, with colour matching NOT ticked (#86).
+  const aloneRes = await runMatching({ entries, ...opts, withColorMatch: false });
+
+  return {
+    mainGroups: norm(mainRes.groups),
+    workerGroups: norm(workerRes.groups),
+    controlGroups: controlRes.groups.length,
+    aloneGroups: aloneRes.groups.length,
+  };
+});
+
+console.log(`  crop groups: main ${cr.mainGroups.length}, worker ${cr.workerGroups.length}, control (no cropHashes) ${cr.controlGroups}, crop-only ${cr.aloneGroups}`);
+ck(cr.controlGroups === 0, '#86 control: without cropHashes these pairs do not group');
+ck(cr.mainGroups.length === 20, `#86 crop detection groups the 20 pairs on the main thread (got ${cr.mainGroups.length})`);
+ck(JSON.stringify(cr.mainGroups) === JSON.stringify(cr.workerGroups), '#86 and the worker produces the IDENTICAL grouping');
+ck(cr.aloneGroups === 20, `#86 crop detection works without colour matching ticked (got ${cr.aloneGroups})`);
+
 console.log(f ? `\n${f} FAILED` : '\nALL CHECKS PASSED');
 await b.close();
 process.exit(f ? 1 : 0);

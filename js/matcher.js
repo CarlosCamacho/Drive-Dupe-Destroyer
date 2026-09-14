@@ -68,17 +68,27 @@ const B12 = 18;   // 144-bit dHash
 const B8 = 8;     // 64-bit dHash
 
 /**
+ * Every entry field beyond the two base hashes that a comparator in common.js
+ * reads. Packing and unpacking both drive off this list, so adding a field to
+ * the hasher and forgetting the transport is one edit, not two.
+ */
+export const OPTIONAL_ENTRY_FIELDS = ["pHashBits", "cropHashes", "colorHist", "edgeHist", "variants"];
+
+/**
  * Flatten entries into transferable buffers. Returns { payload, transfer }.
  *
- * Optional per-entry fields (pHashBits, histograms, variants) are NOT packed:
- * they only exist when crop, colour or pHash matching is on, and they are
- * variable-width. Those runs carry them as ordinary cloned objects, which is
- * the honest trade — packing a rarely used field would complicate the common
- * path for nothing.
+ * Optional per-entry fields (pHashBits, cropHashes, histograms, variants) are
+ * NOT packed into the flat buffers: they only exist when crop, colour or pHash
+ * matching is on, and they are variable-width. Those runs carry them as
+ * ordinary cloned objects, which is the honest trade — packing a rarely used
+ * field would complicate the common path for nothing.
  *
- * The name matters. This carried `pHash` while the hasher writes `pHashBits`
- * and bestDistWithPHash reads `pHashBits`, so the field arrived in the worker
- * as undefined and pHash mode silently did nothing at all (#84).
+ * But they MUST all ride along. This list is the entry as the comparators in
+ * common.js see it, and anything missing from it is a matching feature that
+ * silently does nothing: `pHashBits` was carried under the wrong name (#84),
+ * and `cropHashes` was not carried at all (#86). OPTIONAL_ENTRY_FIELDS is the
+ * single list both sides use, and test/phash-plumbing.test.js checks it against
+ * what common.js actually reads.
  */
 export function packEntries(entries) {
   const ids = [];
@@ -95,9 +105,11 @@ export function packEntries(entries) {
     b12.set(e.base12.subarray ? e.base12.subarray(0, B12) : e.base12.slice(0, B12), i * B12);
     if (e.base8) b8.set(e.base8.subarray ? e.base8.subarray(0, B8) : e.base8.slice(0, B8), i * B8);
     // Anything beyond the two base hashes rides along unpacked.
-    if (e.pHashBits || e.colorHist || e.edgeHist || e.variants) {
-      extras.push([id, { pHashBits: e.pHashBits, colorHist: e.colorHist, edgeHist: e.edgeHist, variants: e.variants }]);
+    let extra = null;
+    for (const k of OPTIONAL_ENTRY_FIELDS) {
+      if (e[k]) (extra ||= {})[k] = e[k];
     }
+    if (extra) extras.push([id, extra]);
     i++;
   }
   return {
@@ -118,10 +130,9 @@ export function unpackEntries({ ids, b12, b8, extras }) {
     };
     const x = extraMap.get(id);
     if (x) {
-      if (x.pHashBits) e.pHashBits = x.pHashBits;
-      if (x.colorHist) e.colorHist = x.colorHist;
-      if (x.edgeHist) e.edgeHist = x.edgeHist;
-      if (x.variants) e.variants = x.variants;
+      for (const k of OPTIONAL_ENTRY_FIELDS) {
+        if (x[k]) e[k] = x[k];
+      }
     }
     entries.set(id, e);
   }
@@ -289,7 +300,9 @@ export async function runMatching({
 
   let lumSorted = null;             // [{ id, lum }] ascending, built only if needed
   let lumPos = null;                // id -> index in lumSorted
-  if (withCropDetect && withColorMatch) {
+  // Built whenever crop detection is on -- it is the index the widening below
+  // walks, and without it crop detection has no candidates to test (#86).
+  if (withCropDetect) {
     lumSorted = [];
     for (const cid2 of ids) {
       const e = entries.get(cid2);
@@ -313,7 +326,14 @@ export async function runMatching({
     // since cropped images may not share LSH bands.
     // Use combined color+edge similarity as additional candidates.
     let extendedCandidates = candidates;
-    if (withCropDetect && withColorMatch && entry.colorHist && entry.edgeHist) {
+    // Gated on withCropDetect alone, not on withColorMatch as well. A crop does
+    // not share dHash bands with its original -- that is the premise of the
+    // feature -- so without this widening the pair is never even compared, and
+    // ticking "Crop detection" by itself did nothing whatsoever (#86). The
+    // histograms are now computed whenever crop detection is on, so they are
+    // here to be used. withColorMatch still decides whether a crop match is
+    // VERIFIED against the histograms, in bestDistExtended.
+    if (withCropDetect && entry.colorHist && entry.edgeHist) {
       // Widen the candidate set with images of similar colour and edge
       // structure, which a cropped copy shares even when its dHash bands differ.
       //

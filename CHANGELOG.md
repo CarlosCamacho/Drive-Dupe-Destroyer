@@ -8,6 +8,43 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 > The detailed, original per-version notes are archived in
 > [`docs/changelog/`](docs/changelog/). This file is the consolidated summary.
 
+## [14.7.4] - 2026-09-14
+
+### Fixed
+
+- **Crop detection did nothing either** (#86) — the same class of bug as #84,
+  which I should have caught in that pass. `packEntries` carried five optional
+  fields; the comparators in `common.js` read six. `cropHashes` was the one
+  missing, so `bestCropDist` returned `Infinity` for every pair in the worker
+  and the crop branch could never fire.
+- **And ticking "Crop detection" on its own could not find a candidate.** A crop
+  shares no dHash bands with its original — that is the premise of the feature —
+  so `runMatching` widens the candidate set using colour and edge similarity.
+  That widening was gated on colour matching being ticked *as well*, and the
+  histograms it needs were computed only in that case. The widening now runs
+  whenever crop detection is on, and the histograms are computed to match.
+  `withColorMatch` keeps its meaning: it still decides whether a crop match is
+  verified against the histograms.
+
+  Measured on a photo and a crop of it (dHash 86 bits apart, crop hashes exact):
+  1 group with everything present, 0 through the worker payload, 0 with crop
+  detection alone. All three now find it.
+
+### Changed
+
+- `OPTIONAL_ENTRY_FIELDS` is the single list `packEntries` and `unpackEntries`
+  both drive off, so adding a field to the hasher and forgetting the transport
+  is one edit rather than two.
+- `test/matcher-transport.test.js` (was `phash-plumbing`) now reads `common.js`
+  and asserts that **every** field a comparator reaches for on an entry is
+  carried by the payload. That is the check that would have caught both #84 and
+  #86 from a single file.
+- `tools/matcher-parity.mjs` gains a crop-detection parity pass through a real
+  worker, with a control proving the fixture is not matching on dHash.
+- Crop detection now costs more: full-resolution downloads (already the case),
+  plus the colour and edge histograms, plus the bounded candidate walk. It
+  previously cost nothing because it did nothing.
+
 ## [14.7.3] - 2026-09-14
 
 ### Fixed

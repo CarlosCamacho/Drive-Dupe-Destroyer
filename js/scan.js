@@ -312,7 +312,10 @@ async function fetchAllImagesFlat({ folderIds, exclusions, maxItems, pageSize, s
 export function cacheRecordNeedsRecompute(rec, { withCropDetect = false, withColorMatch = false, withPHash = false } = {}) {
   if (!rec?.base12) return true;
   if (withCropDetect && !rec.cropHashes) return true;
-  if (withColorMatch && (!rec.colorHist || !rec.edgeHist)) return true;
+  // Crop detection needs the histograms too: they are the only way a crop of an
+  // image is ever offered as a candidate, since it shares no dHash bands with
+  // the original (#86). A record cached by a colour-less run is a miss.
+  if ((withColorMatch || withCropDetect) && (!rec.colorHist || !rec.edgeHist)) return true;
   if (withPHash && !rec.pHashBits) return true;
   // Records written before the current hashing scheme are not comparable with
   // freshly computed ones. Treating them as misses is cheaper than wiping the
@@ -393,7 +396,11 @@ async function computeHashesWithDb(images, {
     const result = await computeHashesForFiles(toCompute, { 
       withVariants,
       withCropDetect,
-      withColorMatch,
+      // Crop detection needs the colour and edge histograms to find a candidate
+      // at all (#86). Nearly free here: hashing.js already skips the thumbnail
+      // fast path when crop detection is on, so the bitmap is decoded at full
+      // size either way and this is one more pass over it.
+      withColorMatch: withColorMatch || withCropDetect,
       withPHash,
       withRotation,
       concurrency, 
