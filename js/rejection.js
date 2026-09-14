@@ -107,6 +107,17 @@ function entryHashStr(entry) {
  * awaited first. Safe to call in tight loops (no async/await overhead).
  * Returns false if the set isn't loaded yet (fail-open: don't hide matches).
  */
+/**
+ * The rejection set as plain "hashA|hashB" keys.
+ *
+ * The matcher runs in a worker (#69), which has no database access and must not
+ * grow one. Handing it the keys keeps the "not a duplicate" decisions the user
+ * has made without the worker needing to know where they came from.
+ */
+export function getRejectionKeys() {
+  return rejectionSet ? Array.from(rejectionSet) : [];
+}
+
 export function isRejectedPairSync(entryA, entryB) {
   if (rejectionSet === null || rejectionSet.size === 0) return false;
   const a = entryHashStr(entryA);

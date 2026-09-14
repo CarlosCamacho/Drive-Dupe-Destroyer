@@ -19,6 +19,10 @@ import { toIso, chunk } from "./util.js";
 const DB_NAME = "drive_dupe_destroyer_db_v1";  // Namespaced: distinct from Drive Dupe Decimator
 const DB_VERSION = 2;  // v2: dedicated "rejections" store (was a single settings blob)
 
+// How long to wait for a blocking tab to close before giving up rather than
+// hanging. Long enough for someone who reads the message and acts on it.
+const BLOCKED_GRACE_MS = 10000;
+
 let dbp = null;
 let dbReady = false;
 
@@ -48,6 +52,7 @@ function openDb() {
   if (dbp) return dbp;
   
   dbp = new Promise((resolve, reject) => {
+    let blockedTimer = null;
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     
     req.onupgradeneeded = (event) => {
@@ -106,13 +111,32 @@ function openDb() {
       }
     };
     
-    // A second tab holding the old version blocks an upgrade indefinitely, with
-    // no feedback at all previously.
+    // A second tab holding the old version blocks the upgrade indefinitely.
+    //
+    // onblocked settles nothing by itself, and neither onsuccess nor onerror
+    // ever fires while the other connection stays open -- so this promise used
+    // to stay pending forever. Every database call begins `await openDb()`, so
+    // that did not degrade the app, it stopped it: the scan froze mid-phase with
+    // no error and nothing shown to the user. Measured as STILL PENDING after
+    // three seconds, resolving the instant the holding connection closed.
+    //
+    // So: say something actionable, and give up rather than hang. A scan
+    // without the hash cache is slow but correct; a frozen one is neither.
     req.onblocked = () => {
       console.warn("[DB] Upgrade blocked — another tab has this database open at an older version.");
+      notifyDbBlocked();
+      clearTimeout(blockedTimer);
+      blockedTimer = setTimeout(() => {
+        if (dbReady) return;              // it got through after all
+        reject(new Error(
+          "Another tab has Drive Dupe Destroyer open and is preventing a database " +
+          "update. Close the other tabs and reload."
+        ));
+      }, BLOCKED_GRACE_MS);
     };
 
     req.onsuccess = () => {
+      clearTimeout(blockedTimer);
       dbReady = true;
       const db = req.result;
       // Let a newer tab upgrade instead of deadlocking against our open handle.
@@ -126,11 +150,16 @@ function openDb() {
     };
     
     req.onerror = () => {
+      clearTimeout(blockedTimer);
       console.error("[DB] Failed to open:", req.error);
       reject(req.error);
     };
   });
   
+  // A rejected open must not be cached: the user can close the other tab and
+  // retry, and a stuck rejected promise would deny them that.
+  dbp.catch(() => { dbp = null; dbReady = false; });
+
   return dbp;
 }
 
@@ -199,6 +228,26 @@ export function isQuotaError(e) {
 
 // Report a full cache once per session, not once per failed batch.
 let _quotaWarned = false;
+
+// Set by the UI so a blocked upgrade can say something the user can act on.
+// Mirrors the quota notifier below; db.js stays free of any UI import.
+let _dbBlockedNotify = null;
+let _dbBlockedWarned = false;
+
+export function setDbBlockedNotifier(fn) {
+  _dbBlockedNotify = typeof fn === "function" ? fn : null;
+}
+
+function notifyDbBlocked() {
+  if (_dbBlockedWarned) return;
+  _dbBlockedWarned = true;
+  if (_dbBlockedNotify) {
+    _dbBlockedNotify(
+      "Another tab has Drive Dupe Destroyer open and is preventing a database " +
+      "update. Close the other tabs and reload this page."
+    );
+  }
+}
 
 export function onQuotaExceeded(notify) {
   if (_quotaWarned) return;

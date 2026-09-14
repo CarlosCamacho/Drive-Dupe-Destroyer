@@ -24,7 +24,9 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const SCAN = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "js", "scan.js"), "utf8");
+// The matching core moved from scan.js to matcher.js when it was ported to a
+// worker (#69); the constants under test moved with it.
+const SCAN = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "js", "matcher.js"), "utf8");
 
 const LUM_LIMIT = 200;
 const SCAN_CAP = 400;
@@ -94,7 +96,7 @@ function positionalVisits(n) {
 }
 
 describe("crop+colour candidate widening", () => {
-  test("the constants here match the ones scan.js uses", () => {
+  test("the constants here match the ones matcher.js uses", () => {
     assert.match(SCAN, new RegExp(`COLOR_LUM_LIMIT = ${LUM_LIMIT}\\b`));
     assert.match(SCAN, new RegExp(`COLOR_SCAN_CAP = ${SCAN_CAP}\\b`));
     assert.match(SCAN, /colorDiff >= 200/, "the pre-filter threshold the limit is derived from");
