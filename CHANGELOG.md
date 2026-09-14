@@ -8,6 +8,40 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 > The detailed, original per-version notes are archived in
 > [`docs/changelog/`](docs/changelog/). This file is the consolidated summary.
 
+## [14.7.7] - 2026-09-14
+
+### Fixed
+
+- **Live results nominated a different file to keep than the finished scan,
+  under the folder-priority rule** (#91). `runScan` built folder paths in phase
+  4, *after* matching, so for the whole time live results were on screen the
+  path map was empty — and the folder-priority rule ranks on the resolved path.
+  Every file scored "no folder match" and the keeper fell through to the
+  tie-break; when the scan ended, paths arrived and the keeper silently changed.
+
+  Measured on one group with priority `originals`: the live table kept
+  `copy.jpg` and offered `original.jpg` for deletion, while the finished scan
+  did the opposite. The app invites you to act on the live table, so anyone who
+  set a folder priority and acted early could delete the file the rule exists to
+  protect.
+
+  Paths for live groups are now resolved in the background as the groups
+  arrive, merged into the live table, and the rows re-rendered. This costs
+  nothing overall: matching is CPU-bound and runs after hashing, so the network
+  is idle exactly then, and `buildPathsParallel` memoises within a scan and
+  persists between them (#79) — phase 4 now finds the work already done.
+
+  A short window remains between a group appearing and its paths landing.
+  Closing it entirely would mean not showing a group until its paths resolve,
+  which is the opposite of what live results are for.
+
+### Changed
+
+- `tools/live-keeper.mjs` drives the real results table and checks that the live
+  and final renders nominate the same keeper — reading the rendered rows, not an
+  internal, since `deleteCandidate` is literally what "Select all" sweeps into
+  the delete set.
+
 ## [14.7.6] - 2026-09-14
 
 ### Fixed
