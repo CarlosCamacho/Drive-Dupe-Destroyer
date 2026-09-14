@@ -20,7 +20,7 @@
 // against APP_VERSION at boot and warns if they diverge -- a mismatch means a
 // release bumped util.js without bumping the cache, which would serve stale JS.
 // Keep SW_VERSION in step with APP_VERSION in js/util.js.
-const SW_VERSION = "14.4.0";
+const SW_VERSION = "14.5.0";
 // Deriving the cache name from the version means every release gets a fresh
 // cache and the activate handler evicts the old one. Bumping the version is
 // now sufficient to invalidate; it is no longer a separate thing to remember.
@@ -57,7 +57,6 @@ const PRECACHE = [
   "./js/scan.js",
   "./js/security.js",
   "./js/settings.js",
-  "./js/shared-worker-pool.js",
   "./js/telemetry.js",
   "./js/ui.js",
   "./js/undo.js",
@@ -137,8 +136,8 @@ function addSecurityHeaders(response) {
   headers.set("Content-Security-Policy",
     "default-src 'self'; " +
     "script-src 'self' https://accounts.google.com https://apis.google.com https://*.googleapis.com; " +
-    "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; " +
-    "font-src 'self' https://cdnjs.cloudflare.com data:; " +
+    "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.lineicons.com; " +
+    "font-src 'self' https://cdnjs.cloudflare.com https://cdn.lineicons.com data:; " +
     "connect-src 'self' https://www.googleapis.com https://oauth2.googleapis.com https://accounts.google.com https://content.googleapis.com; " +
     "img-src 'self' blob: data: https://lh3.googleusercontent.com https://www.googleapis.com https://*.googleusercontent.com; " +
     "frame-src https://accounts.google.com https://*.google.com; " +

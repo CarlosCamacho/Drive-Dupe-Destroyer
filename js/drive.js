@@ -221,6 +221,109 @@ export function parseBatchResponse(text, boundaryHint) {
   return out;
 }
 
+/**
+ * Fetch metadata for many files in one request.
+ *
+ * Path resolution issued one GET per ancestor folder (#68): a deep tree became
+ * a long tail of small sequential requests, since level 5 could not be asked
+ * for until level 6 came back. The batch endpoint was already implemented here
+ * for trashing and is not trash-specific.
+ *
+ * Returns a Map of id to metadata for everything that came back. Ids that
+ * failed are simply absent — the caller decides whether that is fatal, which
+ * matters because a failed ancestor lookup must mark a path INCOMPLETE rather
+ * than silently truncate it (#46).
+ *
+ * Falls back to individual GETs if the batch endpoint itself errors, so this can
+ * only be faster or equal, never a new failure mode.
+ */
+export async function batchGetFileMeta(fileIds, fields = "id,name,parents,mimeType", { signal = null } = {}) {
+  const out = new Map();
+  const ids = [...new Set(fileIds)].filter(Boolean);
+  if (ids.length === 0) return out;
+
+  const individually = async (subset) => {
+    await Promise.all(subset.map(async (id) => {
+      try { out.set(id, await getFileMeta(id, fields, { signal })); } catch { /* caller treats absence as failure */ }
+    }));
+  };
+
+  // Google caps a batch at 100 sub-requests.
+  for (let i = 0; i < ids.length; i += 100) {
+    if (signal?.aborted) throw new Error("Operation cancelled");
+    const chunk = ids.slice(i, i + 100);
+    const boundary = `batch_meta_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+    let body = "";
+    for (const id of chunk) {
+      body += `--${boundary}\r\n`;
+      body += `Content-Type: application/http\r\n`;
+      body += `Content-ID: ${id}\r\n`;
+      body += `Content-Transfer-Encoding: binary\r\n\r\n`;
+      body += `GET /drive/v3/files/${encodeURIComponent(id)}?fields=${encodeURIComponent(fields)} HTTP/1.1\r\n\r\n`;
+    }
+    body += `--${boundary}--`;
+
+    try {
+      const res = await authedFetch("https://www.googleapis.com/batch/drive/v3", {
+        method: "POST",
+        headers: { "Content-Type": `multipart/mixed; boundary=${boundary}` },
+        body,
+        signal
+      });
+      if (!res.ok) { await individually(chunk); continue; }
+
+      const parsed = parseBatchBodies(await res.text().catch(() => ""));
+      const missing = [];
+      for (const id of chunk) {
+        const meta = parsed.get(id);
+        if (meta) out.set(id, meta); else missing.push(id);
+      }
+      if (missing.length) await individually(missing);
+    } catch (e) {
+      if (signal?.aborted || /abort/i.test(e?.message || "")) throw e;
+      await individually(chunk);
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Parse the JSON bodies out of a multipart batch response.
+ *
+ * parseBatchResponse returns statuses only, which is all batchTrash needs. A
+ * batched GET needs the payload, so this is a separate reader rather than a
+ * change to a function the delete path depends on.
+ */
+export function parseBatchBodies(text) {
+  const out = new Map();
+  if (!text) return out;
+
+  const bMatch = text.match(/--(batch[^\r\n]+)/);
+  const parts = bMatch ? text.split("--" + bMatch[1]) : text.split(/\r\n--/);
+
+  for (const part of parts) {
+    if (!part || part.trim() === "--") continue;
+    const idMatch = part.match(/Content-ID:\s*<?\s*response-([^>\r\n]+)>?/i);
+    const statusMatch = part.match(/HTTP\/\d\.\d\s+(\d{3})/);
+    if (!idMatch || !statusMatch) continue;
+    if (parseInt(statusMatch[1], 10) >= 300) continue;
+
+    // The JSON body is whatever follows the blank line after the sub-response
+    // headers. Take from the first "{" so a stray header ordering cannot throw
+    // the offset out.
+    const brace = part.indexOf("{", part.indexOf(statusMatch[0]));
+    if (brace < 0) continue;
+    const end = part.lastIndexOf("}");
+    if (end <= brace) continue;
+    try {
+      out.set(idMatch[1].trim(), JSON.parse(part.slice(brace, end + 1)));
+    } catch { /* a body we cannot read is the same as one we did not get */ }
+  }
+  return out;
+}
+
 export async function batchTrash(fileIds, { signal = null } = {}) {
   const results = { success: [], failed: [] };
 

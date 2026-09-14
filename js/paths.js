@@ -13,7 +13,7 @@
  */
 // Path resolution with caching
 
-import { driveFetch, getFileMeta } from "./drive.js";
+import { driveFetch, getFileMeta, batchGetFileMeta } from "./drive.js";
 import { makeLimiter, CONFIG } from "./util.js";
 import { pathCacheGet, pathCacheSet, pathCacheGetBatch, pathCacheClear } from "./db.js";
 
@@ -119,6 +119,55 @@ export async function walkParents(file, fetchMeta, { maxDepth = 20, signal = nul
   return { path: "/" + parts.join("/"), complete };
 }
 
+const META_FIELDS = "id,name,parents,mimeType";
+
+/**
+ * Fill metaCache with every ancestor of `files`, a whole level at a time.
+ *
+ * The per-file walk below still does the work; this just means it finds each
+ * ancestor already resolved. One GET per ancestor folder meant a deep tree
+ * became a long tail of small sequential requests -- level 5 could not be asked
+ * for until level 6 returned -- while siblings share almost all their ancestors.
+ * Breadth-first with a batched fetch turns that into roughly one request per
+ * level of depth (#68).
+ *
+ * Best-effort by design: anything this fails to prefetch is simply fetched the
+ * old way by the walk, which is also what preserves the completeness tracking
+ * from #46 -- a failure here must not be mistaken for "this file has no parent".
+ */
+async function prefetchAncestors(files, { signal = null } = {}) {
+  let frontier = new Set();
+  for (const f of files) {
+    const pid = f?.parents?.[0];
+    if (pid) frontier.add(pid);
+  }
+
+  for (let depth = 0; depth < CONFIG.MAX_PATH_DEPTH && frontier.size; depth++) {
+    if (signal?.aborted) throw new Error("Scan stopped.");
+
+    const wanted = [...frontier].filter(id => !metaCache.has(id + "|" + META_FIELDS));
+    if (wanted.length === 0) break;
+
+    let fetched;
+    try {
+      fetched = await batchGetFileMeta(wanted, META_FIELDS, { signal });
+    } catch (e) {
+      if (isAbort(e) || signal?.aborted) throw new Error("Scan stopped.");
+      return;                       // leave the rest to the per-file walk
+    }
+
+    const next = new Set();
+    for (const [id, meta] of fetched) {
+      // Seed the same cache getMeta() reads, so the walk sees a resolved value
+      // rather than issuing its own request.
+      metaCache.set(id + "|" + META_FIELDS, Promise.resolve(meta));
+      const pid = meta?.parents?.[0];
+      if (pid) next.add(pid);
+    }
+    frontier = next;
+  }
+}
+
 export async function buildPathsParallel(files, { 
   concurrency = CONFIG.PATH_CONCURRENCY, 
   signal = null, 
@@ -137,7 +186,13 @@ export async function buildPathsParallel(files, {
   }
   
   const uncachedFiles = files.filter(f => !map.has(f.id));
-  
+
+  // Warm every ancestor first, so the per-file walks below hit cache instead of
+  // each issuing its own chain of requests.
+  if (uncachedFiles.length > 0) {
+    await prefetchAncestors(uncachedFiles, { signal });
+  }
+
   if (uncachedFiles.length === 0) {
     if (onProgress) onProgress(files.length, files.length);
     return map;

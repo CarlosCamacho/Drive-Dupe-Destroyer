@@ -128,7 +128,8 @@ export function applyContentSecurityPolicy() {
   // Meta-tag CSP limitations we work around:
   //  - Google GIS OAuth opens a POPUP window (not a frame), so frame-src doesn't cover it.
   //    Popups inherit the opener's CSP; blocking scripts in the popup breaks the OAuth flow.
-  //  - font-src must include cdnjs for Font Awesome to load.
+  //  - font-src must include cdnjs (Font Awesome, used for the in-table
+  //    action glyphs) and cdn.lineicons.com (the sidebar section icons).
   //  - upgrade-insecure-requests breaks localhost (HTTP) development.
   //  - form-action 'none' is not supported in all meta-CSP contexts.
   //
@@ -140,9 +141,9 @@ export function applyContentSecurityPolicy() {
     // Google GIS script + any scripts it needs
     "script-src 'self' https://accounts.google.com https://apis.google.com https://*.googleapis.com",
     // Font Awesome from cdnjs, inline styles for the app
-    "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com",
+    "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.lineicons.com",
     // Font Awesome web fonts
-    "font-src 'self' https://cdnjs.cloudflare.com data:",
+    "font-src 'self' https://cdnjs.cloudflare.com https://cdn.lineicons.com data:",
     // Drive API + OAuth token endpoint
     "connect-src 'self' https://www.googleapis.com https://oauth2.googleapis.com https://accounts.google.com https://content.googleapis.com",
     // Drive thumbnails + blob URLs for image display
@@ -191,4 +192,31 @@ export function applyAllSecurityPolicies() {
   applyContentSecurityPolicy();
   stripTokensFromUrl();
   console.log("[Security] All policies applied");
+}
+
+// ─── Cross-origin isolation ──────────────────────────────────────────────────
+//
+// Moved here from shared-worker-pool.js, which was 666 lines of SharedArrayBuffer
+// machinery that never ran: `new SharedWorkerPool()` appeared only inside that
+// module's own factory, which nothing outside called, while hashing.js has its
+// own plain worker pool doing all the work. Same shape as the WASM module in
+// #47. This is the only part anything consumed. See #64.
+//
+// Expect sabAvailable to be false: cross-origin isolation needs COOP+COEP, and
+// COEP breaks Drive's thumbnail loading, which is a worse trade than losing a
+// SharedArrayBuffer this app has no use for.
+export function getSecurityHeadersStatus() {
+  let sabAvailable = false;
+  try {
+    sabAvailable = typeof SharedArrayBuffer !== "undefined"
+      && new SharedArrayBuffer(1).byteLength === 1;
+  } catch { /* blocked by the absence of cross-origin isolation */ }
+
+  return {
+    sabAvailable,
+    atomicsAvailable: typeof Atomics !== "undefined",
+    crossOriginIsolated: typeof globalThis.crossOriginIsolated === "boolean"
+      ? globalThis.crossOriginIsolated
+      : false,
+  };
 }

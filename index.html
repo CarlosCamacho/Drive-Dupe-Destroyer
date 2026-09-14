@@ -23,8 +23,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <!-- Version shown here is a static fallback; ui.js rewrites the title and the
        #appVersion badge from APP_VERSION (js/util.js) on boot. -->
-  <title>Drive Dupe Destroyer (DDD) v14.4.0</title>
+  <title>Drive Dupe Destroyer (DDD) v14.5.0</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="noopener noreferrer" integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+  <!-- Lineicons for the sidebar section headers (#60). No integrity hash: the
+       CDN serves a rolling 5.0 build, so a pinned hash would break on their
+       next patch release rather than protect anything. -->
+  <link rel="stylesheet" href="https://cdn.lineicons.com/5.0/lineicons.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
   <link rel="stylesheet" href="styles.css">
   <!-- Donate button styles (kept inline so only index.html needs changing) -->
   <style>
@@ -60,7 +64,7 @@
     <!-- Header -->
     <header class="header">
       <div class="headerLeft">
-        <h1>Drive Dupe Destroyer <span class="muted" id="appVersion">v14.4.0</span></h1>
+        <h1>Drive Dupe Destroyer <span class="muted" id="appVersion">v14.5.0</span></h1>
         <p class="subtitle">Google Drive Similar Image Finder</p>
       </div>
       <div class="headerRight">
@@ -85,8 +89,9 @@
         <!-- Folder Selection -->
         <div class="section">
           <div class="sectionHeader">
-            <span>📁 Folders</span>
+            <span class="sectionTitle"><i class="lni lni-folder-1 sectionIcon" aria-hidden="true"></i>Folders</span>
             <span class="badge" id="includedCount">0</span>
+            <span class="sectionChevron" aria-hidden="true"></span>
           </div>
           <div class="sectionBody">
             <div id="foldersSummary" class="muted">None selected</div>
@@ -98,7 +103,8 @@
         <!-- Scan Settings -->
         <div class="section">
           <div class="sectionHeader">
-            <span>⚙️ Scan Settings</span>
+            <span class="sectionTitle"><i class="lni lni-gear-1 sectionIcon" aria-hidden="true"></i>Scan Settings</span>
+            <span class="sectionChevron" aria-hidden="true"></span>
           </div>
           <div class="sectionBody">
             <div class="formRow">
@@ -130,10 +136,10 @@
             <div class="formRow">
               <label>Min image size <span class="helpIcon" data-help="imgMinSize">?</span></label>
               <div class="sizeInputGroup">
-                <input type="number" id="imgMinSize" value="0" min="0" step="1">
+                <input type="number" id="imgMinSize" value="50" min="0" step="1">
                 <select id="imgMinUnit">
-                  <option value="KB">KB</option>
-                  <option value="MB" selected>MB</option>
+                  <option value="KB" selected>KB</option>
+                  <option value="MB">MB</option>
                 </select>
               </div>
             </div>
@@ -154,8 +160,9 @@
         <!-- Image Types (v14) -->
         <div class="section">
           <div class="sectionHeader">
-            <span>🖼️ Image Types</span>
+            <span class="sectionTitle"><i class="lni lni-gallery sectionIcon" aria-hidden="true"></i>Image Types</span>
             <span class="badge" id="imgTypeCount">18</span>
+            <span class="sectionChevron" aria-hidden="true"></span>
           </div>
           <div class="sectionBody">
             <div class="muted" style="margin-bottom:6px;">Only the checked formats are included in a scan.</div>
@@ -186,7 +193,8 @@
         <!-- Matching Mode (Combined Quick Scan + Matching) -->
         <div class="section">
           <div class="sectionHeader">
-            <span>🎯 Matching Mode</span>
+            <span class="sectionTitle"><i class="lni lni-search-1 sectionIcon" aria-hidden="true"></i>Matching Mode</span>
+            <span class="sectionChevron" aria-hidden="true"></span>
           </div>
           <div class="sectionBody">
             <div class="radioGroup matchModeGroup">
@@ -268,7 +276,7 @@
                   </select>
                 </div>
                 <div class="formRow">
-                  <label for="useDeltaScan">Delta scan (changes only) <span class="helpIcon" data-help="useDeltaScan">?</span></label>
+                  <label for="useDeltaScan">Also check Drive for changes <span class="helpIcon" data-help="useDeltaScan">?</span></label>
                   <input type="checkbox" id="useDeltaScan">
                 </div>
               </details>
@@ -279,7 +287,8 @@
         <!-- Keep Rules -->
         <div class="section">
           <div class="sectionHeader">
-            <span>🏆 Keep Rule</span>
+            <span class="sectionTitle"><i class="lni lni-trophy-1 sectionIcon" aria-hidden="true"></i>Keep Rule</span>
+            <span class="sectionChevron" aria-hidden="true"></span>
           </div>
           <div class="sectionBody">
             <div class="formRow">
@@ -303,7 +312,8 @@
         <!-- Cache -->
         <div class="section">
           <div class="sectionHeader">
-            <span>💾 Cache</span>
+            <span class="sectionTitle"><i class="lni lni-database-2 sectionIcon" aria-hidden="true"></i>Cache</span>
+            <span class="sectionChevron" aria-hidden="true"></span>
           </div>
           <div class="sectionBody">
             <div class="formRow">
@@ -375,11 +385,14 @@
           <!-- Toolbar -->
           <div class="toolbar">
             <div class="toolbarLeft">
-              <button type="button" id="btnSelectAll" class="btnGhost" disabled>Select All</button>
-              <button type="button" id="btnSelectNone" class="btnGhost" disabled>Select None</button>
+              <button type="button" id="btnSelectAll" class="btnGhost" disabled title="Select every duplicate. Files marked KEEP are never selected.">Select all duplicates</button>
+              <button type="button" id="btnSelectNone" class="btnGhost" disabled title="Clear the current selection">Clear selection</button>
             </div>
             <div class="toolbarRight">
-              <select id="filterMode" aria-label="Filter results">
+              <input type="search" id="resultSearch" class="resultSearch"
+                     placeholder="Search name or folder…"
+                     aria-label="Filter results by file name or folder path">
+              <select id="filterMode" aria-label="Filter results by similarity">
                 <option value="all">All</option>
                 <option value="pct90">≥90% similar</option>
                 <option value="pct75">≥75% similar</option>
@@ -399,10 +412,10 @@
                 <th width="30"></th>
                 <th width="70">Compare</th>
                 <th width="60">Thumb</th>
-                <th>Name</th>
-                <th>Folder</th>
-                <th width="80">Dims</th>
-                <th width="70">Size</th>
+                <th class="sortable" data-sort="name" tabindex="0" role="button" title="Sort groups by file name">Name</th>
+                <th class="sortable" data-sort="folder" tabindex="0" role="button" title="Sort groups by folder">Folder</th>
+                <th width="80" class="sortable" data-sort="dims" tabindex="0" role="button" title="Sort groups by pixel count">Dims</th>
+                <th width="90" class="sortable" data-sort="size" tabindex="0" role="button" title="Sort groups by the space their duplicates would free">Size</th>
                 <th width="60">Sim</th>
                 <th width="140">Group / Match</th>
                 <th width="70">Action</th>
@@ -423,11 +436,11 @@
         <div class="bottomBar">
           <div class="bottomBarItem">
             <button type="button" id="btnExportCsv" class="btn btn-sm" title="Export as CSV spreadsheet">CSV</button>
-                  <button type="button" id="btnExportJson" class="btnGhost">📥 Export Results</button>
+                  <button type="button" id="btnExportJson" class="btnGhost">📥 Export Results</button><span class="helpIcon" data-help="exportResults">?</span>
             <span class="helpIcon" data-help="exportResults">?</span>
           </div>
           <div class="bottomBarItem">
-            <button type="button" id="btnQueueOpen" class="btnGhost">📋 Queue (<span id="queueCount">0</span>)</button>
+            <button type="button" id="btnQueueOpen" class="btnGhost">📋 Queue (<span id="queueCount">0</span>)</button><span class="helpIcon" data-help="queue">?</span>
             <span class="helpIcon" data-help="queue">?</span>
           </div>
         </div>

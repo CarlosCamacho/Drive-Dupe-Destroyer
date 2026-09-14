@@ -21,11 +21,12 @@
 // sw.js cannot import ES modules, so it carries its own SW_VERSION literal;
 // app.js compares the two at boot and warns on a mismatch (a stale cache).
 // serve_secure.py parses this line at startup, so keep the format as-is.
-export const APP_VERSION = "14.4.0";
+export const APP_VERSION = "14.5.0";
 
 // Configuration constants
 export const CONFIG = {
-  HASH_CONCURRENCY: 6,
+  // HASH_CONCURRENCY moved to hashing.js, where it is derived from the worker
+  // pool size rather than guessed independently of it (#66).
   PATH_CONCURRENCY: 10,
   RENDER_BATCH_SIZE: 100,
   AUTH_TIMEOUT_MS: 60000,
@@ -50,6 +51,15 @@ export const HELP_TEXT = {
   cropDetect: "Detect images that are crops of each other. Hashes multiple sub-regions (center, quadrants) so a cropped version matches the original. Slower but catches cropped duplicates.",
   colorMatch: "Compare color distribution AND edge/texture structure between images. Uses Sobel edge detection to build directional texture histograms, preventing false positives on images that share colors but have different content. Best combined with crop detection.",
   dhashSize: "Size of the perceptual hash grid. 8×8 = 64 bits (faster), 12×12 = 144 bits (more accurate). Default: 12.",
+  // #63: these six controls had no HELP_TEXT entry, so no popover was ever
+  // created for them -- and useDeltaScan already carried a data-help attribute
+  // pointing at a key that did not exist, which the wiring silently skips.
+  rotationVariants: "Also compare each image rotated 90°, 180° and 270°. Finds duplicates that were re-saved sideways, at the cost of four times the hashing work per image.",
+  pHashMode: "Use a DCT-based perceptual hash alongside the difference hash. More tolerant of brightness, contrast and compression changes, and slower. Worth enabling when near-identical edits are being missed.",
+  aspectFilter: "Skip comparing two images whose width-to-height ratios differ by more than the tolerance below. A free metadata check that avoids most pointless comparisons — leave it on unless you are looking for heavily cropped versions.",
+  aspectTolerance: "How far two aspect ratios may differ and still be compared, as a percentage. Higher values catch more crops and cost more time. Ignored when the aspect ratio pre-filter is off.",
+  lshMode: "How aggressively candidate pairs are shortlisted before the expensive comparison. Auto picks from your library size. Loose finds more matches and takes longer; strict is faster and may miss borderline pairs.",
+  useDeltaScan: "After scanning the selected folders, also ask Drive what has changed since last time, so files added or removed elsewhere are reconciled. This runs in addition to the folder scan — it does not make the scan shorter.",
   folderPriority: "Comma-separated folder name patterns. Files in folders matching earlier patterns are preferred as keepers.",
   exportResults: "Download the duplicate groups found in this scan as a JSON file. Useful for record-keeping or processing elsewhere.",
   queue: "Files added to the queue will be moved to trash when you process the queue. Use this for bulk deletions across multiple groups.",
