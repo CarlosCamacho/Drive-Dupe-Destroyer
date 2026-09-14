@@ -11,7 +11,7 @@
  * Full terms: see the LICENSE file, or
  * https://polyformproject.org/licenses/noncommercial/1.0.0/
  */
-// Image hashing with WASM acceleration and SharedArrayBuffer support
+// Image hashing, with SharedArrayBuffer support when the headers allow it
 
 import { makeLimiter, nowMs, CONFIG } from "./util.js";
 import { AIMDController } from "./aimd.js";
@@ -25,18 +25,18 @@ export { bestDist, hammingWithThreshold } from "./common.js";
 // Dynamic Imports for Optional Modules
 // ============================================================================
 
-let wasmModule = null;
+// There was a wasmModule here, dynamically importing js/wasm-hash.js for an
+// advertised "2-3x speedup". It never once ran: initWasm() fetched ./dhash.wasm,
+// a file that was not in the repository, had never been in its history, and that
+// no build step produced. So isWasmAvailable() was permanently false, the guarded
+// fast path below was dead, and the telemetry panel reported "WASM active: No" --
+// which reads as a browser limitation rather than a missing file. Removed rather
+// than completed; see #47 for the reasoning and for what finishing it would have
+// required (a build step, and a test asserting the two paths produce
+// byte-identical hashes, without which #42 recurs).
 let sharedWorkerPoolModule = null;
 
 async function loadOptionalModules() {
-  // Try to load WASM module
-  try {
-    wasmModule = await import("./wasm-hash.js");
-    await wasmModule.initWasm();
-    console.log('[Hashing] WASM module loaded');
-  } catch (e) {
-    console.log('[Hashing] WASM module not available, using JS fallback');
-  }
   
   // Try to load SharedWorkerPool
   try {
@@ -135,9 +135,11 @@ const HASH_EDGE = 256;
  * derived differently — which would silently break matching for part of a
  * library with no visible error.
  *
- * 2: the WASM path now downsamples to HASH_EDGE before hashing. It previously
- *    hashed at full resolution, so its cached values do not match the worker
- *    path's (which always downsampled) or the current WASM path's.
+ * 2: the (since removed, see #47) WASM path now downsamples to HASH_EDGE before
+ *    hashing. It previously hashed at full resolution, so its cached values
+ *    match neither the worker path's nor anything computed after this bump.
+ *    Kept in this list because records written under version 1 still exist in
+ *    users' caches and must still be treated as misses.
  * 3: hashes are now composited onto white instead of transparent black, so
  *    images with an alpha channel hash differently (and correctly) from before.
  */
@@ -154,8 +156,7 @@ let hashingStats = {
   throttled: 0,          // 429s seen — drives the AIMD decrease
   concurrency: CONFIG.HASH_CONCURRENCY,
   cacheHits: 0,
-  wasmUsed: 0,
-  jsUsed: 0,
+  hashed: 0,           // images actually hashed this run
   errors: [],
   startTime: 0,
   endTime: 0
@@ -169,7 +170,6 @@ export function getHashingStats() {
     rate: hashingStats.success > 0 && duration > 0
       ? (hashingStats.success / (duration / 1000)).toFixed(1)
       : 0,
-    wasmAvailable: wasmModule?.isWasmAvailable?.() || false,
     sabAvailable: sharedWorkerPoolModule?.getSecurityHeadersStatus?.().sabAvailable || false
   };
 }
@@ -178,7 +178,7 @@ export function resetHashingStats() {
   hashingStats = { 
     success: 0, failed: 0, retried: 0, cacheHits: 0,
     throttled: 0, concurrency: CONFIG.HASH_CONCURRENCY,
-    wasmUsed: 0, jsUsed: 0, errors: [],
+    hashed: 0, errors: [],
     startTime: nowMs(), endTime: 0
   };
 }
@@ -317,64 +317,7 @@ function sleep(ms) {
  * Compute hash using WASM if available, otherwise worker
  */
 async function computeHashOptimized(blob, withVariants, withCropDetect = false, withColorMatch = false, withPHash = false, withRotation = false) {
-  // Try WASM path if available (for base hashes only, worker for extended features)
-  if (wasmModule?.isWasmAvailable?.() && !withCropDetect && !withColorMatch) {
-    let imageBitmap = null;
-    try {
-      // Decode straight to HASH_EDGE. This used to decode at full resolution,
-      // allocate an OffscreenCanvas the same size, and pull the whole thing back
-      // with getImageData — roughly 96 MB of RGBA for a 6000x4000 photo, times
-      // HASH_CONCURRENCY in flight, to produce a 12x12 and an 8x8 grid. The
-      // browser's own downscale (often on the GPU) is far cheaper than moving
-      // 24M pixels through getImageData, and dHash cannot tell the difference.
-      imageBitmap = await createImageBitmap(blob, {
-        resizeWidth: HASH_EDGE,
-        resizeHeight: HASH_EDGE,
-        resizeQuality: 'low'
-      });
-      const canvas = new OffscreenCanvas(HASH_EDGE, HASH_EDGE);
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      // Composite onto white, matching getPooledCtx in worker-hash.js. A fresh
-      // OffscreenCanvas is transparent black, and the dHash grayscale ignores
-      // alpha, so without this a transparent PNG hashes as though its
-      // background were black -- and, worse, the WASM and worker paths would
-      // disagree about the same image while both claiming HASH_VERSION 3.
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, HASH_EDGE, HASH_EDGE);
-      ctx.drawImage(imageBitmap, 0, 0);
-      // One readback, reused for both hash sizes — it was previously read twice.
-      const imageData = ctx.getImageData(0, 0, HASH_EDGE, HASH_EDGE);
-
-      const base12 = wasmModule.computeDHashFromRGBA(imageData.data, HASH_EDGE, HASH_EDGE, 12);
-      const base8 = wasmModule.computeDHashFromRGBA(imageData.data, HASH_EDGE, HASH_EDGE, 8);
-
-      hashingStats.wasmUsed++;
-      imageBitmap.close();
-      imageBitmap = null;
-      
-      let variants = [];
-      if (withVariants) {
-        // Use worker for variant transforms
-        const bmp = await createImageBitmap(blob, { resizeWidth: HASH_EDGE, resizeHeight: HASH_EDGE, resizeQuality: 'low' });
-        const result = await hashInWorker(bmp, true);
-        variants = (result.variants || []).map(v => ({
-          base8: new Uint8Array(v.base8),
-          base12: new Uint8Array(v.base12)
-        }));
-      }
-      
-      return { base8, base12, variants, cropHashes: null, colorHist: null, edgeHist: null };
-    } catch (e) {
-      console.warn('[WASM] Hash failed, falling back to worker:', e.message);
-    } finally {
-      // close() was previously only reached on success, leaking the decoded
-      // bitmap whenever the WASM call threw and we fell through to the worker.
-      if (imageBitmap) { try { imageBitmap.close(); } catch {} }
-    }
-  }
-  
-  // Worker fallback (also used when crop/color features are enabled)
-  hashingStats.jsUsed++;
+  hashingStats.hashed++;
   
   const bmp = await createImageBitmap(blob, {
     resizeWidth: HASH_EDGE,
@@ -564,6 +507,5 @@ export function getWorkerPoolStatus() {
     poolSize: workers.length,
     pendingJobs: pending.size,
     initialized: poolInitialized,
-    wasmAvailable: wasmModule?.isWasmAvailable?.() || false
   };
 }
