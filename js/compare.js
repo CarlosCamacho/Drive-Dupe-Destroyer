@@ -34,6 +34,11 @@ let onGetPathMap = null;
 let onIgnoreGroup = null;
 let onGetIdToEntry = null;
 let currentGroupIndex = -1;
+// Which pair WITHIN the current group is on screen. The view used to pair the
+// keeper with group.find(f => f.id !== keep.id) -- the first other member --
+// and never show the rest, then report "All groups processed!", which reads as
+// having seen everything. A group of N now walks N-1 pairs. See #55.
+let currentPairIndex = 0;
 let allGroups = [];
 let modalKeyboardHandler = null;
 let currentIdToEntry = null;
@@ -51,8 +56,8 @@ export function wireCompare() {
   const btnRightEdit = el("btnCompareRightEdit");
   
   if (btnClose) btnClose.onclick = closeCompare;
-  if (btnPrev) btnPrev.onclick = () => navigateToGroup(currentGroupIndex - 1);
-  if (btnNext) btnNext.onclick = () => navigateToGroup(currentGroupIndex + 1);
+  if (btnPrev) btnPrev.onclick = () => navigatePair(-1);
+  if (btnNext) btnNext.onclick = () => navigatePair(1);
   if (btnLeftDelete) btnLeftDelete.onclick = () => handleDelete('left');
   if (btnRightDelete) btnRightDelete.onclick = () => handleDelete('right');
   
@@ -79,8 +84,8 @@ function setupModalKeyboard() {
     
     switch (e.key) {
       case "Escape": e.preventDefault(); closeCompare(); break;
-      case "ArrowLeft": e.preventDefault(); navigateToGroup(currentGroupIndex - 1); break;
-      case "ArrowRight": e.preventDefault(); navigateToGroup(currentGroupIndex + 1); break;
+      case "ArrowLeft": e.preventDefault(); navigatePair(-1); break;
+      case "ArrowRight": e.preventDefault(); navigatePair(1); break;
       case "1": e.preventDefault(); handleDelete('left'); break;
       case "2": e.preventDefault(); handleDelete('right'); break;
       case "3": e.preventDefault(); handleDeleteBoth(); break;
@@ -204,7 +209,7 @@ async function handleIgnoreGroup() {
       showToast("All groups processed!", "success");
       closeCompare();
     } else {
-      navigateToGroup(Math.min(currentGroupIndex, allGroups.length - 1));
+      showPair(Math.min(currentGroupIndex, allGroups.length - 1), currentPairIndex);
     }
   }, 100);
 }
@@ -228,33 +233,102 @@ function handleEdit(side) {
   });
 }
 
-function navigateToGroup(newIndex) {
+// Every member of a group except the keeper. Each one is a pair to review.
+function candidatesIn(group) {
+  const keepFile = keepFileForGroup(group);
+  return { keepFile, others: (group || []).filter(f => f.id !== keepFile?.id) };
+}
+
+function pairCount(index) {
+  const g = allGroups[index];
+  return g && g.length >= 2 ? candidatesIn(g).others.length : 0;
+}
+
+// The first group at or after `from` that still has something to compare.
+// Groups shrink as files are trashed, so a group can drop below two members
+// while the view is open.
+function nextReviewable(from, step) {
+  for (let i = from; i >= 0 && i < allGroups.length; i += step) {
+    if (pairCount(i) > 0) return i;
+  }
+  return -1;
+}
+
+function updateProgress() {
+  const label = el("compareProgress");
+  if (!label) return;
+  const pairs = pairCount(currentGroupIndex);
+  const reviewable = allGroups.reduce((n, _, i) => n + (pairCount(i) > 0 ? 1 : 0), 0);
+  // Count this group's position among reviewable ones, not its raw index, or
+  // the numbers jump as groups are emptied.
+  let ordinal = 0;
+  for (let i = 0; i <= currentGroupIndex && i < allGroups.length; i++) if (pairCount(i) > 0) ordinal++;
+  label.textContent = pairs > 1
+    ? `Group ${ordinal} of ${reviewable} · pair ${currentPairIndex + 1} of ${pairs}`
+    : `Group ${ordinal} of ${reviewable}`;
+}
+
+// The one entry point. Shows the keeper against the pairIndex-th other member,
+// rolling into the neighbouring group when it runs off either end.
+function showPair(groupIndex, pairIndex) {
   refreshGroups();
-  
-  if (allGroups.length === 0) {
+
+  if (allGroups.length === 0 || nextReviewable(0, 1) < 0) {
     showToast("All groups processed!", "success");
     closeCompare();
     return;
   }
-  
+
+  let gi = groupIndex;
+  let pi = pairIndex;
+
+  // Ran off the end of this group -> the start of the next reviewable one.
+  while (gi < allGroups.length && pi >= pairCount(gi)) {
+    const next = nextReviewable(gi + 1, 1);
+    if (next < 0) { showToast("No more groups to review", "info"); return; }
+    pi -= Math.max(pairCount(gi), 1);
+    gi = next;
+    if (pi < 0) pi = 0;
+  }
+  // Ran off the start -> the LAST pair of the previous reviewable group, so
+  // stepping back never skips the members it just walked forward through.
+  while (gi >= 0 && pi < 0) {
+    const prev = nextReviewable(gi - 1, -1);
+    if (prev < 0) { showToast("Already at first group", "info"); return; }
+    gi = prev;
+    pi += pairCount(gi);
+  }
+
+  if (gi < 0 || gi >= allGroups.length) return;
+  const { keepFile, others } = candidatesIn(allGroups[gi]);
+  if (!keepFile || others.length === 0) return;
+
+  currentGroupIndex = gi;
+  currentPairIndex = Math.min(Math.max(pi, 0), others.length - 1);
+
+  // No leftIsKeep/rightIsKeep here: openCompare derives them from the group,
+  // so no caller can label the wrong pane.
+  openCompare(keepFile, others[currentPairIndex], { groupIndex: gi, allGroups: allGroups });
+  updateProgress();
+}
+
+// Step one pair forward or back, crossing group boundaries.
+function navigatePair(delta) {
+  showPair(currentGroupIndex, currentPairIndex + delta);
+}
+
+// Jump to a whole group, entering at its first pair. Kept for the callers that
+// genuinely mean "a different group" rather than "the next thing to look at".
+function navigateToGroup(newIndex) {
+  refreshGroups();
   if (newIndex < 0) { showToast("Already at first group", "info"); return; }
-  if (newIndex >= allGroups.length) { showToast("No more groups to review", "info"); return; }
-  
-  const group = allGroups[newIndex];
-  if (!group || group.length < 2) {
-    navigateToGroup(newIndex + 1);
+  const target = nextReviewable(newIndex, newIndex >= currentGroupIndex ? 1 : -1);
+  if (target < 0) {
+    if (nextReviewable(0, 1) < 0) { showToast("All groups processed!", "success"); closeCompare(); }
+    else showToast("No more groups to review", "info");
     return;
   }
-  
-  const keepFile = keepFileForGroup(group);
-  const dupFile = group.find(f => f.id !== keepFile?.id) || group[0];
-  
-  if (keepFile && dupFile) {
-    currentGroupIndex = newIndex;
-    // No leftIsKeep/rightIsKeep here: openCompare derives them from the group,
-    // so no caller can label the wrong pane.
-    openCompare(keepFile, dupFile, { groupIndex: newIndex, allGroups: allGroups });
-  }
+  showPair(target, 0);
 }
 
 async function handleDownload(side) {
@@ -312,7 +386,7 @@ async function handleDeleteBoth() {
       setTimeout(() => {
         refreshGroups();
         if (allGroups.length === 0) { showToast("All groups processed!", "success"); closeCompare(); }
-        else navigateToGroup(Math.min(currentGroupIndex, allGroups.length - 1));
+        else showPair(Math.min(currentGroupIndex, allGroups.length - 1), currentPairIndex);
       }, 300);
     }
     if (result.failed.length > 0) showToast(`${result.failed.length} file(s) failed to delete`, "error");
@@ -343,7 +417,7 @@ async function handleDelete(side) {
       setTimeout(() => {
         refreshGroups();
         if (allGroups.length === 0) { showToast("All groups processed!", "success"); closeCompare(); }
-        else navigateToGroup(Math.min(currentGroupIndex, allGroups.length - 1));
+        else showPair(Math.min(currentGroupIndex, allGroups.length - 1), currentPairIndex);
       }, 300);
     } else throw new Error("Trash operation failed");
   } catch (err) {
@@ -378,9 +452,21 @@ export async function openCompare(fileA, fileB, options = {}) {
   // warning all read these two flags, so getting them from one shared decision
   // is what keeps the warning pointing at the right file.
   const group = allGroups?.[currentGroupIndex];
-  const groupKeeper = Array.isArray(group) && group.some(f => f.id === fileA?.id || f.id === fileB?.id)
+  const inGroup = Array.isArray(group) && group.some(f => f.id === fileA?.id || f.id === fileB?.id);
+  const groupKeeper = inGroup
     ? keepFileForGroup(group)
     : keepFileForGroup([fileA, fileB].filter(Boolean));
+
+  // Entered from the row's Compare button or the crop editor rather than from
+  // the Prev/Next walk: sync the pair cursor to whichever file is on screen, so
+  // the counter is honest and stepping onward continues from here.
+  if (inGroup && groupKeeper) {
+    const shown = groupKeeper.id === fileA?.id ? fileB : fileA;
+    const at = group.filter(f => f.id !== groupKeeper.id).findIndex(f => f.id === shown?.id);
+    if (at >= 0) currentPairIndex = at;
+  }
+  // showPair() updates the label on its own path; this covers direct entry.
+  updateProgress();
 
   if (groupKeeper) {
     leftIsKeep = groupKeeper.id === fileA?.id;
@@ -408,8 +494,11 @@ export async function openCompare(fileA, fileB, options = {}) {
   const leftPath = el("compareLeftPath");
   const rightPath = el("compareRightPath");
   
-  if (btnPrev) btnPrev.style.display = (currentGroupIndex > 0) ? "inline-block" : "none";
-  if (btnNext) btnNext.style.display = (currentGroupIndex < allGroups.length - 1) ? "inline-block" : "none";
+  const morePairsAfter = currentPairIndex < pairCount(currentGroupIndex) - 1
+    || nextReviewable(currentGroupIndex + 1, 1) >= 0;
+  const morePairsBefore = currentPairIndex > 0 || nextReviewable(currentGroupIndex - 1, -1) >= 0;
+  if (btnPrev) btnPrev.style.display = morePairsBefore ? "inline-block" : "none";
+  if (btnNext) btnNext.style.display = morePairsAfter ? "inline-block" : "none";
   
   if (leftTitle) leftTitle.textContent = fileA.name || "Image A";
   if (rightTitle) rightTitle.textContent = fileB.name || "Image B";
