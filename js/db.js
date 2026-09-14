@@ -636,6 +636,49 @@ export async function pathCacheSetBatch(entries) {
   return promisifyTransaction(tx);
 }
 
+/**
+ * Drop path-cache rows older than `maxAgeDays`.
+ *
+ * The store has stamped a `ts` on every write and indexed it "for cleanup"
+ * since v1, and nothing ever read it -- because runScan cleared the whole store
+ * after every scan instead (#79). With the cache actually persisting, age is
+ * what bounds how wrong it can get: a path goes stale when the user moves a
+ * file in Drive, and `_path` decides folder-priority keep selection and is what
+ * the CSV reports as a file's location (#46), so a stale path is not cosmetic.
+ *
+ * Returns how many rows were removed.
+ */
+export async function pathCachePrune(maxAgeDays = 14) {
+  try {
+    const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000).toISOString();
+    const db = await openDb();
+    const tx = db.transaction("pathCache", "readwrite");
+    const idx = tx.objectStore("pathCache").index("ts");
+    let removed = 0;
+
+    await new Promise((resolve, reject) => {
+      // Everything strictly older than the cutoff, using the index rather than
+      // walking the whole store.
+      const req = idx.openCursor(IDBKeyRange.upperBound(cutoff, true));
+      req.onsuccess = () => {
+        const cur = req.result;
+        if (!cur) { resolve(); return; }
+        cur.delete();
+        removed++;
+        cur.continue();
+      };
+      req.onerror = () => reject(req.error);
+    });
+
+    await promisifyTransaction(tx);
+    if (removed) console.log(`[DB] Pruned ${removed} stale path-cache row(s).`);
+    return removed;
+  } catch (e) {
+    console.warn("[DB] Path cache prune failed:", e?.message);
+    return 0;
+  }
+}
+
 export async function pathCacheClear() {
   try {
     const store = await getStore("pathCache", "readwrite");

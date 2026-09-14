@@ -8,6 +8,29 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 > The detailed, original per-version notes are archived in
 > [`docs/changelog/`](docs/changelog/). This file is the consolidated summary.
 
+## [14.7.1] - 2026-09-14
+
+### Fixed
+
+- **A repeat scan re-resolved every folder path over the network, every time.**
+  The end of a scan cleared the folder-path cache from browser storage — so
+  every path worked out during a scan was deleted the moment it finished, and
+  the cache it wrote had never once been read back.
+
+  Three things showed this was not intended: a memory-only version of the same
+  function already existed and was never called, every write stamped a
+  timestamp, and the store had a timestamp index created "for cleanup" that
+  nothing read. The design was persist-and-expire; what shipped stamped the
+  timestamp, indexed it, ignored it, and wiped everything after each scan.
+
+  Paths now survive between scans, and stale ones expire after two weeks —
+  which is what the timestamp was for. A path goes out of date when you move a
+  file in Drive, and the folder is what the "keep by folder priority" rule ranks
+  on and what the CSV reports as a file's location, so letting them persist
+  forever would trade one bug for another. **Clear cache** still empties them
+  on demand.
+  ([#79](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/79))
+
 ## [14.7.0] - 2026-09-14
 
 ### Added

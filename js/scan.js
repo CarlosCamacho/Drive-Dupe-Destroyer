@@ -20,14 +20,14 @@ import { setStatus, setPhase, setProgress, showSpinner, updateStats, setSearchSu
 import { driveFetch, fetchChangesSince, getChangesStartToken, isFolderMime } from "./drive.js";
 
 import { ensureValidToken } from "./auth.js";
-import { dbGetImagesBatch, dbPutImagesBatch, recordFoldersScan, dbCountImages, getChangesToken, setChangesToken, isQuotaError, onQuotaExceeded } from "./db.js";
+import { dbGetImagesBatch, dbPutImagesBatch, recordFoldersScan, dbCountImages, getChangesToken, setChangesToken, isQuotaError, onQuotaExceeded, pathCachePrune } from "./db.js";
 import { computeHashesForFiles, getHashingStats, HASH_VERSION, HASH_CONCURRENCY } from "./hashing.js";
 import { runMatching, packEntries } from "./matcher.js";
 import { saveResumeState, clearResumeState } from "./resume.js";
 import { getRejectionStats, preloadRejections, getRejectionKeys } from "./rejection.js";
 import { updateTelemetry } from "./telemetry.js";
 import { thresholdFromEasy, isSupportedImageFile, SUPPORTED_IMAGE_MIMES, getFileExtension, DEFAULT_KEEP_RULE, canBrowserDecode } from "./common.js";
-import { buildPathsParallel, clearPathCaches } from "./paths.js";
+import { buildPathsParallel, clearMemoryPathCaches } from "./paths.js";
 
 // ============================================================================
 // Constants
@@ -1163,7 +1163,13 @@ export async function runScan({
   } finally {
     showSpinner(false);
     setScanningState(false);
-    clearPathCaches();
+    // Drop the per-scan memo, KEEP the durable rows. This used to call
+    // clearPathCaches(), which also empties the IndexedDB store -- so every path
+    // resolved during a scan was deleted the moment it ended and the cache never
+    // served a single request (#79). Staleness is handled by age below, which is
+    // what the ts index has been there for since v1.
+    clearMemoryPathCaches();
+    pathCachePrune().catch(() => {});
     
     // Update cache count after scan completes
     updateCacheCount().catch(e => console.warn("Cache count update failed:", e));
