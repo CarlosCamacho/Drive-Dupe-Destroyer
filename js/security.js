@@ -193,3 +193,30 @@ export function applyAllSecurityPolicies() {
   stripTokensFromUrl();
   console.log("[Security] All policies applied");
 }
+
+// ─── Cross-origin isolation ──────────────────────────────────────────────────
+//
+// Moved here from shared-worker-pool.js, which was 666 lines of SharedArrayBuffer
+// machinery that never ran: `new SharedWorkerPool()` appeared only inside that
+// module's own factory, which nothing outside called, while hashing.js has its
+// own plain worker pool doing all the work. Same shape as the WASM module in
+// #47. This is the only part anything consumed. See #64.
+//
+// Expect sabAvailable to be false: cross-origin isolation needs COOP+COEP, and
+// COEP breaks Drive's thumbnail loading, which is a worse trade than losing a
+// SharedArrayBuffer this app has no use for.
+export function getSecurityHeadersStatus() {
+  let sabAvailable = false;
+  try {
+    sabAvailable = typeof SharedArrayBuffer !== "undefined"
+      && new SharedArrayBuffer(1).byteLength === 1;
+  } catch { /* blocked by the absence of cross-origin isolation */ }
+
+  return {
+    sabAvailable,
+    atomicsAvailable: typeof Atomics !== "undefined",
+    crossOriginIsolated: typeof globalThis.crossOriginIsolated === "boolean"
+      ? globalThis.crossOriginIsolated
+      : false,
+  };
+}

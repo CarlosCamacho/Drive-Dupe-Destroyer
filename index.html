@@ -276,7 +276,7 @@
                   </select>
                 </div>
                 <div class="formRow">
-                  <label for="useDeltaScan">Delta scan (changes only) <span class="helpIcon" data-help="useDeltaScan">?</span></label>
+                  <label for="useDeltaScan">Also check Drive for changes <span class="helpIcon" data-help="useDeltaScan">?</span></label>
                   <input type="checkbox" id="useDeltaScan">
                 </div>
               </details>
@@ -385,8 +385,8 @@
           <!-- Toolbar -->
           <div class="toolbar">
             <div class="toolbarLeft">
-              <button type="button" id="btnSelectAll" class="btnGhost" disabled>Select All</button>
-              <button type="button" id="btnSelectNone" class="btnGhost" disabled>Select None</button>
+              <button type="button" id="btnSelectAll" class="btnGhost" disabled title="Select every duplicate. Files marked KEEP are never selected.">Select all duplicates</button>
+              <button type="button" id="btnSelectNone" class="btnGhost" disabled title="Clear the current selection">Clear selection</button>
             </div>
             <div class="toolbarRight">
               <select id="filterMode" aria-label="Filter results">

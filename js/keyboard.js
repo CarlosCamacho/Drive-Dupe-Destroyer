@@ -123,5 +123,5 @@ export function wireKeyboard() {
 }
 
 function showKeyboardHelp() {
-  showToast("⌨️ Space=toggle, D=delete, ↑↓=navigate, Ctrl+A=all, Esc=none", "info", 4000);
+  showToast("⌨️ Space=toggle, D=delete, ↑↓=navigate, Ctrl+A=select all duplicates, Esc=clear selection", "info", 4000);
 }

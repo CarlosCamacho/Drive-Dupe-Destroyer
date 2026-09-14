@@ -14,6 +14,7 @@
 // Image hashing, with SharedArrayBuffer support when the headers allow it
 
 import { makeLimiter, nowMs, CONFIG } from "./util.js";
+import { getSecurityHeadersStatus } from "./security.js";
 import { AIMDController } from "./aimd.js";
 import { isBackpressureError, isThrottleError } from "./common.js";
 import { downloadFileBlob, thumbLinkSized } from "./drive.js";
@@ -34,18 +35,6 @@ export { bestDist, hammingWithThreshold } from "./common.js";
 // than completed; see #47 for the reasoning and for what finishing it would have
 // required (a build step, and a test asserting the two paths produce
 // byte-identical hashes, without which #42 recurs).
-let sharedWorkerPoolModule = null;
-
-async function loadOptionalModules() {
-  
-  // Try to load SharedWorkerPool
-  try {
-    sharedWorkerPoolModule = await import("./shared-worker-pool.js");
-    console.log('[Hashing] SharedWorkerPool module loaded');
-  } catch (e) {
-    console.log('[Hashing] SharedWorkerPool not available');
-  }
-}
 
 // ============================================================================
 // LRU Cache for Thumbnails
@@ -149,12 +138,31 @@ export const HASH_VERSION = 3;
 // Hashing Statistics
 // ============================================================================
 
+const WORKER_POOL_SIZE = Math.min(
+  Math.max(2, navigator.hardwareConcurrency - 1 || 3),
+  8
+);
+
+// How many hashes may be in flight at once.
+//
+// This used to be a flat HASH_CONCURRENCY of 6, chosen with no reference
+// to the pool above -- so on an 8-core machine 7 workers served 6 slots and one
+// never received work, while on a 4-core machine 6 tasks queued behind 3
+// workers. AIMD then moved the number at runtime without ever consulting the
+// pool, so it could climb past the number of workers that exist (pure queueing)
+// or sit below it (idle workers).
+//
+// One in flight per worker, plus one, so a worker is never waiting on the main
+// thread to decode and hand it the next bitmap. AIMD's ceiling is clamped to
+// this in startHashing; its floor stays at 1.
+export const HASH_CONCURRENCY = WORKER_POOL_SIZE + 1;
+
 let hashingStats = {
   success: 0,
   failed: 0,
   retried: 0,
   throttled: 0,          // 429s seen — drives the AIMD decrease
-  concurrency: CONFIG.HASH_CONCURRENCY,
+  concurrency: HASH_CONCURRENCY,
   cacheHits: 0,
   hashed: 0,           // images actually hashed this run
   errors: [],
@@ -170,14 +178,14 @@ export function getHashingStats() {
     rate: hashingStats.success > 0 && duration > 0
       ? (hashingStats.success / (duration / 1000)).toFixed(1)
       : 0,
-    sabAvailable: sharedWorkerPoolModule?.getSecurityHeadersStatus?.().sabAvailable || false
+    sabAvailable: getSecurityHeadersStatus().sabAvailable
   };
 }
 
 export function resetHashingStats() {
   hashingStats = { 
     success: 0, failed: 0, retried: 0, cacheHits: 0,
-    throttled: 0, concurrency: CONFIG.HASH_CONCURRENCY,
+    throttled: 0, concurrency: HASH_CONCURRENCY,
     hashed: 0, errors: [],
     startTime: nowMs(), endTime: 0
   };
@@ -191,10 +199,7 @@ export function releaseAllThumbBlobs() {
 // Worker Pool
 // ============================================================================
 
-const WORKER_POOL_SIZE = Math.min(
-  Math.max(2, navigator.hardwareConcurrency - 1 || 3),
-  8
-);
+
 
 const workers = [];
 let workerIndex = 0;
@@ -204,9 +209,11 @@ let poolInitialized = false;
 let modulesLoaded = false;
 
 async function initHashModule() {
+  // Both optional modules this used to load are gone: the WASM hasher whose
+  // binary never existed (#47) and the SharedArrayBuffer pool that was never
+  // instantiated (#64). The worker pool below is the whole hashing story now.
   if (modulesLoaded) return;
   modulesLoaded = true;
-  await loadOptionalModules();
 }
 
 function initWorkerPool() {
@@ -418,7 +425,7 @@ export async function computeHashesForFiles(files, {
   withColorMatch = false,
   withPHash = false,
   withRotation = false,
-  concurrency = CONFIG.HASH_CONCURRENCY,
+  concurrency = HASH_CONCURRENCY,
   signal = null,
   onProgress = null,
   onError = null
@@ -437,7 +444,12 @@ export async function computeHashesForFiles(files, {
   // anything, while scan.js advertised an "AIMD throttle" in its header.
   const aimd = new AIMDController({
     initial: concurrency,
-    max: Math.max(concurrency, 12),
+    // Clamp to the pool. The old `Math.max(concurrency, 12)` let AIMD climb to
+    // 12 in-flight hashes against as few as 2 workers, which is not parallelism
+    // -- it is a queue with extra bookkeeping, and it delays the backpressure
+    // signal AIMD exists to read. One spare slot per worker is the most that
+    // buys anything (#66).
+    max: HASH_CONCURRENCY,
     min: 1,
     onUpdate: (n) => {
       limit.setConcurrency(n);

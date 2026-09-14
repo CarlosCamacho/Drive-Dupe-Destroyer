@@ -34,14 +34,24 @@ const read = (f) => readFileSync(join(ROOT, f), "utf8");
 const POLICY_FILES = ["serve_secure.py", "sw.js", "js/security.js"];
 
 // Strip comments so an origin merely *mentioned* in prose does not count as
-// permitted — js/security.js explains its directives in comments above them.
+// permitted — js/security.js explains its directives in comments above them,
+// and those explanations name the very origins under test.
+//
+// Only FULL-LINE comments are removed. A general block-comment regex is wrong
+// here and this test caught it: CSP source lists contain wildcard origins like
+// "https://*.googleapis.com", whose "//*" reads as a comment opener, so a
+// non-greedy /\*[\s\S]*?\*\// match ran from inside the policy array to the
+// next real "*/" and swallowed the directives it was supposed to check.
+// A comment that starts a line cannot be inside a string literal.
 const withoutComments = (src) =>
-  src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*(\/\/|#).*$/gm, " ");
+  src.split("\n")
+     .filter(line => !/^\s*(\/\/|\/\*|\*|#)/.test(line))
+     .join("\n");
 
 // serve_secure.py builds script-src from a SCRIPT_HOSTS constant rather than
 // writing the origins inline, so the directive text alone does not contain
-// them. Substitute simple `NAME = "..."` / `const NAME = "..."` definitions
-// before reading the policy, otherwise this test reports a gap that is not real.
+// them. Substitute simple `NAME = "..."` definitions before reading the policy,
+// otherwise this reports a gap that is not real.
 function inlineConstants(src) {
   const consts = new Map();
   for (const m of src.matchAll(/(?:const\s+)?([A-Z][A-Z0-9_]{2,})\s*=\s*["']([^"']*)["']/g)) {
@@ -54,8 +64,15 @@ function inlineConstants(src) {
   return out;
 }
 
+// Stitch string concatenation into one literal. serve_secure.py writes
+// `"script-src 'self' " + SCRIPT_HOSTS + "; "`, so without this the span for
+// script-src ends at the closing quote after 'self' and the origins — which
+// inlineConstants has just resolved — sit outside it.
+const stitchConcatenation = (src) =>
+  src.replace(/"\s*\+\s*/g, "").replace(/\s*\+\s*"/g, "");
+
 const POLICIES = Object.fromEntries(
-  POLICY_FILES.map(f => [f, inlineConstants(withoutComments(read(f)))])
+  POLICY_FILES.map(f => [f, stitchConcatenation(inlineConstants(withoutComments(read(f))))])
 );
 
 // The sources for one directive, as a single string.
@@ -69,7 +86,15 @@ const POLICIES = Object.fromEntries(
 // between the directive name and the next ";" are noise and are stripped rather
 // than parsed.
 function sourcesFor(src, directive) {
-  const m = new RegExp(directive + "([^;]*)").exec(src);
+  // Stop at a semicolon, a DOUBLE quote, or a newline. Stopping only at ";" was
+  // wrong
+  // and this test caught it: js/security.js builds its policy as an array of
+  // one-directive strings with no semicolons at all, so the span for style-src
+  // ran on into font-src and an origin deleted from style-src still "matched"
+  // because font-src further down the array still carried it. Single quotes must
+  // NOT terminate the span: every directive contains 'self', 'none' or
+  // 'unsafe-inline', and excluding ' truncated all of them to nothing.
+  const m = new RegExp(directive + '([^;"\n]*)').exec(src);
   if (!m) return null;
   return m[1].replace(/["'`+]/g, " ").replace(/\s+/g, " ").trim();
 }

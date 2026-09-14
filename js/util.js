@@ -25,7 +25,8 @@ export const APP_VERSION = "14.4.0";
 
 // Configuration constants
 export const CONFIG = {
-  HASH_CONCURRENCY: 6,
+  // HASH_CONCURRENCY moved to hashing.js, where it is derived from the worker
+  // pool size rather than guessed independently of it (#66).
   PATH_CONCURRENCY: 10,
   RENDER_BATCH_SIZE: 100,
   AUTH_TIMEOUT_MS: 60000,
@@ -58,7 +59,7 @@ export const HELP_TEXT = {
   aspectFilter: "Skip comparing two images whose width-to-height ratios differ by more than the tolerance below. A free metadata check that avoids most pointless comparisons — leave it on unless you are looking for heavily cropped versions.",
   aspectTolerance: "How far two aspect ratios may differ and still be compared, as a percentage. Higher values catch more crops and cost more time. Ignored when the aspect ratio pre-filter is off.",
   lshMode: "How aggressively candidate pairs are shortlisted before the expensive comparison. Auto picks from your library size. Loose finds more matches and takes longer; strict is faster and may miss borderline pairs.",
-  useDeltaScan: "On a repeat scan, also ask Drive what has changed since last time, so files added or deleted elsewhere are picked up. Does not replace the folder scan.",
+  useDeltaScan: "After scanning the selected folders, also ask Drive what has changed since last time, so files added or removed elsewhere are reconciled. This runs in addition to the folder scan — it does not make the scan shorter.",
   folderPriority: "Comma-separated folder name patterns. Files in folders matching earlier patterns are preferred as keepers.",
   exportResults: "Download the duplicate groups found in this scan as a JSON file. Useful for record-keeping or processing elsewhere.",
   queue: "Files added to the queue will be moved to trash when you process the queue. Use this for bulk deletions across multiple groups.",

@@ -57,7 +57,6 @@ const PRECACHE = [
   "./js/scan.js",
   "./js/security.js",
   "./js/settings.js",
-  "./js/shared-worker-pool.js",
   "./js/telemetry.js",
   "./js/ui.js",
   "./js/undo.js",
