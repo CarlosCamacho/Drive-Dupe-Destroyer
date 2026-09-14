@@ -8,6 +8,71 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 > The detailed, original per-version notes are archived in
 > [`docs/changelog/`](docs/changelog/). This file is the consolidated summary.
 
+## [14.4.0] - 2026-09-14
+
+### Fixed
+
+- **The side-by-side view only ever showed two files from a group.** It paired
+  the keeper with `group.find(f => f.id !== keep.id)` — the *first* other member
+  — and every remaining file was silently skipped. Reaching the end then
+  reported **"All groups processed!"**, which reads as having seen everything. A
+  cluster of five near-identical shots was reviewed as one pair.
+
+  Groups of more than two are not an edge case; they are the normal shape of the
+  problem this app solves — a burst of phone photos, or one image exported at
+  several sizes. Measured on a group of five plus a group of two, the old
+  behaviour reached **1 of 4** members before jumping to the next group.
+
+  Navigation is now two-dimensional. Prev/Next and the ← → keys step one *pair*
+  at a time and roll into the neighbouring group at either end, so walking the
+  view visits every member. A counter in the header reads `Group 1 of 2 · pair 2
+  of 4`, and Next now hides only once everything really has been seen. Walking
+  back retraces the forward path exactly, including across a group boundary,
+  rather than restarting a group. Deleting a file keeps your place instead of
+  replaying pairs already dealt with, and entering from a row's **Compare**
+  button syncs the cursor to the file you clicked.
+  ([#55](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/55))
+
+- **`var(--border)` was referenced but never defined.** `styles.css` defines
+  `--border-color`; one rule reached for a bare `--border`, so the crop editor's
+  footer separator rendered in `currentColor` instead of the border colour. Same
+  bug class as the `--accent` fix in #51, which I made without sweeping for
+  other instances — a full sweep of all 24 referenced custom properties now
+  shows every `var()` resolving. The two remaining `var(--border-color,
+  var(--border))` uses are harmless: the fallback never fires.
+  ([#57](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/57))
+
+### Added
+
+- **The app now honours your operating system's light/dark setting.** The theme
+  had two states and defaulted to dark, so a light-desktop user got a dark app
+  until they found the toggle. It has three now: stored `dark`, stored `light`,
+  or *absent* meaning follow the OS — and absence is written back as absence, so
+  a user who toggles away and back can still return to following the system.
+  Changing the OS setting mid-session is picked up without a reload.
+
+  The preference is honoured in **CSS**, not only in JavaScript. The theme is
+  resolved from IndexedDB, which is async, so a light-desktop user would
+  otherwise see the dark palette flash first — and an inline `<head>` script to
+  pre-empt that is impossible, since `script-src` carries no `'unsafe-inline'`.
+  Verified in a real browser at both OS settings: first paint is already
+  correct, an explicit choice overrides the OS in both directions and survives a
+  reload, and the toggle's tooltip says which mode you are in.
+  ([#56](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/56))
+
+- **`test/theme-parity.test.js`.** The light palette is now declared twice — once
+  for the toggle, once inside the media query — which is the price of a correct
+  first paint. This fails if the two copies drift, which a comment saying "keep
+  these in sync" would never have caught.
+
+### Removed
+
+- `.btnMiniDangerKeep` and `.modalWide`, two CSS rules nothing applied.
+  `.btnMiniDangerKeep` looked like it might be an unfinished intention rather
+  than dead weight, so it was checked rather than assumed: `render.js` applies
+  `btnDangerKeep`, which has its own rule (a dashed border) and supersedes it.
+  ([#57](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/57))
+
 ## [14.3.0] - 2026-09-14
 
 ### Removed

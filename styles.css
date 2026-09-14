@@ -63,6 +63,7 @@
 }
 
 /* Light mode */
+/* The explicit light theme, chosen with the toggle. */
 [data-theme="light"] {
   --bg-primary: #f5f5f5;
   --bg-secondary: #ffffff;
@@ -79,6 +80,36 @@
   --group-delete-1: rgba(239, 71, 111, 0.15);
   --group-keep-2: rgba(6, 214, 160, 0.35);
   --group-delete-2: rgba(239, 71, 111, 0.22);
+}
+
+/* First paint must already be right. wireThemeToggle() resolves the theme from
+   IndexedDB, which is async, so a light-desktop user would otherwise see the
+   dark palette flash before JS caught up -- and an inline <head> script to
+   pre-empt it is not an option, since script-src carries no 'unsafe-inline'.
+   So the OS preference is honoured in CSS, and only when no explicit choice has
+   been stamped on the root element.
+
+   The declarations below MUST stay identical to the block above. That is
+   enforced by test/theme-parity.test.js rather than by this comment -- a
+   comment describing a constraint has never caught a violation of it. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]):not([data-theme="light"]) {
+  --bg-primary: #f5f5f5;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #e8e8e8;
+  --bg-hover: #e0e0e0;
+  --text-primary: #1a1a2e;
+  --text-secondary: #555555;
+  /* 3.25:1 on #f5f5f5. #666666 measures 5.27 / 5.74 / 4.69 against
+     #f5f5f5 / #ffffff / #e8e8e8. */
+  --text-muted: #666666;
+  --border-color: #d0d0d0;
+  --shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+  --group-keep-1: rgba(6, 214, 160, 0.25);
+  --group-delete-1: rgba(239, 71, 111, 0.15);
+  --group-keep-2: rgba(6, 214, 160, 0.35);
+  --group-delete-2: rgba(239, 71, 111, 0.22);
+}
 }
 
 /* Theme toggle button */
@@ -626,24 +657,6 @@ button:focus-visible {
   color: white;
 }
 
-.btnMiniDangerKeep {
-  background: transparent;
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
-  padding: 4px 8px;
-  font-size: 0.75rem;
-  border-radius: 4px;
-  cursor: pointer;
-  opacity: 0.5;
-  transition: opacity 0.2s, color 0.2s, border-color 0.2s;
-}
-
-.btnMiniDangerKeep:hover:not(:disabled) {
-  opacity: 1;
-  color: var(--accent-red);
-  border-color: var(--accent-red);
-}
-
 .btnClose {
   background: none;
   border: none;
@@ -1033,10 +1046,6 @@ button:disabled {
 
 .modalLarge {
   max-width: 650px;
-}
-
-.modalWide {
-  max-width: 850px;
 }
 
 .modalHeader {
@@ -1828,7 +1837,10 @@ input[type="checkbox"] {
 
 .cropFooterButtons .btnCropDelete {
   margin-right: 8px;
-  border-right: 1px solid var(--border);
+  /* was var(--border), which this file never defines -- the separator rendered
+     in currentColor instead of the border colour. The variable is
+     --border-color. */
+  border-right: 1px solid var(--border-color);
   padding-right: 18px;
 }
 
@@ -2269,4 +2281,16 @@ input[type="checkbox"] {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* Which pair of which group the compare view is showing. The view used to pair
+   the keeper with one other member and stop, then report "All groups
+   processed!" -- so a cluster of five near-identical shots was reviewed as one
+   pair and the user was told they were done (#55). */
+.compareProgress {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  margin-right: 10px;
 }
