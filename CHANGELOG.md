@@ -8,6 +8,80 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 > The detailed, original per-version notes are archived in
 > [`docs/changelog/`](docs/changelog/). This file is the consolidated summary.
 
+## [14.2.2] - 2026-09-14
+
+Accessibility and theming pass over `styles.css`, the last unreviewed file in
+the repository. Everything below was measured in the running app, in both
+themes, before and after.
+
+### Fixed
+
+- **A `--accent` variable that was never defined.** `styles.css` defines
+  `--accent-blue`, `--accent-green`, `--accent-red` and `--accent-yellow`, but
+  eight rules reached for a bare `var(--accent)` with no fallback. An undefined
+  custom property makes the whole declaration invalid at computed-value time, so
+  `background: var(--accent)` resolved to transparent and
+  `border-color: var(--accent)` to `currentColor` — silently. The active zoom
+  level, the lock toggle's "on" state and the icon buttons' hover all lost their
+  fill while keeping `color: #fff`, which in light theme put white glyphs on an
+  `#e8e8e8` panel at **1.23:1**: the icon disappeared exactly while you pointed
+  at it. Now 5.02:1 in both themes.
+  ([#51](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/51))
+
+- **The focus indicator was suppressed on a third of the keyboard-reachable
+  controls.** A global `*:focus-visible` outline existed, but
+  `.formRow input:focus` and `.fixedSizeInput:focus` beat it on specificity and
+  set `outline: none`, offering a border tint in its place — which a native
+  checkbox and select simply ignore, and which in the second rule used the
+  undefined `--accent` above, so it supplied nothing at all.
+
+  Measured by Tab-walking the page (so `:focus-visible` genuinely matches),
+  against a control run with the stylesheet disabled: **7 of 24** reachable
+  controls had no visible focus, including Recursive, Use database and Keep rule
+  — the controls that decide what a scan does and which file it keeps. Now
+  **0 of 24**. Keyboard navigation is a documented feature of this app, so this
+  mattered more here than it would elsewhere.
+  ([#51](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/51))
+
+- **Text below the WCAG AA contrast floor.** Walking every visible text-bearing
+  element and resolving each one's actual painted background found **7 failures
+  in dark theme and 6 in light**. `--text-muted` carried the hint text under the
+  controls at 2.79:1 against the darkest surface — less than half the required
+  4.5:1 — and white on `--accent-red` measured 3.62:1 on **Trash Selected** and
+  **Clear & Reload**, the two controls in the app that destroy something.
+
+  `--text-muted` is now `#9a9ab0` (dark) and `#666666` (light); `--accent-red`
+  is `#d62b52` with `#bf1f43` for hover. Dark went 7 → 1 and light 6 → 0. The
+  one remaining is `#btnUndo`, which is `disabled` in the markup — WCAG exempts
+  disabled controls, and it is listed here only so the figure is not mistaken
+  for a real failure.
+  ([#52](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/52))
+
+- **Icon buttons were invisible at rest in light theme.** `.btnIcon` took its
+  background from a theme variable and hard-coded `color: #fff`, so in light
+  theme it painted white on `#e8e8e8` — 1.23:1 — and only became visible on
+  hover. It follows the theme now. This was the only rule in the file with that
+  shape; the three other hard-coded `#fff` declarations sit on an accent fill,
+  where white is correct.
+  ([#52](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/52))
+
+### Added
+
+- **`prefers-reduced-motion` support.** The file had none, while two elements
+  (`.spinner`, `.collecting-dot`) animate continuously for the whole length of a
+  scan. Animations now run once and transitions collapse to instant, so `:hover`
+  and `:focus-visible` still change appearance — the motion goes, the meaning
+  stays. Verified: `0.8s x infinite` becomes `1e-05s x 1` under the preference.
+
+### Known
+
+- `styles.css` has no `prefers-color-scheme` block: the theme defaults to dark
+  and ignores the operating system's setting until the user toggles it by hand.
+- `.btnMiniDangerKeep` and `.modalWide` are rules nothing uses.
+- Checked and fine: the page does not scroll sideways at 390px
+  (`scrollWidth 390 === clientWidth 390`), and `index.html` has no duplicate
+  `id` attributes across its 153 of them.
+
 ## [14.2.1] - 2026-09-14
 
 ### Fixed
