@@ -23,7 +23,7 @@
 // a new service worker activates, which meant the app could destroy its own
 // undo history without the user doing anything.
 
-import { restoreFromTrash } from "./drive.js";
+import { restoreFromTrash, isAlreadyGoneError } from "./drive.js";
 import { showToast } from "./ui.js";
 import { stateSet, stateGet } from "./db.js";
 
@@ -132,7 +132,10 @@ export async function undoLastDelete() {
       // A 404 means the file is no longer in Trash — emptied, or already
       // restored by hand. The goal state is met either way, so don't report it
       // as a failure the user needs to act on.
-      if (String(e?.message || "").includes("404")) restored.push(entry);
+      //
+      // By status, not by matching "404" in a message that embeds Drive's error
+      // body -- that could report a file we failed to restore as restored (#81).
+      if (isAlreadyGoneError(e)) restored.push(entry);
       else failed.push(entry);
     }
   }
