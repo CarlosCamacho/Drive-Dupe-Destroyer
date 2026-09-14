@@ -2349,3 +2349,56 @@ input[type="checkbox"] {
 /* The Folders header carries a count badge as well, so the chevron must not
    push it around. */
 .sectionHeader .badge + .sectionChevron { margin-left: 8px; }
+
+/* ============================================================
+   Sortable headers, result search, pinned keeper (#70, #72, #73)
+   ============================================================ */
+
+.resultsTable th.sortable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.resultsTable th.sortable:hover { color: var(--accent-blue); }
+.resultsTable th.sortable:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: -2px;
+}
+/* The arrow is drawn, not an icon font: the sort direction is information, and
+   an icon-font glyph renders as nothing when the CDN is unreachable. */
+.resultsTable th.sortable::after {
+  content: "";
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-left: 6px;
+  vertical-align: middle;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  opacity: 0;
+}
+.resultsTable th.sortAsc::after {
+  border-bottom: 5px solid var(--accent-blue);
+  opacity: 1;
+}
+.resultsTable th.sortDesc::after {
+  border-top: 5px solid var(--accent-blue);
+  opacity: 1;
+}
+
+.resultSearch {
+  padding: 5px 9px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  min-width: 190px;
+}
+.resultSearch:focus-visible { border-color: var(--accent-blue); }
+
+/* A keeper chosen by hand rather than by the rule. */
+.btnPinned {
+  color: var(--accent-blue);
+  border-color: var(--accent-blue);
+}
