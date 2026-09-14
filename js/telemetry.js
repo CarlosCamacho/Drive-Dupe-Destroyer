@@ -64,9 +64,11 @@ export function updateTelemetry(stats) {
     ["Cache hits",      fmt(stats.cacheHits)],
     ["Cache hit rate",  pct(stats.cacheHits / Math.max(1, stats.success + stats.cacheHits))],
     ["Hash rate",       fmt(+stats.rate, " img/s")],
-    ["WASM active",     stats.wasmAvailable ? "✓ Yes" : "✗ No"],
-    ["WASM used",       fmt(stats.wasmUsed)],
-    ["JS fallback",     fmt(stats.jsUsed)],
+    // Three rows used to report a WASM-versus-JS split. There was never a
+    // split: the WASM binary was never shipped, so "WASM active" always read
+    // "✗ No" -- which looks like a browser limitation rather than a missing
+    // file -- and every image went down the one path. See #47.
+    ["Images hashed",   fmt(stats.hashed)],
     ["SAB active",      stats.sabAvailable ? "✓ Yes" : "✗ No"],
     ["Duration",        stats.duration > 0 ? (stats.duration / 1000).toFixed(1) + "s" : "—"],
     ["MD5 exact dupes", fmt(stats.md5Exact ?? 0)],

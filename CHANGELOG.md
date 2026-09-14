@@ -8,6 +8,52 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 > The detailed, original per-version notes are archived in
 > [`docs/changelog/`](docs/changelog/). This file is the consolidated summary.
 
+## [14.3.0] - 2026-09-14
+
+### Removed
+
+- **The WebAssembly hashing module, which could never run.** `js/wasm-hash.js`
+  advertised a "2-3x speedup" across 566 lines. `initWasm()` fetched
+  `./dhash.wasm` — a file that was not in the repository, had never been in its
+  history (`git log --all -- "*.wasm"` is empty), and that no build step, npm
+  script or tool produced. Measured in the browser: `isWasmAvailable()` returns
+  `false`, so the guarded fast path never executed and every image had always
+  gone down the worker path.
+
+  Removed rather than completed. Finishing it would have meant committing a
+  binary, adding a build step, and — not optionally — a test asserting the two
+  paths produce *byte-identical* hashes, because without one they drift and
+  reproduce #42, where whether two files matched depended on which code path
+  happened to hash them. There is already a latent instance of exactly that in
+  the removed code: `jsResizeGrayscale` divided by `dstWidth` where it needed
+  `dstWidth - 1`, cropping the right column and bottom row before hashing.
+
+  Three telemetry rows reporting a WASM-versus-JS split are now one "Images
+  hashed" count. There was never a split, and "WASM active: ✗ No" read as a
+  browser limitation rather than a missing file. The service worker no longer
+  precaches the module.
+
+  `HASH_VERSION` is deliberately **unchanged at 3** — removing unreachable code
+  must not invalidate anyone's cache. Verified through the real worker after the
+  removal: a transparent PNG still measures 0 against its white-flattened copy,
+  and genuinely different backgrounds still measure 25 apart.
+  ([#47](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/47))
+
+### Added
+
+- **`tools/scope-probe.verify.mjs`** — verifies `tools/scope-probe.html` without
+  Google credentials. That probe gets run once, by hand, with real credentials,
+  and its verdict decides whether DDD can drop the restricted `auth/drive` scope
+  ([#28](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/28)), so a
+  wrong verdict would be both expensive and unobvious — and the probe had never
+  been executed at all. This drives all four outcomes against a stubbed Picker
+  and a stubbed Drive endpoint and checks the conclusion each time. Only the
+  transport is faked; the logic under test is the shipped file. All four paths
+  reach the right verdict.
+
+  Not part of `npm test`, which is deliberately dependency-free `node:test`;
+  this needs Playwright and a running server.
+
 ## [14.2.2] - 2026-09-14
 
 Accessibility and theming pass over `styles.css`, the last unreviewed file in

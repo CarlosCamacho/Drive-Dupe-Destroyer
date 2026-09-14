@@ -149,7 +149,7 @@ export function applyContentSecurityPolicy() {
     "img-src 'self' blob: data: https://lh3.googleusercontent.com https://www.googleapis.com https://*.googleusercontent.com",
     // OAuth popup and potential iframe from Google
     "frame-src https://accounts.google.com https://*.google.com",
-    // Hash workers + WASM workers
+    // Hash workers
     "worker-src 'self' blob:",
     // No plugins
     "object-src 'none'",
