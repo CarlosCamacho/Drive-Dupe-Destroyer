@@ -33,7 +33,6 @@ const PERSISTABLE = [
   { id: "keepRule",        type: "select",   default: "hires" },
   { id: "folderPriority",  type: "text",     default: "" },
   { id: "matchMode",       type: "radio",    default: "similar", name: "matchMode" },
-  { id: "dhashSize",       type: "select",   default: "12" },
   { id: "imgMinSize",      type: "number",   default: "50" },
   { id: "imgMinUnit",      type: "select",   default: "KB" },
   { id: "imgMaxSize",      type: "number",   default: "0" },

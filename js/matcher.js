@@ -320,7 +320,22 @@ export async function runMatching({
     const entry = entries.get(id);
     if (!entry?.base12) continue;
     
-    const candidates = lshCandidates(index, id, entry);
+    let candidates = lshCandidates(index, id, entry);
+
+    // Query the index with each variant hash too. A rotated or mirrored copy
+    // shares no dHash bands with its original -- that is the premise of the
+    // feature -- so the pair was never offered as a candidate and the variant
+    // comparison bestDist already performs was never reached (#88). This is the
+    // mirror of what bestDist does: it compares A's variants against B, so the
+    // index must be asked about them as well. At most five extra lookups per
+    // image (two flips plus three rotations), and a lookup is cheap; the cost
+    // is in the comparisons that follow, which is the feature working.
+    if (withVariants && entry.variants?.length) {
+      candidates = new Set(candidates);
+      for (const v of entry.variants) {
+        for (const cid2 of lshCandidates(index, id, v)) candidates.add(cid2);
+      }
+    }
     
     // When crop detection is on, we need broader candidate search
     // since cropped images may not share LSH bands.

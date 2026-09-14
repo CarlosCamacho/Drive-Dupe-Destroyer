@@ -8,6 +8,72 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 > The detailed, original per-version notes are archived in
 > [`docs/changelog/`](docs/changelog/). This file is the consolidated summary.
 
+## [14.7.6] - 2026-09-14
+
+### Fixed
+
+- **CI has been red since 14.7.3, and the cause was mine.** `js/hashing.js`
+  sized its worker pool from a bare `navigator.hardwareConcurrency` **at module
+  scope**. Node 21 added `navigator`, so on Node 22 — what development runs on —
+  it worked, and on Node 20 — what the workflow pinned — it threw
+  `ReferenceError` the instant anything imported the module. The two new test
+  files import `js/scan.js`, which imports `js/hashing.js`, so both died on
+  load: 210 tests passing locally, 181 running on CI with two files dead. It is
+  read through `globalThis` with a default now, which also matters in the app:
+  these modules are imported by workers, where `window` and `document` do not
+  exist either.
+
+### Changed
+
+- **`npm test` now covers loading, not just behaviour.** `test/module-load.test.js`
+  imports every `js/` module the suite reaches — derived from the tests' own
+  imports, so it extends itself — in a child process with the browser globals
+  deleted. That is the check that would have caught this, and it fails on the
+  one-line revert.
+- **CI runs a matrix of Node 20 and 22** instead of a single pinned version, so
+  a version-specific break fails on the version that has it rather than only in
+  an email. `engines` is now `>=20`: Node 18 is end-of-life and nothing here has
+  ever tested it, so claiming it was a guess.
+
+## [14.7.5] - 2026-09-14
+
+### Fixed
+
+- **Variant and rotation matching never got a pair to compare** (#88). The LSH
+  index is built from, and queried with, the base hash only — and a rotated or
+  mirrored copy shares no dHash bands with its original, which is the premise of
+  the feature. So the pair was never offered as a candidate and the variant
+  comparison `bestDist` has always contained was never reached. The index is now
+  queried with each variant hash as well. Measured on an image and a 90° re-save:
+  base hashes 80 bits apart, variants exact, 0 groups before and 1 after.
+- **"Rotation variants" on its own did nothing at all.** The rotated hashes go
+  into `variants`, and `bestDist` returns before it looks at `variants` unless
+  **Check variants** is also ticked — and `withRotation` was never passed to the
+  matcher in the first place. It cost four times the hashing work per image, by
+  its own help text, and changed no result. Matching now runs with variants
+  whenever either box is ticked.
+- **Variants were not a cache-miss trigger**, so turning either box on after a
+  library had been scanned did nothing for any cached file — the same shape as
+  the pHash half of #84. The rule counts what the run needs (two flips, three
+  rotations) against what the record holds.
+- **The similarity percentage was computed in the wrong space** (#89).
+  `bestDist` is called with the 144-bit hash in the matcher, the results table
+  and the CSV export, but the percentage divided that distance by whatever the
+  "Hash size" select said. Choosing 8×8 reported 91% where 12×12 reported 96%
+  for the same pair, and anything past 64 bits apart clamped up from a negative
+  number. `SIMILARITY_BITS` is now the single source, and it is the width the
+  comparison is actually made over.
+
+### Removed
+
+- **The "Hash size" select.** It changed nothing: `use12: true` is hardcoded in
+  the matcher, the results table and the export, and both hashes are computed
+  for every image regardless. Its only effect was the wrong percentage above.
+  Making it real is a larger change than it looks — the sensitivity→threshold
+  mapping is explicitly calibrated for 144 bits, so a genuine 8×8 mode would
+  quietly change what counts as a duplicate and needs recalibrating against real
+  images first.
+
 ## [14.7.4] - 2026-09-14
 
 ### Fixed

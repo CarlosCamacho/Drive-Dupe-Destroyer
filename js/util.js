@@ -21,7 +21,7 @@
 // sw.js cannot import ES modules, so it carries its own SW_VERSION literal;
 // app.js compares the two at boot and warns on a mismatch (a stale cache).
 // serve_secure.py parses this line at startup, so keep the format as-is.
-export const APP_VERSION = "14.7.4";
+export const APP_VERSION = "14.7.6";
 
 // Configuration constants
 export const CONFIG = {
@@ -50,7 +50,6 @@ export const HELP_TEXT = {
   checkVariants: "Also check for rotated or flipped versions of images. Slower but catches more duplicates.",
   cropDetect: "Detect images that are crops of each other. Hashes multiple sub-regions (center, quadrants) so a cropped version matches the original. Slower but catches cropped duplicates.",
   colorMatch: "Compare color distribution AND edge/texture structure between images. Uses Sobel edge detection to build directional texture histograms, preventing false positives on images that share colors but have different content. Best combined with crop detection.",
-  dhashSize: "Size of the perceptual hash grid. 8×8 = 64 bits (faster), 12×12 = 144 bits (more accurate). Default: 12.",
   // #63: these six controls had no HELP_TEXT entry, so no popover was ever
   // created for them -- and useDeltaScan already carried a data-help attribute
   // pointing at a key that did not exist, which the wiring silently skips.

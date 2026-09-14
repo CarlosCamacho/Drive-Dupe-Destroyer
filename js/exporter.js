@@ -16,7 +16,7 @@
 import { el } from "./util.js";
 import { showToast } from "./ui.js";
 import { APP_VERSION } from "./ui.js";
-import { chooseKeepIndex, bestDist, distToPercent, DEFAULT_KEEP_RULE } from "./common.js";
+import { chooseKeepIndex, bestDist, distToPercent, DEFAULT_KEEP_RULE, SIMILARITY_BITS } from "./common.js";
 
 let exportState = {
   groups: [],
@@ -27,7 +27,7 @@ let exportState = {
   // ended up labelling every row DUPLICATE.
   keepRule: DEFAULT_KEEP_RULE,
   folderPriority: "",
-  bitsCount: 144,
+  bitsCount: SIMILARITY_BITS,
   withVariants: false
 };
 
@@ -68,7 +68,7 @@ function getTimestamp() {
 export function buildExportItems(groups, pathMap, idToEntry, opts = {}) {
   const keepRule = opts.keepRule || DEFAULT_KEEP_RULE;
   const folderPriority = opts.folderPriority || "";
-  const bitsCount = opts.bitsCount || 144;
+  const bitsCount = opts.bitsCount || SIMILARITY_BITS;
   const withVariants = !!opts.withVariants;
 
   return groups.map((g, gi) => {

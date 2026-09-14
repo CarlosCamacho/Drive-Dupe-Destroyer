@@ -1,6 +1,6 @@
 {
   "name": "drive-dupe-destroyer",
-  "version": "14.7.4",
+  "version": "14.7.6",
   "private": true,
   "description": "Test harness for Drive Dupe Destroyer. The app itself is a dependency-free static site; this file exists only so `npm test` can run the node:test suite.",
   "type": "module",
@@ -8,7 +8,7 @@
     "test": "node --test test/*.test.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "license": "PolyForm-Noncommercial-1.0.0"
 }

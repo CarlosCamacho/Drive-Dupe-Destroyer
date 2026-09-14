@@ -138,8 +138,16 @@ export const HASH_VERSION = 3;
 // Hashing Statistics
 // ============================================================================
 
+// `navigator` is read through globalThis, and at module scope. A bare
+// `navigator.hardwareConcurrency` here threw ReferenceError under Node 20 --
+// the version CI pins -- the moment anything imported this module, so two whole
+// test files failed to load while passing locally on Node 22, where `navigator`
+// is a global. The value is a pool size with a sensible default; nothing about
+// it needs the identifier to exist.
+const HARDWARE_CONCURRENCY = globalThis.navigator?.hardwareConcurrency;
+
 const WORKER_POOL_SIZE = Math.min(
-  Math.max(2, navigator.hardwareConcurrency - 1 || 3),
+  Math.max(2, HARDWARE_CONCURRENCY - 1 || 3),
   8
 );
 

@@ -246,6 +246,65 @@ ck(cr.mainGroups.length === 20, `#86 crop detection groups the 20 pairs on the m
 ck(JSON.stringify(cr.mainGroups) === JSON.stringify(cr.workerGroups), '#86 and the worker produces the IDENTICAL grouping');
 ck(cr.aloneGroups === 20, `#86 crop detection works without colour matching ticked (got ${cr.aloneGroups})`);
 
+// ---------------------------------------------------------------------------
+// The same property with rotation variants on (#88)
+// ---------------------------------------------------------------------------
+const vr = await page.evaluate(async () => {
+  const { runMatching, packEntries } = await import('/js/matcher.js');
+
+  const rnd = (seed, n) => {
+    const h = new Uint8Array(n);
+    let x = (seed * 2654435761) >>> 0;
+    for (let i = 0; i < n; i++) { x = (x * 1664525 + 1013904223) >>> 0; h[i] = (x >>> 16) & 0xff; }
+    return h;
+  };
+  // 20 images each paired with a rotated re-save of itself. Four rotation
+  // hashes per photo; the original's base is h0 with the rest as variants, the
+  // copy's base is h90 with h180 h270 h0 as its variants.
+  const entries = new Map();
+  for (let p = 0; p < 20; p++) {
+    const H = [0, 1, 2, 3].map(k => rnd(100 + p * 4 + k, 18));
+    const H8 = [0, 1, 2, 3].map(k => rnd(9000 + p * 4 + k, 8));
+    const at = (start) => ({
+      base12: H[start], base8: H8[start],
+      variants: [1, 2, 3].map(k => ({ base12: H[(start + k) % 4], base8: H8[(start + k) % 4] })),
+    });
+    entries.set(`orig${p}`, at(0));
+    entries.set(`rot${p}`, at(1));
+  }
+  const allIds = [...entries.keys()];
+  const opts = { hamThresh: 2, withVariants: true, allIds, emitInterval: 5, lshForceMode: 'loose' };
+  const norm = (groups) => groups.map(g => [...g].sort().join(',')).sort();
+
+  const mainRes = await runMatching({ entries, ...opts });
+
+  const w = new Worker('/js/worker-match.js', { type: 'module' });
+  const workerRes = await new Promise((resolve, reject) => {
+    w.onmessage = (ev) => {
+      if (ev.data.type === 'done') resolve(ev.data);
+      else if (ev.data.type === 'error') reject(new Error(ev.data.message));
+    };
+    w.onerror = (e) => reject(new Error(e.message || 'worker error'));
+    const { payload: packed, transfer } = packEntries(entries);
+    w.postMessage({ type: 'run', payload: { packed, ...opts } }, transfer);
+  });
+  w.terminate();
+
+  // Control: with variant comparison off, the rotated copies are unrelated.
+  const controlRes = await runMatching({ entries, ...opts, withVariants: false });
+
+  return {
+    mainGroups: norm(mainRes.groups),
+    workerGroups: norm(workerRes.groups),
+    controlGroups: controlRes.groups.length,
+  };
+});
+
+console.log(`  rotation groups: main ${vr.mainGroups.length}, worker ${vr.workerGroups.length}, control (variants off) ${vr.controlGroups}`);
+ck(vr.controlGroups === 0, '#88 control: with variant comparison off the rotated copies do not group');
+ck(vr.mainGroups.length === 20, `#88 rotated copies group on the main thread (got ${vr.mainGroups.length})`);
+ck(JSON.stringify(vr.mainGroups) === JSON.stringify(vr.workerGroups), '#88 and the worker produces the IDENTICAL grouping');
+
 console.log(f ? `\n${f} FAILED` : '\nALL CHECKS PASSED');
 await b.close();
 process.exit(f ? 1 : 0);
