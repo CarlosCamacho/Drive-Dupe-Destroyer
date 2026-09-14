@@ -20,11 +20,16 @@
 // against APP_VERSION at boot and warns if they diverge -- a mismatch means a
 // release bumped util.js without bumping the cache, which would serve stale JS.
 // Keep SW_VERSION in step with APP_VERSION in js/util.js.
-const SW_VERSION = "14.6.0";
+const SW_VERSION = "14.6.1";
 // Deriving the cache name from the version means every release gets a fresh
 // cache and the activate handler evicts the old one. Bumping the version is
 // now sufficient to invalidate; it is no longer a separate thing to remember.
 const CACHE_NAME = `drive-dupe-destroyer-v${SW_VERSION}`;
+
+// Resolved once, not per request. This was rebuilt inside the fetch handler --
+// roughly thirty URL constructions plus a Set on every single request, for a
+// value that never changes (#76).
+const KNOWN_ASSETS = new Set(PRECACHE.map(p => new URL(p, self.location.href).pathname));
 // PRECACHE is generated from the contents of js/ — see tools/gen_precache.py.
 // It was hand-maintained and had drifted in both directions: nine modules the
 // app statically imports were missing (so offline loaded the shell and then
@@ -173,8 +178,7 @@ self.addEventListener("fetch", (ev) => {
   // The previous condition was `!known && sameOrigin`, so a cross-origin request
   // (cdnjs, for instance) failed the test and fell THROUGH into the cache-first
   // handler below — the opposite of what the comment above describes.
-  const knownAssets = new Set(PRECACHE.map(p => new URL(p, self.location.href).pathname));
-  if (url.origin !== self.location.origin || !knownAssets.has(url.pathname)) {
+  if (url.origin !== self.location.origin || !KNOWN_ASSETS.has(url.pathname)) {
     return; // Not our asset — let the browser (or the other app's SW) handle it
   }
 

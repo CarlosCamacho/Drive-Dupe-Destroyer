@@ -8,6 +8,32 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 > The detailed, original per-version notes are archived in
 > [`docs/changelog/`](docs/changelog/). This file is the consolidated summary.
 
+## [14.6.1] - 2026-09-14
+
+### Fixed
+
+- **A blocked database upgrade froze the whole app.** `openDb()` settled only on
+  success or error; the `onblocked` event — which fires when another tab holds
+  the database at an older version — only wrote a console line. If that tab
+  never closed, neither success nor error ever fired and the promise stayed
+  pending forever. Every database call begins by awaiting it, so this did not
+  degrade the app, it stopped it: the scan froze mid-phase with nothing shown to
+  the user.
+
+  Measured as **still pending after three seconds**, resolving the instant the
+  holding connection closed. It now says which tab is at fault and what to do,
+  and gives up after ten seconds rather than hanging — a scan without the hash
+  cache is slow but correct, a frozen one is neither.
+
+  This would not have bitten anyone today, since the schema version has been
+  stable. It would have bitten on the next version bump, and then only people
+  who keep two tabs open — which is exactly what you do during a long scan.
+  ([#76](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/76))
+
+- The service worker rebuilt its known-asset set on **every** request — around
+  thirty URL constructions and a `Set` for a value that never changes.
+  ([#76](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/76))
+
 ## [14.6.0] - 2026-09-14
 
 ### Changed
