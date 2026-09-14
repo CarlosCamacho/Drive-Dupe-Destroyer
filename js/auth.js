@@ -255,9 +255,27 @@ function expiryFromResponse(resp) {
 // in-flight promise.
 let _tokenRequest = null;
 
+// Which sign-in session a request belongs to. signOut() bumps this, so a GIS
+// callback that lands after the user has signed out can tell that its token
+// belongs to a session that no longer exists. Without it, sign-out did not
+// stick: revoke ran against the old token, the UI went to "Sign In", and then
+// the in-flight callback wrote a brand new live token back into accessToken.
+// The window is up to the 10s silent-refresh timeout, on every keepalive and
+// every visibilitychange refresh (#82).
+let _tokenGeneration = 0;
+
+// Identifies the request that owns the _tokenRequest slot. The `.finally` used
+// to clear the slot unconditionally, so a request cancelled by signOut() would
+// later clear the slot belonging to whichever request had started since --
+// quietly dropping the single-flight guard for every caller after that.
+let _tokenRequestId = 0;
+
 function requestTokenOnce(options, { timeoutMs = CONFIG.AUTH_TIMEOUT_MS } = {}) {
   if (_tokenRequest) return _tokenRequest;
   if (!tokenClient) return Promise.reject(new Error("No token client"));
+
+  const myGeneration = _tokenGeneration;
+  const myId = ++_tokenRequestId;
 
   _tokenRequest = new Promise((resolve, reject) => {
     let settled = false;
@@ -273,7 +291,22 @@ function requestTokenOnce(options, { timeoutMs = CONFIG.AUTH_TIMEOUT_MS } = {}) 
       settled = true;
       clearTimeout(timer);
 
-      if (resp?.access_token) {
+      if (myGeneration !== _tokenGeneration) {
+        // The user signed out while this was in flight. Adopting the token
+        // would sign them back in behind a UI that says otherwise; leaving it
+        // alone would leave a live grant behind a sign-out that revoked its
+        // predecessor. So take neither option: hand it straight back.
+        try {
+          if (resp?.access_token) google.accounts.oauth2.revoke(resp.access_token, () => {});
+        } catch (e) {
+          console.warn("[Auth] Could not revoke a superseded token:", e?.message || e);
+        }
+        reject(Object.assign(new Error("Signed out before sign-in completed."), {
+          code: "AUTH",
+          authError: "superseded",
+          recoverable: true,
+        }));
+      } else if (resp?.access_token) {
         accessToken = resp.access_token;
         tokenExpiresAt = expiryFromResponse(resp);
         resolve(resp);
@@ -297,7 +330,7 @@ function requestTokenOnce(options, { timeoutMs = CONFIG.AUTH_TIMEOUT_MS } = {}) 
       }
     }
   }).finally(() => {
-    _tokenRequest = null;
+    if (_tokenRequestId === myId) _tokenRequest = null;
   });
 
   return _tokenRequest;
@@ -347,9 +380,15 @@ export async function ensureToken({ forcePrompt = false } = {}) {
     }
 
     if (e?.code === "AUTH_TIMEOUT") {
-      throw new Error(
-        "Sign-in timed out. If you see a Google popup, complete the sign-in there. " +
-        "If not, check whether popups are blocked."
+      // Keep the code. Rewriting the message used to drop it, leaving callers
+      // -- batchTrash among them -- unable to tell a timeout from any other
+      // failure and so unable to stop retrying into it.
+      throw Object.assign(
+        new Error(
+          "Sign-in timed out. If you see a Google popup, complete the sign-in there. " +
+          "If not, check whether popups are blocked."
+        ),
+        { code: "AUTH_TIMEOUT" }
       );
     }
     throw e;
@@ -450,6 +489,10 @@ export async function signOut() {
   }
   
   clearAllTimers();
+
+  // Bump BEFORE clearing, so a GIS callback that is already queued sees a
+  // generation it does not match and declines to write anything back (#82).
+  _tokenGeneration++;
 
   accessToken = null;
   tokenClient = null;

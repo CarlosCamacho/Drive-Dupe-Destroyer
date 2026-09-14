@@ -1,6 +1,6 @@
 {
   "name": "drive-dupe-destroyer",
-  "version": "14.7.1",
+  "version": "14.7.2",
   "private": true,
   "description": "Test harness for Drive Dupe Destroyer. The app itself is a dependency-free static site; this file exists only so `npm test` can run the node:test suite.",
   "type": "module",

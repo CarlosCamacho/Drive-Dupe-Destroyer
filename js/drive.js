@@ -324,20 +324,60 @@ export function parseBatchBodies(text) {
   return out;
 }
 
+/**
+ * Errors that mean every remaining request would fail the same way: the user
+ * cancelled, or the session is gone. Retrying each id individually into one of
+ * these buys nothing and costs a round trip -- plus, for an auth failure, a
+ * fresh doomed GIS attempt -- per file (#81).
+ */
+export function isTerminalTrashError(e) {
+  return e?.code === "AUTH" || e?.code === "AUTH_TIMEOUT" ||
+         e?.name === "AbortError" || e?.message === "Operation cancelled";
+}
+
+/**
+ * Whether a failed trash/restore PATCH means the file is already in the state we
+ * wanted -- i.e. gone. Read the status driveFetch attaches; do NOT match the
+ * message, which embeds 200 characters of Drive's error body. A 403 naming a
+ * file whose ID happens to contain "404" would otherwise be reported as a
+ * success, removing it from the queue while it is still in Drive (#81). The
+ * same pattern was removed from scan.js for the same reason.
+ */
+export function isAlreadyGoneError(e) {
+  return e?.status === 404;
+}
+
 export async function batchTrash(fileIds, { signal = null } = {}) {
   const results = { success: [], failed: [] };
+
+  // Files this run has ALREADY moved to the trash must survive the error that
+  // stops it. They used to be thrown away with `results`, so processQueue's
+  // catch skipped the undo record, the queue cleanup and the ddd:trashed event
+  // for deletions that had really happened -- the queue claimed 250 files were
+  // still there while 100 of them sat in Drive's trash, unrecoverable by Undo
+  // because nothing had recorded them (#81).
+  const stop = (e) => Object.assign(e, { partial: results, stoppedRun: true });
 
   // Per-file fallback: PATCH each id individually. Used when the batch endpoint
   // errors out entirely, or for ids the batch response didn't account for.
   const fallbackPatch = async (ids) => {
-    for (const id of ids) {
-      if (signal?.aborted) throw new Error("Operation cancelled");
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      if (signal?.aborted) {
+        for (const rest of ids.slice(i)) results.failed.push(rest);
+        throw stop(new Error("Operation cancelled"));
+      }
       try {
         await driveFetch(`files/${id}`, { method: "PATCH", body: { trashed: true }, signal });
         results.success.push(id);
       } catch (e) {
+        if (isTerminalTrashError(e)) {
+          // Nothing from here on was attempted. Say so, and stop.
+          for (const rest of ids.slice(i)) results.failed.push(rest);
+          throw stop(e);
+        }
         // A 404 means the file is already gone — the goal (not present) is met.
-        if (String(e?.message || "").includes("404")) results.success.push(id);
+        if (isAlreadyGoneError(e)) results.success.push(id);
         else results.failed.push(id);
       }
     }
@@ -349,10 +389,16 @@ export async function batchTrash(fileIds, { signal = null } = {}) {
   }
 
   for (const ids of chunks) {
-    if (signal?.aborted) throw new Error("Operation cancelled");
+    if (signal?.aborted) throw stop(new Error("Operation cancelled"));
 
-    // Ensure token valid before batch
-    await ensureValidToken();
+    // Ensure token valid before batch. This sits outside the try on purpose --
+    // a dead session is not something a per-file retry can fix -- but it must
+    // still hand back what earlier chunks accomplished.
+    try {
+      await ensureValidToken();
+    } catch (e) {
+      throw stop(e);
+    }
 
     const boundary = "batch_" + Math.random().toString(16).slice(2);
     let body = "";
@@ -411,7 +457,10 @@ export async function batchTrash(fileIds, { signal = null } = {}) {
         await fallbackPatch(unaccounted);
       }
     } catch (e) {
-      if (signal?.aborted || e.message === "Operation cancelled") throw e;
+      // fallbackPatch already accounted for every id in this chunk before it
+      // threw; re-entering it here would retry them.
+      if (e?.stoppedRun) throw e;
+      if (signal?.aborted || e.message === "Operation cancelled") throw stop(e);
       await fallbackPatch(ids);
     }
   }
