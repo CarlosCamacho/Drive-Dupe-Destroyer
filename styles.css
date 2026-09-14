@@ -21,13 +21,32 @@
   --bg-hover: #1f4068;
   --text-primary: #eaeaea;
   --text-secondary: #a0a0a0;
-  --text-muted: #777;
+  /* #777 measured 2.79:1 against the darkest surface this theme uses
+     (#0f3460) -- under half the 4.5:1 AA floor -- and it carries the hint text
+     under the controls, which is the text a new user needs most. #9a9ab0
+     measures 6.19 / 5.77 / 4.54 against #1a1a2e / #16213e / #0f3460. */
+  --text-muted: #9a9ab0;
   --accent-blue: #4361ee;
+  /* Eight rules in the crop editor and the compare toolbar were written
+     against a bare --accent that this file never defined. An undefined custom
+     property with no fallback makes the whole declaration invalid at
+     computed-value time, so `background: var(--accent)` resolved to
+     transparent and `border-color: var(--accent)` to currentColor -- the
+     active zoom level, the lock toggle's on state and the icon buttons' hover
+     all lost their fill while keeping `color: #fff`. In light theme that put
+     white glyphs on an #e8e8e8 panel at 1.23:1 contrast, so an icon vanished
+     exactly while you pointed at it. Aliased rather than rewritten at each
+     call site so the name resolves wherever it is reached for. */
+  --accent: #4361ee;
   --accent-blue-hover: #3a56d4;
   --accent-green: #06d6a0;
   --accent-green-light: rgba(6, 214, 160, 0.2);
-  --accent-red: #ef476f;
-  --accent-red-hover: #d63d5f;
+  /* White on #ef476f is 3.62:1, and this colour fills "Trash Selected" and
+     "Clear & Reload" -- the two controls that destroy something, so the two
+     labels that most need to be unambiguous. #d62b52 is 4.85:1 and #bf1f43 is
+     6.01:1; both move so the base/hover relationship survives. */
+  --accent-red: #d62b52;
+  --accent-red-hover: #bf1f43;
   --accent-red-light: rgba(239, 71, 111, 0.15);
   --accent-yellow: #ffd166;
   --border-color: #2a2a4a;
@@ -51,7 +70,9 @@
   --bg-hover: #e0e0e0;
   --text-primary: #1a1a2e;
   --text-secondary: #555555;
-  --text-muted: #888888;
+  /* 3.25:1 on #f5f5f5. #666666 measures 5.27 / 5.74 / 4.69 against
+     #f5f5f5 / #ffffff / #e8e8e8. */
+  --text-muted: #666666;
   --border-color: #d0d0d0;
   --shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
   --group-keep-1: rgba(6, 214, 160, 0.25);
@@ -227,9 +248,14 @@ html, body {
   transition: border-color var(--transition);
 }
 
-.formRow input:focus,
-.formRow select:focus {
-  outline: none;
+/* :focus-visible, not :focus -- and the outline stays. This rule used to win
+   on specificity over the global *:focus-visible indicator and replace it with
+   a border tint, which a native checkbox and select simply ignore. Measured by
+   Tab-walking the page: 7 of 24 reachable controls had no visible focus at all,
+   among them Recursive, Use database and Keep rule -- the controls that decide
+   what a scan does and which file it keeps. */
+.formRow input:focus-visible,
+.formRow select:focus-visible {
   border-color: var(--accent-blue);
 }
 
@@ -1721,8 +1747,7 @@ input[type="checkbox"] {
   text-align: center;
 }
 
-.fixedSizeInput:focus {
-  outline: none;
+.fixedSizeInput:focus-visible {
   border-color: var(--accent);
   color: var(--text-primary);
 }
@@ -1883,7 +1908,12 @@ input[type="checkbox"] {
   background: var(--bg-tertiary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
-  color: #fff;
+  /* Was a hard-coded #fff over a THEMED background: white on #e8e8e8 in light
+     theme, 1.23:1, so the glyph was painted and could not be seen until you
+     hovered it. The background follows the theme, so the foreground must too.
+     The three other hard-coded #fff declarations in this file sit on an accent
+     fill, where white is correct. */
+  color: var(--text-primary);
   cursor: pointer;
   transition: all 0.15s ease;
   text-decoration: none;
@@ -2223,4 +2253,20 @@ input[type="checkbox"] {
   border-radius: var(--radius-sm);
   white-space: nowrap;
   cursor: pointer;
+}
+
+/* Honour a reduced-motion preference. Nothing here conveys information through
+   movement, so this removes the motion without removing meaning: the spinner
+   and the collecting dots still show state through their static appearance.
+   Transitions are collapsed rather than dropped so :hover and :focus-visible
+   still change appearance instantly. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
