@@ -15,6 +15,7 @@
 // Fixed: Proper folder path display from pathMap
 
 import { recordRejection } from "./rejection.js";
+import { chooseKeepIndex, DEFAULT_KEEP_RULE } from "./common.js";
 import { pushUndoDeleteBatch } from "./undo.js";
 import { el, bytesToHuman, formatDate, IMAGE_PLACEHOLDER } from "./util.js";
 import { getThumbUrlForFile } from "./hashing.js";
@@ -97,49 +98,27 @@ function removeModalKeyboard() {
   }
 }
 
-function chooseKeepIndexLocal(group, keepRule, folderPriorityCsv = "") {
-  if (!Array.isArray(group) || group.length <= 1) return 0;
-  
-  const mod = f => Date.parse(f.modifiedTime || 0) || 0;
-  const size = f => Number(f.size || 0) || 0;
-  const res = f => {
-    const w = Number(f.imageMediaMetadata?.width || 0);
-    const h = Number(f.imageMediaMetadata?.height || 0);
-    return (w > 0 && h > 0) ? w * h : Number(f.size || 0);
-  };
-  
-  const folderPriority = (folderPriorityCsv || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
-  
-  const folderRank = (f) => {
-    const p = (f.parents?.[0] || "").toLowerCase();
-    const name = (f.name || "").toLowerCase();
-    const path = (f._path || "").toLowerCase();
-    
-    for (let i = 0; i < folderPriority.length; i++) {
-      if (p.includes(folderPriority[i]) || name.includes(folderPriority[i]) || path.includes(folderPriority[i])) return i;
-    }
-    return 999999;
-  };
+// The keeper is decided in exactly one place, common.js. This file used to
+// carry its own copy, chooseKeepIndexLocal, which had drifted: it compared a
+// byte count against a pixel count under the "hires" rule, matched a folder
+// priority term against the opaque parent ID and the file's own name, kept
+// index 0 for an unrecognised rule, and broke ties by array order. On the same
+// group it picked a different file from the list and the CSV export in all four
+// cases -- and since the compare view hard-coded the LEFT pane as the keeper,
+// the file the rest of the app wanted kept landed on the right, where the
+// "deleting the KEEP file" warning is disabled.
+function currentKeepRule() {
+  return el("keepRule")?.value || DEFAULT_KEEP_RULE;
+}
 
-  let best = 0;
-  
-  for (let i = 1; i < group.length; i++) {
-    const a = group[best], b = group[i];
-    let pickB = false;
+function currentFolderPriority() {
+  return el("folderPriority")?.value || "";
+}
 
-    switch (keepRule) {
-      case "newest": pickB = mod(b) > mod(a); break;
-      case "oldest": pickB = mod(b) < mod(a); break;
-      case "largest": pickB = size(b) > size(a); break;
-      case "smallest": pickB = size(b) < size(a); break;
-      case "hires": pickB = res(b) > res(a); break;
-      case "folderPriority": pickB = folderRank(b) < folderRank(a); break;
-    }
-    
-    if (pickB) best = i;
-  }
-  
-  return best;
+function keepFileForGroup(group) {
+  if (!Array.isArray(group) || group.length === 0) return null;
+  const idx = chooseKeepIndex(group, currentKeepRule(), currentFolderPriority());
+  return group[idx] || group[0];
 }
 
 function refreshGroups() {
@@ -267,16 +246,14 @@ function navigateToGroup(newIndex) {
     return;
   }
   
-  const keepRule = document.getElementById("keepRule")?.value || "hires";
-  const folderPriority = document.getElementById("folderPriority")?.value || "";
-  
-  const keepIdx = chooseKeepIndexLocal(group, keepRule, folderPriority);
-  const keepFile = group[keepIdx] || group[0];
-  const dupFile = group.find(f => f.id !== keepFile.id) || group[0];
+  const keepFile = keepFileForGroup(group);
+  const dupFile = group.find(f => f.id !== keepFile?.id) || group[0];
   
   if (keepFile && dupFile) {
     currentGroupIndex = newIndex;
-    openCompare(keepFile, dupFile, { leftIsKeep: true, rightIsKeep: false, groupIndex: newIndex, allGroups: allGroups });
+    // No leftIsKeep/rightIsKeep here: openCompare derives them from the group,
+    // so no caller can label the wrong pane.
+    openCompare(keepFile, dupFile, { groupIndex: newIndex, allGroups: allGroups });
   }
 }
 
@@ -347,7 +324,6 @@ async function handleDeleteBoth() {
 }
 
 async function handleDelete(side) {
-  const fileBeingDeleted = side === "left" ? leftFile : rightFile;
   const file = side === 'left' ? leftFile : rightFile;
   const isKeep = side === 'left' ? leftIsKeep : rightIsKeep;
   
@@ -389,12 +365,30 @@ export async function openCompare(fileA, fileB, options = {}) {
   if (options.idToEntry) currentIdToEntry = options.idToEntry;
   leftFile = fileA;
   rightFile = fileB;
-  leftIsKeep = options.leftIsKeep || false;
-  rightIsKeep = options.rightIsKeep || false;
   
   if (options.groupIndex !== undefined) currentGroupIndex = options.groupIndex;
   if (options.allGroups) allGroups = options.allGroups;
   else if (onGetCurrentGroups) allGroups = onGetCurrentGroups();
+
+  // Derive which pane holds the keeper instead of trusting the caller. All three
+  // call sites passed `leftIsKeep: true` unconditionally -- correct from
+  // render.js, which puts the real keeper on the left, but wrong from crop.js,
+  // which passes group[0] and group[1] as they happen to be ordered. The badge,
+  // the dimmed delete button, its tooltip and the "deleting the KEEP file"
+  // warning all read these two flags, so getting them from one shared decision
+  // is what keeps the warning pointing at the right file.
+  const group = allGroups?.[currentGroupIndex];
+  const groupKeeper = Array.isArray(group) && group.some(f => f.id === fileA?.id || f.id === fileB?.id)
+    ? keepFileForGroup(group)
+    : keepFileForGroup([fileA, fileB].filter(Boolean));
+
+  if (groupKeeper) {
+    leftIsKeep = groupKeeper.id === fileA?.id;
+    rightIsKeep = groupKeeper.id === fileB?.id;
+  } else {
+    leftIsKeep = options.leftIsKeep || false;
+    rightIsKeep = options.rightIsKeep || false;
+  }
   
   const modal = el("compareModal");
   const leftTitle = el("compareLeftTitle");

@@ -21,7 +21,7 @@
 // sw.js cannot import ES modules, so it carries its own SW_VERSION literal;
 // app.js compares the two at boot and warns on a mismatch (a stale cache).
 // serve_secure.py parses this line at startup, so keep the format as-is.
-export const APP_VERSION = "14.2.0";
+export const APP_VERSION = "14.2.1";
 
 // Configuration constants
 export const CONFIG = {
@@ -122,6 +122,22 @@ export function escapeHtml(s) {
     '"': '&quot;',
     "'": '&#39;'
   }[m]));
+}
+
+// True when any modal is on screen. Every modal in index.html carries
+// class="modal" and is shown by setting display:flex, so one query covers all
+// seven -- About, auth, folder picker, compare, crop, error and queue.
+//
+// This exists because Escape had two owners: each modal closed itself, and
+// keyboard.js independently clicked "Select none". One keypress therefore
+// dismissed a dialog AND discarded a deletion selection that has no undo.
+export function anyModalOpen() {
+  for (const m of document.querySelectorAll(".modal")) {
+    if (m.style.display && m.style.display !== "none") return true;
+    // A modal shown by a stylesheet rule rather than an inline style.
+    if (!m.style.display && getComputedStyle(m).display !== "none") return true;
+  }
+  return false;
 }
 
 export function sleep(ms) {
