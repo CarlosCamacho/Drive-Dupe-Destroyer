@@ -26,7 +26,7 @@ import { wireKeyboard } from "./keyboard.js";
 import { wireActions } from "./actions.js";
 import { wireExport, setExportState } from "./exporter.js";
 import { applyAllSecurityPolicies } from "./security.js";
-import { settingGet, settingSet, requestPersistentStorage, getStorageEstimate } from "./db.js";
+import { settingGet, settingSet, requestPersistentStorage, getStorageEstimate, setDbBlockedNotifier } from "./db.js";
 import { initPersistentSettings } from "./settings.js";
 import { toggleTelemetry } from "./telemetry.js";
 import { undoLastDelete, loadUndoStack } from "./undo.js";
@@ -632,6 +632,10 @@ async function init() {
   wireScanControls();
   wireImageTypeToggles();
   wireDbControls();
+  // A blocked database upgrade used to hang every DB call silently (#76).
+  // db.js stays free of UI imports, so it calls back out to say so.
+  setDbBlockedNotifier(msg => showToast(msg, "error", 15000));
+
   await wireCollapsibles();
   wireScrollToTop();
   wireThemeToggle();

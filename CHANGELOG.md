@@ -8,6 +8,77 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 > The detailed, original per-version notes are archived in
 > [`docs/changelog/`](docs/changelog/). This file is the consolidated summary.
 
+## [14.6.1] - 2026-09-14
+
+### Fixed
+
+- **A blocked database upgrade froze the whole app.** `openDb()` settled only on
+  success or error; the `onblocked` event — which fires when another tab holds
+  the database at an older version — only wrote a console line. If that tab
+  never closed, neither success nor error ever fired and the promise stayed
+  pending forever. Every database call begins by awaiting it, so this did not
+  degrade the app, it stopped it: the scan froze mid-phase with nothing shown to
+  the user.
+
+  Measured as **still pending after three seconds**, resolving the instant the
+  holding connection closed. It now says which tab is at fault and what to do,
+  and gives up after ten seconds rather than hanging — a scan without the hash
+  cache is slow but correct, a frozen one is neither.
+
+  This would not have bitten anyone today, since the schema version has been
+  stable. It would have bitten on the next version bump, and then only people
+  who keep two tabs open — which is exactly what you do during a long scan.
+  ([#76](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/76))
+
+- The service worker rebuilt its known-asset set on **every** request — around
+  thirty URL constructions and a `Set` for a value that never changes.
+  ([#76](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/76))
+
+## [14.6.0] - 2026-09-14
+
+### Changed
+
+- **Matching is 21x faster, and no longer runs on the UI thread.** The loop that
+  decides which files are duplicates held the main thread, handing control back
+  every 8 milliseconds. It now runs in a worker, falling back to the same code
+  in-process where a worker cannot start.
+
+  The speedup turned out to have almost nothing to do with the worker. Porting
+  it forced the phase to be measured properly, and that exposed the real cost:
+  every flush of results to the live view walked every scanned id to rebuild the
+  groups, and flushing every 25 matches meant roughly 1,900 flushes across
+  12,000 images — about 23 million operations, dwarfing the image comparisons
+  themselves. Flushing on a 250ms budget makes that proportional to elapsed time
+  instead of to how many duplicates the library happens to contain:
+
+  | 12,000 images | before | after | |
+  |---|---|---|---|
+  | main thread | 15,195ms | 713ms | 21x |
+  | worker | 11,721ms | 513ms | 23x |
+  | worst frame gap | 58ms | 20ms | |
+
+  The grouping is identical in every case. The worker is worth about 1.4x on top
+  of that, and a noticeably freer interface while a scan runs.
+
+  Two wrong turns on the way, both caught by measuring rather than reasoning.
+  The first port was **7x slower** — handing thousands of hash objects to a
+  worker costs more in serialisation than the matching it offloads, so they are
+  packed into flat buffers now and transferred without copying. The second was a
+  flaw in the benchmark rather than the code: the main-thread side was not given
+  the same callbacks, so it skipped the flush work entirely and made the worker
+  look 20x slower when it was in fact faster.
+  ([#69](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/69))
+
+### Added
+
+- `js/matcher.js` — the matching core as one module with no interface
+  dependencies, shared by the worker and the fallback so the two cannot drift
+  apart, and eleven tests pinning its behaviour that were written **before** the
+  port rather than after it.
+
+- `tools/matcher-parity.mjs`, `tools/matcher-bench.mjs` and
+  `tools/matcher-fallback.mjs` — the harnesses behind the figures above.
+
 ## [14.5.0] - 2026-09-14
 
 A pass over everything open: the five UI issues you filed, plus ten performance
