@@ -103,6 +103,74 @@ ck(out.streamSame, '#69 the streamed groups are the same set on both paths');
 // belongs in tools/matcher-bench.mjs, which runs at a size where matching
 // genuinely costs something.
 
+// ---------------------------------------------------------------------------
+// The same property with pHash mode on (#84)
+// ---------------------------------------------------------------------------
+//
+// The run above carries no optional fields, so it agreed on both paths while
+// pHash was being dropped in transit -- the field was packed under a name
+// nothing reads, and the feature silently did nothing for every scan since #69.
+// Parity has to be checked with the optional fields present, through the real
+// worker, or it only proves the common case.
+const ph = await page.evaluate(async () => {
+  const { runMatching, packEntries } = await import('/js/matcher.js');
+
+  // 30 pairs. Within a pair the dHashes are 4 bits apart -- above the threshold
+  // of 2, so dHash alone rejects them, but close enough that the index still
+  // offers the pair as a candidate. Across pairs the dHashes are unrelated.
+  // Each pair carries its own pHash, identical within the pair. So the grouping
+  // is a direct read-out of whether pHash reached the matcher.
+  const rnd = (seed, bytes) => {
+    const h = new Uint8Array(bytes);
+    let x = (seed * 2654435761) >>> 0;
+    for (let i = 0; i < bytes; i++) { x = (x * 1664525 + 1013904223) >>> 0; h[i] = (x >>> 16) & 0xff; }
+    return h;
+  };
+  const entries = new Map();
+  for (let pair = 0; pair < 30; pair++) {
+    for (const half of [0, 1]) {
+      const base12 = rnd(pair + 1, 18);
+      const base8 = rnd(pair + 1, 8);
+      if (half) { base12[5] ^= 0xF0; base8[5] ^= 0xF0; }   // 4 bits
+      const pHashBits = new Uint8Array(8); pHashBits.fill(pair);
+      entries.set(`p${pair}_${half}`, { base12, base8, pHashBits });
+    }
+  }
+  const allIds = [...entries.keys()];
+  const opts = { hamThresh: 2, withPHash: true, allIds, emitInterval: 5, lshForceMode: 'loose' };
+  const norm = (groups) => groups.map(g => [...g].sort().join(',')).sort();
+
+  const mainRes = await runMatching({ entries, ...opts });
+
+  const w = new Worker('/js/worker-match.js', { type: 'module' });
+  const workerRes = await new Promise((resolve, reject) => {
+    w.onmessage = (ev) => {
+      if (ev.data.type === 'done') resolve(ev.data);
+      else if (ev.data.type === 'error') reject(new Error(ev.data.message));
+    };
+    w.onerror = (e) => reject(new Error(e.message || 'worker error'));
+    const { payload: packed, transfer } = packEntries(entries);
+    w.postMessage({ type: 'run', payload: { packed, ...opts } }, transfer);
+  });
+  w.terminate();
+
+  // The control: the identical entries with pHash removed must NOT group, or
+  // the fixture is matching on dHash and proves nothing about pHash.
+  const stripped = new Map([...entries].map(([id, e]) => [id, { base12: e.base12, base8: e.base8 }]));
+  const controlRes = await runMatching({ entries: stripped, ...opts });
+
+  return {
+    mainGroups: norm(mainRes.groups),
+    workerGroups: norm(workerRes.groups),
+    controlGroups: controlRes.groups.length,
+  };
+});
+
+console.log(`  pHash groups: main ${ph.mainGroups.length}, worker ${ph.workerGroups.length}, control (no pHash) ${ph.controlGroups}`);
+ck(ph.controlGroups === 0, '#84 control: without pHash these pairs are too far apart to group');
+ck(ph.mainGroups.length === 30, `#84 pHash groups the 30 pairs on the main thread (got ${ph.mainGroups.length})`);
+ck(JSON.stringify(ph.mainGroups) === JSON.stringify(ph.workerGroups), '#84 and the worker produces the IDENTICAL grouping');
+
 console.log(f ? `\n${f} FAILED` : '\nALL CHECKS PASSED');
 await b.close();
 process.exit(f ? 1 : 0);
