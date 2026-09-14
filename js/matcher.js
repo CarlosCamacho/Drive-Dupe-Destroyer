@@ -70,10 +70,15 @@ const B8 = 8;     // 64-bit dHash
 /**
  * Flatten entries into transferable buffers. Returns { payload, transfer }.
  *
- * Optional per-entry fields (pHash, histograms, variants) are NOT packed: they
- * only exist when crop or colour matching is on, and they are variable-width.
- * Those runs carry them as ordinary cloned objects, which is the honest trade —
- * packing a rarely used field would complicate the common path for nothing.
+ * Optional per-entry fields (pHashBits, histograms, variants) are NOT packed:
+ * they only exist when crop, colour or pHash matching is on, and they are
+ * variable-width. Those runs carry them as ordinary cloned objects, which is
+ * the honest trade — packing a rarely used field would complicate the common
+ * path for nothing.
+ *
+ * The name matters. This carried `pHash` while the hasher writes `pHashBits`
+ * and bestDistWithPHash reads `pHashBits`, so the field arrived in the worker
+ * as undefined and pHash mode silently did nothing at all (#84).
  */
 export function packEntries(entries) {
   const ids = [];
@@ -90,8 +95,8 @@ export function packEntries(entries) {
     b12.set(e.base12.subarray ? e.base12.subarray(0, B12) : e.base12.slice(0, B12), i * B12);
     if (e.base8) b8.set(e.base8.subarray ? e.base8.subarray(0, B8) : e.base8.slice(0, B8), i * B8);
     // Anything beyond the two base hashes rides along unpacked.
-    if (e.pHash || e.colorHist || e.edgeHist || e.variants) {
-      extras.push([id, { pHash: e.pHash, colorHist: e.colorHist, edgeHist: e.edgeHist, variants: e.variants }]);
+    if (e.pHashBits || e.colorHist || e.edgeHist || e.variants) {
+      extras.push([id, { pHashBits: e.pHashBits, colorHist: e.colorHist, edgeHist: e.edgeHist, variants: e.variants }]);
     }
     i++;
   }
@@ -113,7 +118,7 @@ export function unpackEntries({ ids, b12, b8, extras }) {
     };
     const x = extraMap.get(id);
     if (x) {
-      if (x.pHash) e.pHash = x.pHash;
+      if (x.pHashBits) e.pHashBits = x.pHashBits;
       if (x.colorHist) e.colorHist = x.colorHist;
       if (x.edgeHist) e.edgeHist = x.edgeHist;
       if (x.variants) e.variants = x.variants;
