@@ -38,10 +38,21 @@ const BASE = process.env.DDD_BASE || 'http://localhost:8080';
 const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
 
 const SCENARIOS = [
-  { name: 'grant recurses into subfolders',        children: 'ok',   images: 'ok',   deep: 'ok',   hasSub: true,  expect: /drive\.file is sufficient/ },
-  { name: 'grant stops at direct children',        children: 'ok',   images: 'ok',   deep: '403',  hasSub: true,  expect: /not sufficient for recursive/ },
-  { name: 'picked folder had no subfolder',        children: 'ok',   images: 'ok',   deep: 'ok',   hasSub: false, expect: /Inconclusive — re-run/ },
-  { name: 'folder cannot be enumerated at all',    children: '403',  images: '403',  deep: '403',  hasSub: false, expect: /cannot enumerate a picked folder/ },
+  { name: 'grant recurses into subfolders',        children: 'ok',    images: 'ok',    deep: 'ok',    hasSub: true,  expect: /drive\.file is sufficient/ },
+  { name: 'grant stops at direct children',        children: 'ok',    images: 'ok',    deep: '403',   hasSub: true,  expect: /not sufficient for recursive/ },
+  { name: 'picked folder had no subfolder',        children: 'ok',    images: 'ok',    deep: 'ok',    hasSub: false, expect: /Inconclusive — re-run/ },
+  { name: 'folder cannot be enumerated at all',    children: '403',   images: '403',   deep: '403',   hasSub: false, expect: /cannot enumerate a picked folder/ },
+
+  // The case the probe used to get WRONG, and the one most likely to occur.
+  //
+  // files.list accepts drive.file (Google's discovery document, revision
+  // 20260904), so under per-file access the call is PERMITTED and returns only
+  // what the app was granted: HTTP 200, empty list. Counting ok as access made
+  // the page report "drive.file is sufficient" for precisely the result that
+  // proves it is not -- and that is the expensive direction to be wrong in,
+  // since acting on it means a migration that cannot scan anything.
+  { name: 'permitted but empty — per-file access',  children: 'empty', images: 'empty', deep: 'empty', hasSub: true,  expect: /grants the folder, not its contents/ },
+  { name: 'children readable, subfolder empty',     children: 'ok',    images: 'ok',    deep: 'empty', hasSub: true,  expect: /does not reach into subfolders/ },
 ];
 
 let fails = 0;
@@ -59,11 +70,17 @@ for (const s of SCENARIOS) {
     if (!q) return route.fulfill({ status: 200, contentType: 'application/json',
       body: JSON.stringify({ id: 'FOLDER', name: 'Photos', mimeType: 'application/vnd.google-apps.folder' }) });
 
-    if (q.includes("'SUB' in parents")) return s.deep === 'ok' ? ok([{ id: 'd1', name: 'deep.jpg', mimeType: 'image/jpeg' }]) : deny();
+    if (q.includes("'SUB' in parents"))
+      return s.deep === 'ok' ? ok([{ id: 'd1', name: 'deep.jpg', mimeType: 'image/jpeg' }])
+           : s.deep === 'empty' ? ok([])            // permitted, nothing granted
+           : deny();
     if (q.includes("mimeType contains 'image/'"))
-      return s.images === 'ok' ? ok([{ id: 'i1', name: 'a.jpg', md5Checksum: 'abc', thumbnailLink: 'x' }]) : deny();
+      return s.images === 'ok' ? ok([{ id: 'i1', name: 'a.jpg', md5Checksum: 'abc', thumbnailLink: 'x' }])
+           : s.images === 'empty' ? ok([])
+           : deny();
     // direct children
-    if (s.children !== 'ok') return deny();
+    if (s.children === '403') return deny();
+    if (s.children === 'empty') return ok([]);
     const kids = [{ id: 'i1', name: 'a.jpg', mimeType: 'image/jpeg' }];
     if (s.hasSub) kids.push({ id: 'SUB', name: '2019', mimeType: 'application/vnd.google-apps.folder' });
     return ok(kids);
@@ -107,6 +124,6 @@ for (const s of SCENARIOS) {
   console.log(`        → [${v.cls}] ${v.verdict}…`);
   await page.close();
 }
-console.log(fails ? `\n${fails} scenario(s) reached the WRONG verdict` : '\nAll four verdict paths reach the right conclusion.');
+console.log(fails ? `\n${fails} scenario(s) reached the WRONG verdict` : `\nAll ${SCENARIOS.length} verdict paths reach the right conclusion.`);
 await b.close();
 process.exit(fails ? 1 : 0);

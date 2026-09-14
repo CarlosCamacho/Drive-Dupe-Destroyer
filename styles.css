@@ -2402,3 +2402,37 @@ input[type="checkbox"] {
   color: var(--accent-blue);
   border-color: var(--accent-blue);
 }
+
+/* ============================================================
+   Reusable crop area (#77)
+   ============================================================ */
+
+.cropReuseGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 12px;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.cropReuseGroup input { cursor: pointer; }
+
+/* Says, before you press Crop, that the rectangle on screen came from the last
+   image rather than from you. The selection is always visible and always needs
+   a confirming click, so this is the reminder rather than the safeguard. */
+.cropAreaNote {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: var(--accent-blue);
+  white-space: nowrap;
+}
+
+.btnTiny {
+  padding: 2px 8px;
+  font-size: 0.72rem;
+}
