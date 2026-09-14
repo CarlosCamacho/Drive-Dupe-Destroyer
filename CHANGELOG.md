@@ -8,6 +8,33 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 > The detailed, original per-version notes are archived in
 > [`docs/changelog/`](docs/changelog/). This file is the consolidated summary.
 
+## [14.7.6] - 2026-09-14
+
+### Fixed
+
+- **CI has been red since 14.7.3, and the cause was mine.** `js/hashing.js`
+  sized its worker pool from a bare `navigator.hardwareConcurrency` **at module
+  scope**. Node 21 added `navigator`, so on Node 22 — what development runs on —
+  it worked, and on Node 20 — what the workflow pinned — it threw
+  `ReferenceError` the instant anything imported the module. The two new test
+  files import `js/scan.js`, which imports `js/hashing.js`, so both died on
+  load: 210 tests passing locally, 181 running on CI with two files dead. It is
+  read through `globalThis` with a default now, which also matters in the app:
+  these modules are imported by workers, where `window` and `document` do not
+  exist either.
+
+### Changed
+
+- **`npm test` now covers loading, not just behaviour.** `test/module-load.test.js`
+  imports every `js/` module the suite reaches — derived from the tests' own
+  imports, so it extends itself — in a child process with the browser globals
+  deleted. That is the check that would have caught this, and it fails on the
+  one-line revert.
+- **CI runs a matrix of Node 20 and 22** instead of a single pinned version, so
+  a version-specific break fails on the version that has it rather than only in
+  an email. `engines` is now `>=20`: Node 18 is end-of-life and nothing here has
+  ever tested it, so claiming it was a guess.
+
 ## [14.7.5] - 2026-09-14
 
 ### Fixed

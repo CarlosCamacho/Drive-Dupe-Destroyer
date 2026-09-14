@@ -7,11 +7,25 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      # Run on every Node the project claims to support, not just one.
+      #
+      # This workflow pinned Node 20 while development happened on Node 22, and
+      # nothing connected the two. js/hashing.js read a bare
+      # `navigator.hardwareConcurrency` at module scope: Node 21 added
+      # `navigator`, so it worked on 22 and threw ReferenceError on 20, taking
+      # two whole test files down with it. Locally 210 tests passed; CI ran 181
+      # and went red for four releases.
+      fail-fast: false
+      matrix:
+        node-version: ['20', '22']
+    name: test (node ${{ matrix.node-version }})
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: ${{ matrix.node-version }}
+      - run: node --version
       - run: npm test
       - name: Service worker precache list is current
         run: python3 tools/gen_precache.py --check
