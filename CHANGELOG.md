@@ -8,6 +8,51 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 > The detailed, original per-version notes are archived in
 > [`docs/changelog/`](docs/changelog/). This file is the consolidated summary.
 
+## [14.6.0] - 2026-09-14
+
+### Changed
+
+- **Matching is 21x faster, and no longer runs on the UI thread.** The loop that
+  decides which files are duplicates held the main thread, handing control back
+  every 8 milliseconds. It now runs in a worker, falling back to the same code
+  in-process where a worker cannot start.
+
+  The speedup turned out to have almost nothing to do with the worker. Porting
+  it forced the phase to be measured properly, and that exposed the real cost:
+  every flush of results to the live view walked every scanned id to rebuild the
+  groups, and flushing every 25 matches meant roughly 1,900 flushes across
+  12,000 images — about 23 million operations, dwarfing the image comparisons
+  themselves. Flushing on a 250ms budget makes that proportional to elapsed time
+  instead of to how many duplicates the library happens to contain:
+
+  | 12,000 images | before | after | |
+  |---|---|---|---|
+  | main thread | 15,195ms | 713ms | 21x |
+  | worker | 11,721ms | 513ms | 23x |
+  | worst frame gap | 58ms | 20ms | |
+
+  The grouping is identical in every case. The worker is worth about 1.4x on top
+  of that, and a noticeably freer interface while a scan runs.
+
+  Two wrong turns on the way, both caught by measuring rather than reasoning.
+  The first port was **7x slower** — handing thousands of hash objects to a
+  worker costs more in serialisation than the matching it offloads, so they are
+  packed into flat buffers now and transferred without copying. The second was a
+  flaw in the benchmark rather than the code: the main-thread side was not given
+  the same callbacks, so it skipped the flush work entirely and made the worker
+  look 20x slower when it was in fact faster.
+  ([#69](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/69))
+
+### Added
+
+- `js/matcher.js` — the matching core as one module with no interface
+  dependencies, shared by the worker and the fallback so the two cannot drift
+  apart, and eleven tests pinning its behaviour that were written **before** the
+  port rather than after it.
+
+- `tools/matcher-parity.mjs`, `tools/matcher-bench.mjs` and
+  `tools/matcher-fallback.mjs` — the harnesses behind the figures above.
+
 ## [14.5.0] - 2026-09-14
 
 A pass over everything open: the five UI issues you filed, plus ten performance
