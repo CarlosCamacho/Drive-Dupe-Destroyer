@@ -82,10 +82,26 @@ async function probe(token, folder) {
     fields: "files(id,name,mimeType)",
     pageSize: "100",
   });
-  results.childrenListable = kids.ok;
+  // A 200 with zero rows is NOT proof of access.
+  //
+  // Google's own discovery document (revision 20260904) lists drive.file among
+  // the scopes files.list accepts, and describes it as "only the SPECIFIC
+  // Google Drive files you use with this app". So the call is permitted and
+  // returns the intersection of the query with the app's granted set: a folder
+  // whose children were never granted yields HTTP 200 and an empty list, not an
+  // error. Treating ok as access made this probe report "drive.file is
+  // sufficient" for exactly the case that proves it is not -- the wrong answer,
+  // and the expensive one to act on.
+  results.childrenListable = kids.ok && (kids.body.files || []).length > 0;
+  results.childrenPermitted = kids.ok;
   results.childCount = kids.ok ? (kids.body.files || []).length : 0;
   if (kids.ok) {
-    log(`  OK — ${results.childCount} item(s) visible`, results.childCount ? "ok" : "warn");
+    log(`  ${results.childCount ? "OK" : "PERMITTED BUT EMPTY"} — ${results.childCount} item(s) visible`,
+        results.childCount ? "ok" : "bad");
+    if (!results.childCount) {
+      log("  An empty list here is the signature of per-file access: the call is", "muted");
+      log("  allowed, but nothing inside the folder was ever granted to this app.", "muted");
+    }
     for (const f of (kids.body.files || []).slice(0, 5)) log(`    · ${f.name} — ${f.mimeType}`, "muted");
     if (results.childCount > 5) log(`    · …and ${results.childCount - 5} more`, "muted");
   } else {
@@ -99,7 +115,8 @@ async function probe(token, folder) {
     fields: "files(id,name,md5Checksum,thumbnailLink)",
     pageSize: "100",
   });
-  results.imagesListable = imgs.ok;
+  results.imagesListable = imgs.ok && (imgs.body.files || []).length > 0;
+  results.imagesPermitted = imgs.ok;
   results.imageCount = imgs.ok ? (imgs.body.files || []).length : 0;
   if (imgs.ok) {
     const withMd5 = (imgs.body.files || []).filter(f => f.md5Checksum).length;
@@ -123,10 +140,12 @@ async function probe(token, folder) {
       fields: "files(id,name,mimeType)",
       pageSize: "100",
     });
-    results.recursion = deep.ok ? "yes" : "no";
     results.deepCount = deep.ok ? (deep.body.files || []).length : 0;
-    log(deep.ok ? `  OK — ${results.deepCount} item(s) visible inside the subfolder` : `  FAILED — ${describeFailure(deep.status, deep.body)}`,
-        deep.ok ? "ok" : "bad");
+    results.recursion = !deep.ok ? "no" : (results.deepCount > 0 ? "yes" : "empty");
+    log(!deep.ok ? `  FAILED — ${describeFailure(deep.status, deep.body)}`
+        : results.deepCount ? `  OK — ${results.deepCount} item(s) visible inside the subfolder`
+        : "  PERMITTED BUT EMPTY — the call succeeded and returned nothing",
+        results.deepCount ? "ok" : "bad");
   }
 
   render(results);
@@ -137,22 +156,51 @@ function render(r) {
   const canScanFlat = r.childrenListable && r.imagesListable;
   const canScanDeep = r.recursion === "yes";
 
+  // "Permitted but empty" is its own outcome and the most likely one. The call
+  // is allowed under drive.file -- Google's discovery document lists it among
+  // the scopes files.list accepts -- but it returns only files the app was
+  // granted, so a folder whose children were never picked yields 200 and
+  // nothing. An earlier version of this page counted that as success and would
+  // have reported the scope sufficient when it is not.
+  const permittedButEmpty = r.childrenPermitted && !r.childrenListable;
+
   if (canScanFlat && canScanDeep) {
     el.className = "verdict yes";
     el.innerHTML =
       "<strong>drive.file is sufficient.</strong><br>" +
-      "A picked folder's contents AND its subfolders are readable with the non-sensitive scope. " +
-      "DDD can drop the restricted <code>auth/drive</code> scope for scanning — no OAuth verification, " +
-      "no CASA assessment, no bring-your-own-Client-ID. Trashing still needs checking separately " +
-      "(this probe is read-only), but the hard part is answered: <strong>close #28 as viable.</strong>";
+      "A picked folder's contents AND its subfolders are readable with the non-sensitive scope — " +
+      `${r.childCount} child item(s) and ${r.deepCount} inside a subfolder, none of which this app ` +
+      "was ever granted individually. DDD can drop the restricted <code>auth/drive</code> scope for " +
+      "scanning — no OAuth verification, no CASA assessment, no bring-your-own-Client-ID. Trashing " +
+      "still needs checking separately (this probe is read-only), but the hard part is answered: " +
+      "<strong>close #28 as viable.</strong>";
+  } else if (permittedButEmpty) {
+    el.className = "verdict no";
+    el.innerHTML =
+      "<strong>drive.file grants the folder, not its contents.</strong><br>" +
+      "Listing the picked folder's children was <em>allowed</em> and returned <strong>nothing</strong>. " +
+      "That is per-file access behaving exactly as documented: the folder you picked was granted, " +
+      "the files inside it were not, and a query for them is answered with an empty list rather " +
+      "than an error.<br><br>" +
+      "<strong>Check the folder actually has files in it</strong> — if it is genuinely empty this " +
+      "result means nothing, so re-run on a folder with images. Otherwise the restricted scope is " +
+      "load-bearing: <strong>close #28 as won't-fix</strong> and keep the bring-your-own-Client-ID model.";
   } else if (canScanFlat && r.recursion === "no") {
     el.className = "verdict no";
     el.innerHTML =
       "<strong>drive.file is not sufficient for recursive scanning.</strong><br>" +
-      "The picked folder's direct children are readable, but the grant does NOT extend into " +
-      "subfolders. Since DDD scans recursively, the restricted scope stays load-bearing — " +
-      "unless the UX changes to make the user pick every folder individually. " +
+      "The picked folder's direct children are readable, but listing inside a subfolder was refused. " +
+      "Since DDD scans recursively, the restricted scope stays load-bearing — unless the UX changes " +
+      "to make the user pick every folder individually. " +
       "<strong>Record this on #28 and close it as won't-fix.</strong>";
+  } else if (canScanFlat && r.recursion === "empty") {
+    el.className = "verdict no";
+    el.innerHTML =
+      "<strong>The grant does not reach into subfolders.</strong><br>" +
+      "The picked folder's own children are readable, but the same query one level deeper was " +
+      "allowed and returned <strong>nothing</strong> — the subfolder's contents were never granted. " +
+      "Confirm that subfolder is not simply empty; if it has files, DDD's recursive scan cannot run " +
+      "on this scope. <strong>Close #28 as won't-fix.</strong>";
   } else if (canScanFlat && r.recursion === "untested") {
     el.className = "verdict no";
     el.innerHTML =

@@ -15,6 +15,7 @@
 // Features: Stay in modal after crop, locked aspect ratio, D key delete shortcut
 
 import { el, bytesToHuman, formatDate } from "./util.js";
+import { settingGet, settingSet } from "./db.js";
 import { lockBodyScroll, showToast } from "./ui.js";
 import { pushUndoDeleteBatch } from "./undo.js";
 import { batchTrash, uploadFile, downloadFileBlob } from "./drive.js";
@@ -45,6 +46,24 @@ let rotation = 0;
 let zoomLevel = 1;
 let displayScale = 1;
 
+// Remembered crop AREA, so the same region can be cropped out of image after
+// image without reselecting it every time.
+//
+// Stored as FRACTIONS of the displayed image, never pixels. The canvas is
+// scaled to fit the window (displayScale) and the next image may be a different
+// size entirely, so pixels would land somewhere arbitrary. Fractions mean "the
+// same part of the picture", which is what you actually want, and they collapse
+// to the identical rectangle when the images are the same size — the common
+// case for screenshots or a burst from one camera.
+//
+// Nothing is ever cropped without pressing Crop, and the restored rectangle is
+// drawn on the canvas first, so a remembered area can always be seen and
+// adjusted before it is used.
+const AREA_KEY = "destroyer_crop_area";
+const AREA_ON_KEY = "destroyer_crop_area_reuse";
+let rememberArea = true;
+let lastArea = null;        // { x, y, w, h } as 0..1 fractions
+
 // Fixed size selection state (persisted during session)
 let isLocked = false;
 let lockedWidth = 0;
@@ -57,6 +76,22 @@ let boundMouseMove = null;
 let boundMouseUp = null;
 
 export function wireCrop() {
+  // Reuse the last crop area on the next image (#77). Cropping the same region
+  // out of a run of pictures otherwise means reselecting it every single time.
+  const reuseToggle = el("cropReuseArea");
+  if (reuseToggle) {
+    reuseToggle.onchange = () => {
+      rememberArea = reuseToggle.checked;
+      settingSet(AREA_ON_KEY, rememberArea).catch(() => {});
+      if (rememberArea) applyRememberedArea();
+      else { selection = null; redrawCanvas(); }
+      updateAreaUI();
+    };
+  }
+  const btnClearArea = el("btnCropClearArea");
+  if (btnClearArea) btnClearArea.onclick = clearRememberedArea;
+
+
   const btnClose = el("btnCropClose");
   const btnCancel = el("btnCropCancel");
   const btnCrop = el("btnCropConfirm");
@@ -258,6 +293,8 @@ export async function openCropModal(file, options = {}) {
   updateZoomButtons();
   updateLockUI();
   
+  await loadCropAreaSettings();
+
   // Restore remembered values to inputs
   const inputWidth = el("cropFixedWidth");
   const inputHeight = el("cropFixedHeight");
@@ -324,7 +361,12 @@ async function loadImageForCrop(file) {
     
     updateCropInfo();
     redrawCanvas();
-    
+
+    // After redrawCanvas, which sizes the canvas and clears any selection.
+    // Restoring before it would be wiped by it.
+    applyRememberedArea();
+    updateAreaUI();
+
     if (cropLoading) cropLoading.style.display = "none";
     if (cropCanvas) cropCanvas.style.display = "block";
     
@@ -333,6 +375,80 @@ async function loadImageForCrop(file) {
     showToast("Failed to load image: " + (err.message || err), "error");
     if (cropLoading) cropLoading.textContent = "Failed to load image";
   }
+}
+
+// Record the current selection as fractions of the canvas.
+function rememberCurrentArea() {
+  if (!rememberArea || !selection || !canvas?.width || !canvas?.height) return;
+  if (selection.width < 10 || selection.height < 10) return;
+  lastArea = {
+    x: selection.x / canvas.width,
+    y: selection.y / canvas.height,
+    w: selection.width / canvas.width,
+    h: selection.height / canvas.height,
+  };
+  settingSet(AREA_KEY, lastArea).catch(() => {});
+  updateAreaUI();
+}
+
+// Put a remembered area back onto whatever image is now loaded.
+//
+// Clamped rather than rejected when it does not fit: a 16:9 area reused on a
+// 4:3 photo should give you the nearest sensible rectangle to adjust, not
+// nothing at all.
+function applyRememberedArea() {
+  if (!rememberArea || !lastArea || !canvas?.width || !canvas?.height) return false;
+  if (isLocked) return false;          // the fixed-size feature owns the selection
+
+  const w = Math.min(canvas.width, Math.max(10, lastArea.w * canvas.width));
+  const h = Math.min(canvas.height, Math.max(10, lastArea.h * canvas.height));
+  const x = Math.max(0, Math.min(canvas.width - w, lastArea.x * canvas.width));
+  const y = Math.max(0, Math.min(canvas.height - h, lastArea.y * canvas.height));
+
+  // No explicit draw: the marching-ants animation loop reads `selection` every
+  // frame, so assigning it is what puts it on screen.
+  selection = { x, y, width: w, height: h };
+
+  const btnCrop = el("btnCropConfirm");
+  if (btnCrop) btnCrop.disabled = selection.width < 10 || selection.height < 10;
+  return true;
+}
+
+function clearRememberedArea() {
+  lastArea = null;
+  if (canvas) delete canvas.dataset.selection;
+  settingSet(AREA_KEY, null).catch(() => {});
+  selection = null;
+  const btnCrop = el("btnCropConfirm");
+  if (btnCrop) btnCrop.disabled = true;
+  redrawCanvas();
+  updateAreaUI();
+}
+
+function updateAreaUI() {
+  const toggle = el("cropReuseArea");
+  if (toggle) toggle.checked = rememberArea;
+
+  const note = el("cropAreaNote");
+  if (!note) return;
+  const active = rememberArea && lastArea && !isLocked;
+  note.style.display = active ? "inline-flex" : "none";
+  if (active) {
+    const pct = (n) => Math.round(n * 100);
+    const label = el("cropAreaNoteText");
+    if (label) {
+      label.textContent =
+        `Reusing your last crop area (${pct(lastArea.w)}% × ${pct(lastArea.h)}% of the image)`;
+    }
+  }
+}
+
+async function loadCropAreaSettings() {
+  const on = await settingGet(AREA_ON_KEY, null).catch(() => null);
+  rememberArea = on === null ? true : on === true;
+  const area = await settingGet(AREA_KEY, null).catch(() => null);
+  lastArea = (area && typeof area.w === "number" && area.w > 0 && area.h > 0) ? area : null;
+  updateAreaUI();
 }
 
 function getTransformedDimensions() {
@@ -372,6 +488,11 @@ function redrawCanvas() {
     selection = null;
     const btnCrop = el("btnCropConfirm");
     if (btnCrop) btnCrop.disabled = true;
+    // A remembered area is expressed in fractions, so it survives a zoom or a
+    // rotate — put it straight back. Dropping it here would mean reselecting
+    // after every transform, which is the annoyance the feature exists to
+    // remove (#77).
+    applyRememberedArea();
   } else {
     // Recalculate locked selection for new canvas size
     applyLockedSize();
@@ -725,6 +846,14 @@ function startMarchingAnts() {
       const actualHeight = Math.round(selection.height * scaleY);
       
       const labelText = `${actualWidth} × ${actualHeight}`;
+
+      // Mirror the selection onto the element, changed-only. The size is drawn
+      // on the canvas where the user can see it, but canvas pixels are not
+      // inspectable — this makes the current rectangle readable for tests and
+      // for anyone debugging, the same way the sliders expose actualValue.
+      const selKey = `${Math.round(selection.x)},${Math.round(selection.y)},` +
+                     `${Math.round(selection.width)},${Math.round(selection.height)}`;
+      if (canvas.dataset.selection !== selKey) canvas.dataset.selection = selKey;
       ctx.font = "bold 13px system-ui, sans-serif";
       const textWidth = ctx.measureText(labelText).width;
       const labelPadding = 6;
@@ -913,6 +1042,10 @@ async function performCrop() {
     // image/heic or application/octet-stream was uploaded as PNG bytes under
     // the original's name AND the original's declared MIME — extension,
     // declared type and actual bytes all disagreeing.
+    // Remember this rectangle for the next image before anything else can reset
+    // the selection.
+    rememberCurrentArea();
+
     const { mime: encodeMime, ext: encodeExt } = chooseEncoding(currentFile.mimeType, currentFile.name);
     const quality = encodeMime === "image/jpeg" ? 0.92 : undefined;
 
