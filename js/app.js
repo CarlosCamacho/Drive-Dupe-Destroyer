@@ -90,19 +90,53 @@ function wireSliders() {
   }
 }
 
+// Theme has THREE states, not two. The stored value is "dark", "light", or
+// absent — and absent means "follow the operating system", which is what a
+// first-time visitor gets. The app previously defaulted to dark outright and
+// never consulted prefers-color-scheme, so someone on a light desktop got a
+// dark app until they found this button.
+//
+// The trap this avoids: if "dark" were both the default AND a stored value,
+// a user on a light OS who toggled to dark and back could never return to
+// following the system. Absence is therefore meaningful and is written back as
+// absence, not as a string.
+const SYSTEM_LIGHT = "(prefers-color-scheme: light)";
+
+function systemTheme() {
+  return window.matchMedia?.(SYSTEM_LIGHT).matches ? "light" : "dark";
+}
+
 async function wireThemeToggle() {
   const btn = el("btnTheme");
   if (!btn) return;
-  // Use IndexedDB — not localStorage — for all persistent settings
-  const saved = await settingGet("destroyer_app_theme", "dark").catch(() => "dark");
-  document.documentElement.dataset.theme = saved;
-  btn.textContent = saved === "dark" ? "☀️" : "🌙";
+
+  // Use IndexedDB — not localStorage — for all persistent settings.
+  let stored = await settingGet("destroyer_app_theme", null).catch(() => null);
+  if (stored !== "dark" && stored !== "light") stored = null;   // absent = follow the OS
+
+  // The button shows what you would switch TO, so it must read the RESOLVED
+  // theme. Reading the stored value would show the wrong icon in system mode.
+  const apply = (resolved) => {
+    document.documentElement.dataset.theme = resolved;
+    btn.textContent = resolved === "dark" ? "☀️" : "🌙";
+    btn.title = stored
+      ? `Switch to ${resolved === "dark" ? "light" : "dark"} theme`
+      : `Following your system (${resolved}) — click to override`;
+  };
+
+  apply(stored || systemTheme());
+
+  // Keep following the OS while no explicit choice has been made, so changing
+  // the system setting mid-session is reflected without a reload.
+  window.matchMedia?.(SYSTEM_LIGHT).addEventListener?.("change", () => {
+    if (!stored) apply(systemTheme());
+  });
+
   btn.onclick = async () => {
-    const current = document.documentElement.dataset.theme || "dark";
-    const next = current === "dark" ? "light" : "dark";
-    document.documentElement.dataset.theme = next;
+    const next = (document.documentElement.dataset.theme || "dark") === "dark" ? "light" : "dark";
+    stored = next;
+    apply(next);
     await settingSet("destroyer_app_theme", next).catch(() => {});
-    btn.textContent = next === "dark" ? "☀️" : "🌙";
   };
 }
 
