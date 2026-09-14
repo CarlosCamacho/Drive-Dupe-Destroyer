@@ -8,6 +8,82 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 > The detailed, original per-version notes are archived in
 > [`docs/changelog/`](docs/changelog/). This file is the consolidated summary.
 
+## [14.2.1] - 2026-09-14
+
+### Fixed
+
+- **A saved "Max images" or "Page size" was silently ignored.** Both sliders are
+  indexes into a lookup table, and the real value lives in a `data-` attribute
+  that only the slider's own `input` handler writes. Restoring a setting
+  assigned `.value` without dispatching any event, so the attribute kept the
+  HTML default — and the scan reads the attribute. A restored limit of 5,000
+  images was therefore scanned as **unlimited**, and a restored page size of 100
+  as 500, while the sliders sat exactly where the user had left them and the
+  readout beside them contradicted the handle. Restoring a setting now
+  dispatches the same events a real interaction would, after every control holds
+  its value, so no handler sees a half-applied mixture of saved and default
+  state. ([#44](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/44))
+
+- **Escape closed a dialog and threw away your deletion selection.** Escape had
+  two independent owners: every modal closed itself, and the keyboard handler
+  clicked "Select none" with no idea whether anything was stacked on top. One
+  keypress dismissed the About box and discarded a selection that has no undo.
+  Escape now clears the selection only when no modal is open, and closing the
+  last one hands the shortcut back. The folder picker's search box also stops
+  the key from bubbling, so clearing a search no longer closes the whole picker.
+  ([#45](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/45))
+
+- **A momentary failure permanently corrupted folder paths.** Two faults
+  compounded in `paths.js`. Parent-folder lookups cached the *promise*, so a
+  single 500 or dropped connection cached the **rejection** for the life of the
+  page — every later file beneath that folder gave up instantly without
+  retrying. And a walk that ended on an error, or on the depth cap, wrote its
+  truncated result to the durable on-disk cache as though it were correct, so a
+  file in `/My Drive/Photos/2019/Hawaii` was recorded as `/Hawaii` forever.
+  Pressing **Stop** triggered exactly that, for every file whose lookup was in
+  flight: an abort landing mid-request arrived in the error branch rather than
+  the abort guard.
+
+  That is not cosmetic. The folder path is what folder-priority keep selection
+  ranks on, so a truncated path changes which file the app offers to delete, and
+  it is what the CSV and JSON exports report as a file's location. Failed
+  lookups are now evicted so they can be retried, an incomplete walk is returned
+  for display but never cached, and an abort re-throws instead of persisting a
+  half-finished answer.
+  ([#46](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/46))
+
+- **Folder picker: a hostile folder name, a 500-subfolder ceiling, and a dead
+  readout.** A folder's name was interpolated into an `aria-label` without
+  escaping — while the same name was escaped in the element right beside it.
+  Anyone can share a folder with you and name it whatever they like, and a
+  crafted name injected an element into the page. It was *not* exploitable:
+  the CSP that `security.js`, `sw.js` and `serve_secure.py` each independently
+  apply blocks inline handlers in every configuration tested, including with the
+  service worker disabled. The name is escaped now regardless; a CSP is the wrong
+  last line of defense to be relying on, and the unescaped name also corrupted
+  what a screen reader announced.
+
+  Listing subfolders requested a page token and discarded it, so a folder with
+  more than 500 subfolders was silently truncated — and **Include All** then
+  acted on 500 of N while reporting a count that read as completeness. It now
+  follows the token, and says so if it ever hits its own ceiling. The folder ID
+  going into the query is validated the way `scan.js` already validates it.
+
+  The aspect-tolerance slider's readout was wired to nothing and sat at 20
+  forever, however far you dragged it.
+  ([#48](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/48))
+
+### Known
+
+- The WebAssembly hashing path has never been able to run: `js/dhash.wasm` is
+  not in the repository, has never been in its history, and nothing builds it.
+  So `wasm-hash.js` always falls back to its JavaScript implementation and the
+  telemetry panel always reports "WASM active: ✗ No", which reads as a browser
+  limitation rather than a missing file. Tracked in
+  [#47](https://github.com/CarlosCamacho/Drive-Dupe-Destroyer/issues/47), which
+  needs a decision — ship the binary and a build step, or delete the module —
+  rather than a patch.
+
 ## [14.2.0] - 2026-09-13
 
 ### Fixed

@@ -45,7 +45,10 @@ function wireSliders() {
   // Simple sliders
   const simpleSliders = [
     { id: "sensitivityLevel", displayId: "sensitivityVal" },
-    { id: "hamThresh", displayId: "hamThreshVal" }
+    { id: "hamThresh", displayId: "hamThreshVal" },
+    // aspectTolerance had a readout span in index.html and no handler anywhere,
+    // so the number beside the slider never moved off 20.
+    { id: "aspectTolerance", displayId: "aspectToleranceVal" }
   ];
   
   for (const { id, displayId } of simpleSliders) {
