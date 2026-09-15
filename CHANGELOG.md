@@ -8,6 +8,35 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 > The detailed, original per-version notes are archived in
 > [`docs/changelog/`](docs/changelog/). This file is the consolidated summary.
 
+## [Unreleased]
+
+### Testing
+
+- **First coverage of the hashing core** (#97). `js/worker-hash.js` computes
+  every hash the rest of the app reasons about and had none — a defect there
+  does not throw, it silently produces wrong groups and therefore wrong delete
+  suggestions. It is also the hardest module to reach: a worker script whose
+  whole surface is `self.onmessage`, needing `OffscreenCanvas` and
+  `createImageBitmap`, so neither `npm test` nor a plain import can touch it.
+  `tools/hash-properties.mjs` drives the real worker with real `ImageBitmap`s,
+  exactly as `js/hashing.js` does, and checks properties rather than golden
+  hashes so it is not pinned to one browser's resampling.
+
+  No defect found. Crop detection, rotation variants and the white-compositing
+  fix all do what they claim, measured: a centre crop matches through the crop
+  hashes at 0 bits while plain dHash puts it 20 apart, and a 90° re-save
+  matches a rotation variant at 0 while plain dHash puts it 42 apart.
+
+  **pHash's calibration had never been measured** — #84 turned it on for the
+  first time after it had been inert since #75. Across 780 pairs of unrelated
+  pictures the floor is 19 bits against a loosest threshold of 9, with zero
+  false matches at any sensitivity the UI offers. That change did not introduce
+  false positives.
+
+  The harness also guards the transparent-background fix described in
+  `getPooledCtx`, which had nothing testing it. No app code changed in this
+  entry.
+
 ## [14.7.9] - 2026-09-15
 
 ### Fixed
