@@ -8,6 +8,46 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 > The detailed, original per-version notes are archived in
 > [`docs/changelog/`](docs/changelog/). This file is the consolidated summary.
 
+## [14.7.9] - 2026-09-15
+
+### Fixed
+
+- **A delete recorded while the undo stack was still loading destroyed the
+  stored history and lost itself** (#95). `loadUndoStack` *assigned* the
+  persisted stack over the in-memory one, and `pushUndoDeleteBatch`'s
+  fire-and-forget `persist()` wrote in the other direction — so a delete during
+  that window overwrote every previously recoverable operation in IndexedDB,
+  and was then itself discarded when the read resolved with the pre-write value.
+
+  Measured with one previous-session operation covering three files:
+
+  ```
+  seeded in IndexedDB : [a.jpg, b.jpg, c.jpg]
+  in memory afterwards: 3 files  (the delete that just happened is gone)
+  in IndexedDB now    : [just-deleted.jpg]  (a, b, c are gone)
+  ```
+
+  Memory and storage then disagreed, and the next `persist()` wrote the memory
+  version back — erasing the new record permanently. The load now merges rather
+  than assigns, `persist()` chains behind any in-flight read, and the load is
+  held as a promise instead of a `loaded` flag set *before* the await (two
+  concurrent callers used to get different answers).
+
+  `app.js` starts that load during startup without awaiting it, so the window
+  is the IndexedDB read latency — normally milliseconds, but this project
+  already needed a 10-second grace for a database another tab holds open.
+
+### Changed
+
+- `tools/undo-race.mjs` drives the real module through the race, a concurrent
+  double load, and the ordinary path. `js/undo.js` had no coverage of any kind;
+  it was picked as the next target by listing the modules with none and ranking
+  them by consequence, and it is the safety net for deletions.
+- Corrected a comment in `undoLastDelete` that claimed the stack is
+  chronological. It is not: a partially failed operation is re-pushed onto the
+  end while keeping its original `trashedAt`. The behaviour was already right —
+  every entry is age-tested individually — but the stated reasoning was wrong.
+
 ## [14.7.8] - 2026-09-15
 
 ### Security

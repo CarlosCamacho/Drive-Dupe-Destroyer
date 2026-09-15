@@ -33,7 +33,17 @@ const UNDO_TTL_MS = 30 * 60 * 1000;            // 30 minutes
 
 // [{ opId, files: [{ fileId, fileName }], trashedAt }]
 let undoStack = [];
-let loaded = false;
+
+// The in-flight (or completed) load, held as a promise rather than a boolean.
+//
+// `loaded` used to be set to true BEFORE awaiting the read, so a second caller
+// got an answer for a stack that had not been read yet -- and the read then
+// ASSIGNED over the in-memory stack, discarding anything recorded while it was
+// in flight. Meanwhile that operation's fire-and-forget persist() had already
+// overwritten the stored stack. Both sides lost: the new delete vanished from
+// memory, and every previously recoverable operation vanished from storage
+// (#95). Everything that touches the stack now chains off this.
+let loadPromise = null;
 
 // ---------------------------------------------------------------------------
 // Persistence
@@ -45,18 +55,31 @@ function isFresh(op) {
 
 /** Load the persisted stack once per session. Safe to call repeatedly. */
 export async function loadUndoStack() {
-  if (loaded) return undoStack.length;
-  loaded = true;
-  try {
-    const saved = await stateGet(UNDO_KEY);
-    if (Array.isArray(saved)) {
-      undoStack = saved.filter(isFresh);
-    }
-  } catch {
-    // A load failure is not worth surfacing: an empty undo stack is the safe
-    // default, and the files are still recoverable from Google Drive Trash.
+  if (!loadPromise) {
+    loadPromise = (async () => {
+      try {
+        const saved = await stateGet(UNDO_KEY);
+        if (Array.isArray(saved)) {
+          // MERGE, never assign. Anything recorded while this read was in
+          // flight is already in undoStack and is the most recent thing the
+          // user did -- assigning over it threw away the undo record for a
+          // delete that had just happened (#95).
+          const seen = new Set(undoStack.map((op) => op?.opId));
+          const restored = saved.filter((op) => isFresh(op) && !seen.has(op?.opId));
+          undoStack = [...restored, ...undoStack];   // oldest first: the stack is chronological
+          if (undoStack.length > MAX_UNDO_OPS) {
+            undoStack = undoStack.slice(undoStack.length - MAX_UNDO_OPS);
+          }
+        }
+      } catch {
+        // A load failure is not worth surfacing: whatever is in memory is the
+        // safe default, and the files are still recoverable from Google Drive
+        // Trash.
+      }
+      updateUndoButton();
+    })();
   }
-  updateUndoButton();
+  await loadPromise;
   return undoStack.length;
 }
 
@@ -66,9 +89,16 @@ export async function loadUndoStack() {
  * files are in Drive Trash either way.
  */
 function persist() {
-  stateSet(UNDO_KEY, undoStack).catch((e) =>
-    console.warn("[Undo] Persist failed:", e?.message || e)
-  );
+  // Chained behind any in-flight load, so a write can never land before the
+  // read it would invalidate. Without this the first delete of a session could
+  // overwrite the stored stack with just itself, erasing every operation the
+  // previous session had left recoverable (#95).
+  const write = () =>
+    stateSet(UNDO_KEY, undoStack).catch((e) =>
+      console.warn("[Undo] Persist failed:", e?.message || e)
+    );
+  if (loadPromise) loadPromise.then(write, write);
+  else write();
 }
 
 // ---------------------------------------------------------------------------
@@ -110,8 +140,10 @@ export function pushUndoDelete(fileId, fileName) {
 export async function undoLastDelete() {
   await loadUndoStack();
 
-  // Drop operations that have aged out. Entries are pushed in chronological
-  // order, so once the newest is stale the whole stack is.
+  // Drop operations that have aged out. Every entry is tested individually
+  // rather than trusting the stack to be in age order: a partially failed
+  // operation is re-pushed onto the END below while keeping its original
+  // trashedAt, so the stack is not strictly chronological.
   undoStack = undoStack.filter(isFresh);
 
   const op = undoStack.pop();
