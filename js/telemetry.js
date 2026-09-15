@@ -14,9 +14,12 @@
 // Hashing speed & pipeline telemetry overlay - Feature #3
 
 import { el } from "./util.js";
+import { clearRejections, getRejectionStats } from "./rejection.js";
+import { showToast } from "./ui.js";
 
 let panel = null;
 let visible = false;
+let lastStats = null;
 
 function createPanel() {
   if (panel) return;
@@ -34,10 +37,15 @@ function createPanel() {
   el("btnCloseTelemetry").onclick = () => hideTelemetry();
 }
 
-export function showTelemetry() {
+export async function showTelemetry() {
   createPanel();
   panel.style.display = "block";
   visible = true;
+  // Render immediately rather than waiting for the next scan to push stats:
+  // the rejected-pairs count and its Clear action have to be reachable at any
+  // time, including before a scan has run in this session (#101).
+  const rejectedPairs = await getRejectionStats().then(s => s.count).catch(() => 0);
+  updateTelemetry({ ...(lastStats || {}), rejectedPairs });
 }
 
 export function hideTelemetry() {
@@ -50,6 +58,7 @@ export function toggleTelemetry() {
 }
 
 export function updateTelemetry(stats) {
+  if (stats) lastStats = stats;
   if (!visible) return;
   const body = el("telemetryBody");
   if (!body || !stats) return;
@@ -78,6 +87,38 @@ export function updateTelemetry(stats) {
   body.innerHTML = rows.map(([k, v]) =>
     `<div class="telemetry-row"><span class="tk">${k}</span><span class="tv">${v}</span></div>`
   ).join("");
+
+  // "Rejected pairs" was a number with nothing attached to it. Every other
+  // cache in the app can be cleared; a "not a duplicate" decision could not be,
+  // by any route -- clearRejections() existed, exported, with no caller, and the
+  // full-reset button deliberately leaves rejections alone. So one mis-press in
+  // the compare modal suppressed that pair in every future scan, permanently,
+  // and this panel is where the user finds out rejections exist at all (#101).
+  if ((stats.rejectedPairs ?? 0) > 0) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.id = "btnClearRejections";
+    btn.className = "telemetry-action";
+    btn.textContent = "Forget rejected pairs";
+    btn.title = "Stop suppressing the pairs you marked as not duplicates. They reappear on the next scan.";
+    btn.onclick = async () => {
+      const n = stats.rejectedPairs ?? 0;
+      if (!confirm(
+        `Forget ${n.toLocaleString()} rejected pair(s)?\n\n` +
+        `They will be offered as duplicates again on the next scan. This cannot be undone.`
+      )) return;
+      btn.disabled = true;
+      try {
+        await clearRejections();
+        updateTelemetry({ ...stats, rejectedPairs: (await getRejectionStats()).count });
+        showToast("Rejected pairs forgotten", "success");
+      } catch (e) {
+        btn.disabled = false;
+        showToast("Could not clear rejected pairs: " + (e?.message || e), "error");
+      }
+    };
+    body.appendChild(btn);
+  }
 }
 
 export function isTelemetryVisible() {
