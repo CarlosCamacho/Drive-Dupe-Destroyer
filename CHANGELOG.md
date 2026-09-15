@@ -37,6 +37,38 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   `getPooledCtx`, which had nothing testing it. No app code changed in this
   entry.
 
+## [14.7.11] - 2026-09-15
+
+### Fixed
+
+- **"Not a duplicate" was permanent, by any route** (#101). `clearRejections()`
+  existed, was exported, and had no caller anywhere — the same shape as #79,
+  where `clearMemoryPathCaches()` sat unused while the wrong function ran. The
+  full-reset button clears hashes and folder paths and deliberately leaves
+  rejections alone, which is right for user judgement, but nothing else cleared
+  them either. Measured: one press survived the full reset, survived a reload,
+  and had no way back short of deleting the site's IndexedDB by hand.
+
+  It matters more than a single pair, because rejections are keyed on the
+  **hash pair** rather than the file IDs — so one mis-press in the compare modal
+  suppressed *every* pair with those two hashes, in every future scan.
+
+  The telemetry panel already showed a growing "Rejected pairs" count with
+  nothing attached to it. It now carries a **Forget rejected pairs** action, and
+  the panel renders on open rather than waiting for a scan, so the action is
+  reachable at any time.
+
+### Removed
+
+- Three dead lookups in `js/rejection.js` — `isRejectedPairSync`,
+  `filterRejectedPairs` (which survived only as a mention in a `matcher.js`
+  comment) and the entry-fingerprint memoizer that existed solely for the first
+  of them. They read as live alternatives to the path the matcher actually uses,
+  which is the key set it is handed because it runs in a worker.
+
+- A stale warning in the `pairKey` comment about the dHash size setting changing
+  every hash. That setting was removed in #89.
+
 ## [14.7.10] - 2026-09-15
 
 ### Fixed
