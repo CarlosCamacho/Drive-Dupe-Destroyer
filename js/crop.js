@@ -15,9 +15,10 @@
 // Features: Stay in modal after crop, locked aspect ratio, D key delete shortcut
 
 import { el, bytesToHuman, formatDate } from "./util.js";
+import { confirmAction, UNDO_NOTE } from "./confirm.js";
 import { settingGet, settingSet } from "./db.js";
-import { lockBodyScroll, showToast } from "./ui.js";
-import { pushUndoDeleteBatch } from "./undo.js";
+import { lockBodyScroll, showToast, showTrashedToast } from "./ui.js";
+import { pushUndoDeleteBatch, undoLastDelete } from "./undo.js";
 import { batchTrash, uploadFile, downloadFileBlob } from "./drive.js";
 import { openCompare } from "./compare.js";
 
@@ -895,7 +896,13 @@ function stopMarchingAnts() {
 async function handleCropDelete() {
   if (!currentFile) return;
   
-  if (!confirm(`Delete "${currentFile.name}"? This will move the file to trash.`)) return;
+  if (!await confirmAction({
+    title: "Move to Trash?",
+    message: "This file will be moved to Google Drive Trash.",
+    confirmLabel: "Move to Trash",
+    note: UNDO_NOTE,
+    files: [currentFile],
+  })) return;
   
   const btnDelete = el("btnCropDelete");
   if (btnDelete) {
@@ -907,7 +914,7 @@ async function handleCropDelete() {
     const result = await batchTrash([currentFile.id]);
     if (result.success.includes(currentFile.id)) {
       pushUndoDeleteBatch([currentFile]);
-      showToast("File moved to trash — use Undo to restore", "success");
+      showTrashedToast(1, () => undoLastDelete());
       window.dispatchEvent(new CustomEvent("ddd:trashed", { detail: { ids: [currentFile.id] } }));
       
       // Navigate to next image
@@ -1077,12 +1084,14 @@ async function performCrop() {
     // Trashing the original is now the user's call, and it is stated plainly
     // what the crop did and did not keep. This used to happen automatically,
     // with no warning that the replacement had lost every piece of metadata.
-    const alsoTrash = confirm(
-      `Saved the crop as "${newName}".\n\n` +
-      `Move the original "${currentFile.name}" to Google Drive Trash?\n\n` +
-      `Note: the crop is a re-encode, so EXIF, colour profile, GPS and capture ` +
-      `date are NOT carried over. Keep the original if you need them.`
-    );
+    const alsoTrash = await confirmAction({
+      title: `Saved the crop as "${newName}"`,
+      message: "Move the original to Google Drive Trash?",
+      confirmLabel: "Move original to Trash",
+      note: "The crop is a re-encode, so EXIF, colour profile, GPS and capture date are NOT carried over. " +
+            "Keep the original if you need them. " + UNDO_NOTE,
+      files: [currentFile],
+    });
 
     if (!alsoTrash) {
       showToast(`Saved "${newName}". Original kept.`, "success", 4000);

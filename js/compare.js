@@ -16,10 +16,10 @@
 
 import { recordRejection } from "./rejection.js";
 import { chooseKeepIndex, DEFAULT_KEEP_RULE } from "./common.js";
-import { pushUndoDeleteBatch } from "./undo.js";
+import { pushUndoDeleteBatch, undoLastDelete } from "./undo.js";
 import { el, bytesToHuman, formatDate, IMAGE_PLACEHOLDER } from "./util.js";
 import { getThumbUrlForFile } from "./hashing.js";
-import { lockBodyScroll, showToast } from "./ui.js";
+import { lockBodyScroll, showToast, showTrashedToast } from "./ui.js";
 import { driveFilePreviewLink, driveFolderLink, batchTrash, downloadFileBlob, thumbLinkSized } from "./drive.js";
 import { openCropModal } from "./crop.js";
 
@@ -380,7 +380,7 @@ async function handleDeleteBoth() {
       const trashed = new Set(result.success);
       pushUndoDeleteBatch(filesToDelete.map(f => f.file).filter(f => trashed.has(f.id)));
 
-      showToast(`${result.success.length} file(s) moved to trash — use Undo to restore`, "success");
+      showTrashedToast(result.success.length, () => undoLastDelete());
       window.dispatchEvent(new CustomEvent("ddd:trashed", { detail: { ids: result.success } }));
       
       setTimeout(() => {
@@ -411,7 +411,7 @@ async function handleDelete(side) {
     const result = await batchTrash([file.id]);
     if (result.success.includes(file.id)) {
       pushUndoDeleteBatch([file]);
-      showToast("File moved to trash — use Undo to restore", "success");
+      showTrashedToast(1, () => undoLastDelete());
       window.dispatchEvent(new CustomEvent("ddd:trashed", { detail: { ids: [file.id] } }));
       
       setTimeout(() => {
