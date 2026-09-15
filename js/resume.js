@@ -15,8 +15,28 @@
 // Saves scan queue state after each folder batch so crashes/refreshes can resume.
 
 import { stateSet, stateGet } from "./db.js";
+import { driveFilePreviewLink } from "./drive.js";
 
 const RESUME_KEY = "destroyer_scan_resume_v1";
+
+/**
+ * Fields dropped from the stored file objects because they can be rebuilt.
+ *
+ * webViewLink is 16% of the serialised state (1.91 MB of 11.91 MB across
+ * 20,000 files) and driveFilePreviewLink already falls back to constructing it
+ * from the id -- so storing it is pure redundancy in a payload that gets
+ * rewritten on every checkpoint (#99). It IS rebuilt on load: the CSV export
+ * has a webViewLink column, which would otherwise come back empty for every
+ * resumed file.
+ */
+function shrinkFile(f) {
+  const { webViewLink, ...rest } = f;
+  return rest;
+}
+
+function rehydrateFile(f) {
+  return f.webViewLink ? f : { ...f, webViewLink: driveFilePreviewLink(f) };
+}
 
 export async function saveResumeState(state) {
   // state: { folderIds, exclusions, visitedFolderIds, pendingFolderIds,
@@ -27,6 +47,7 @@ export async function saveResumeState(state) {
   // rescan. Written periodically during collection, not once at the end.
   await stateSet(RESUME_KEY, {
     ...state,
+    files: Array.isArray(state?.files) ? state.files.map(shrinkFile) : state?.files,
     savedAt: Date.now()
   }).catch(() => {});
 }
@@ -39,6 +60,7 @@ export async function loadResumeState() {
     await clearResumeState();
     return null;
   }
+  if (Array.isArray(s.files)) s.files = s.files.map(rehydrateFile);
   return s;
 }
 

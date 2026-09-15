@@ -134,3 +134,46 @@ describe("live path resolver", () => {
     assert.equal(calls.length, 0, "no consumer means no requests");
   });
 });
+
+// ---------------------------------------------------------------------------
+// checkpointInterval (#99)
+// ---------------------------------------------------------------------------
+//
+// Every resume checkpoint serialises the ENTIRE accumulated file list, so a
+// fixed interval makes the bytes written grow quadratically with library size:
+// 125 MB across one 20,000-image scan, measured. The browser-side measurement
+// is tools/resume-cost.mjs; this pins the shape of the curve.
+
+import { checkpointInterval } from "../js/scan.js";
+
+describe("checkpointInterval", () => {
+  test("a small library checkpoints as often as it always did", () => {
+    for (const n of [0, 1, 100, 2500, 5000]) {
+      assert.equal(checkpointInterval(n), 25, `${n} files`);
+    }
+  });
+
+  test("it stretches as the list grows, so the bytes written stay bounded", () => {
+    assert.equal(checkpointInterval(5001), 50);
+    assert.equal(checkpointInterval(12000), 75);
+    assert.equal(checkpointInterval(20000), 100);
+  });
+
+  test("it never decreases", () => {
+    let prev = 0;
+    for (let n = 0; n <= 60000; n += 250) {
+      const v = checkpointInterval(n);
+      assert.ok(v >= prev, `interval fell at ${n} files: ${prev} -> ${v}`);
+      prev = v;
+    }
+  });
+
+  // A zero or missing count must not produce 0 -- `folder % 0` is NaN, which is
+  // never === 0, so checkpointing would stop entirely.
+  test("a missing or zero count still yields a usable interval", () => {
+    for (const n of [undefined, null, 0, NaN]) {
+      const v = checkpointInterval(n);
+      assert.ok(Number.isFinite(v) && v >= 25, `${String(n)} -> ${v}`);
+    }
+  });
+});

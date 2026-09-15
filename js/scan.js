@@ -184,6 +184,25 @@ async function listFolderLevel(folderId, pageSize, signal) {
 // File Collection
 // ============================================================================
 
+/**
+ * How many folders to walk between resume checkpoints.
+ *
+ * Every checkpoint serialises the ENTIRE accumulated file list, so a fixed
+ * interval makes the bytes written grow quadratically with library size: at a
+ * flat 25 folders, a 20,000-image library across 500 folders wrote 125 MB in 20
+ * checkpoints, 2.3s of IndexedDB time, during the phase already saturating the
+ * Drive API. Scaling the interval with the collected count brings that to 61 MB
+ * in 12 (#99).
+ *
+ * The trade is real and deliberate: once the list is large a crash loses up to
+ * 100 folders of walking rather than 25. Re-listing 100 folders is about 100
+ * API calls, against 60 MB of writes avoided -- and the marginal value of a
+ * checkpoint falls as the list grows while its cost rises linearly.
+ */
+export function checkpointInterval(filesSoFar) {
+  return 25 * Math.max(1, Math.ceil((filesSoFar || 0) / 5000));
+}
+
 async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSize, signal, onStatus, resume = null, onCheckpoint = null }) {
   // Resuming means picking up the BFS frontier where it stopped: the folders
   // already walked stay walked, and the queue restarts from what was still
@@ -249,7 +268,7 @@ async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSi
       // Checkpoint the frontier, not just a count. Writing this once at the end
       // of collection (as before) was useless: a crash during the long phase
       // had nothing to resume from.
-      if (onCheckpoint && foldersScanned % 25 === 0) {
+      if (onCheckpoint && foldersScanned % checkpointInterval(allFiles.length) === 0) {
         onCheckpoint({ files: allFiles, visitedFolderIds: Array.from(walked), pendingFolderIds: [...queue] });
       }
     } catch (e) {
@@ -833,7 +852,7 @@ export async function runScan({
           exclusions: exclusions instanceof Set ? Array.from(exclusions) : (exclusions || []),
           visitedFolderIds: state.visitedFolderIds,
           pendingFolderIds: state.pendingFolderIds,
-          files: state.files,
+          files: state.files,          // resume.js strips the rebuildable fields
           totalImagesFound: state.files.length,
           options: { recursive, maxItems, pageSize, withVariants, withCropDetect, withColorMatch, withPHash, withRotation }
         }).catch(() => {});
@@ -844,18 +863,14 @@ export async function runScan({
     
     if (signal?.aborted) throw new Error("Scan stopped.");
 
-    // Feature #4: Save resume state after collection so a crash can resume
-    try {
-      await saveResumeState({
-        folderIds,
-        exclusions: exclusions instanceof Set ? Array.from(exclusions) : (exclusions || []),
-        visitedFolderIds: Array.from(visitedFolderIds),
-        pendingFolderIds: [],
-        files: allItems,
-        totalImagesFound: allItems.length,
-        options: { recursive, maxItems, pageSize, withVariants, withCropDetect, withColorMatch, withPHash, withRotation }
-      });
-    } catch {}
+    // No resume state is written here on purpose.
+    //
+    // This used to save the whole collected library with pendingFolderIds: [],
+    // and app.js -- the only reader -- discards exactly that shape ("Only worth
+    // offering if there is actually work left to skip"). So the largest single
+    // write the app made was thrown away unread on every scan: 11.9 MB and
+    // 119 ms at 20,000 images, awaited, between collection and hashing (#99).
+    // The checkpoints during collection are what a crash resumes from.
 
     // One predicate, applied everywhere a file can enter the scan set. It used
     // to be inlined here only, so delta-added files below bypassed the size
