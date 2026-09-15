@@ -37,6 +37,44 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   `getPooledCtx`, which had nothing testing it. No app code changed in this
   entry.
 
+## [14.7.10] - 2026-09-15
+
+### Fixed
+
+- **The largest write the app made was discarded unread** (#99). `runScan`
+  saved the resume state once more after collection, carrying the complete file
+  list with `pendingFolderIds: []` — and `app.js`, its only reader, refuses
+  exactly that shape ("Only worth offering if there is actually work left to
+  skip"). Measured at 20,000 images: **11.9 MB and 119 ms**, awaited, between
+  collection and hashing, every scan, for nothing. Removed.
+
+### Changed
+
+- **Resume checkpoints no longer write 125 MB during a scan.** Each one
+  serialises the entire accumulated file list, so a fixed 25-folder interval
+  made the bytes written grow quadratically with library size. Over a
+  20,000-image library across 500 folders:
+
+  ```
+                              writes    written    IndexedDB time
+  before                        20      125.1 MB      2.3 s
+  after                         12       51.0 MB      1.0 s
+  ```
+
+  Two changes get there. `webViewLink` is no longer stored — it is 16% of the
+  payload (1.91 MB of 11.91) and `driveFilePreviewLink` already rebuilds it
+  from the id; it *is* reconstructed on load, so the CSV export keeps its
+  column. And the checkpoint interval now scales with the collected count.
+
+  **That second one trades something**, deliberately: once the list is large a
+  crash loses up to 100 folders of walking rather than 25. Re-listing 100
+  folders is roughly 100 API calls, against 60 MB of writes avoided — and a
+  checkpoint's marginal value falls as the list grows while its cost rises
+  linearly. Libraries under 5,000 images checkpoint exactly as often as before.
+
+- `tools/resume-cost.mjs` measures the whole collection phase rather than one
+  write, since the cost is quadratic and invisible from any single call site.
+
 ## [14.7.9] - 2026-09-15
 
 ### Fixed
