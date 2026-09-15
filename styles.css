@@ -1387,27 +1387,89 @@ button:disabled {
 }
 
 /* Toast Notifications */
-.toast {
+/* Toasts stack rather than replacing one another (#107). The container owns
+   the positioning; each toast animates itself in and out. */
+.toastStack {
   position: fixed;
   bottom: 20px;
   left: 50%;
-  transform: translateX(-50%) translateY(80px);
-  padding: 10px 20px;
+  transform: translateX(-50%);
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+  max-width: min(440px, calc(100vw - 32px));
+}
+.toastStack > * { pointer-events: auto; }
+
+.toast {
+  position: relative;
+  transform: translateY(80px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px 10px 16px;
   background: var(--bg-tertiary);
   color: var(--text-primary);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  z-index: 2000;
   opacity: 0;
   transition: transform 0.3s ease, opacity 0.3s ease;
-  max-width: 380px;
-  text-align: center;
+  max-width: 100%;
+  text-align: left;
   font-size: 0.85rem;
 }
 
 .toast.show {
-  transform: translateX(-50%) translateY(0);
+  transform: translateY(0);
   opacity: 1;
+}
+
+.toastText { flex: 1 1 auto; }
+
+.toastCount {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  opacity: .7;
+  font-size: .8em;
+}
+
+/* The inline action -- Undo, chiefly. Sized for a finger, not just a cursor. */
+.toastAction {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 4px 10px;
+  font: inherit;
+  font-weight: 600;
+  color: inherit;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: .9;
+}
+.toastAction:hover { opacity: 1; background: rgba(127, 127, 127, .18); }
+
+.toastClose {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  font: inherit;
+  line-height: 1;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: .55;
+}
+.toastClose:hover { opacity: 1; background: rgba(127, 127, 127, .18); }
+
+@media (prefers-reduced-motion: reduce) {
+  .toast { transition: opacity .01ms; transform: none; }
+  .toast.show { transform: none; }
 }
 
 .toast-success {
@@ -2453,4 +2515,190 @@ input[type="checkbox"] {
 .btnTiny {
   padding: 2px 8px;
   font-size: 0.72rem;
+}
+
+/* ============================================================
+   In-app confirmation dialog (#109)
+   Replaces native confirm(), which cannot show the photograph
+   the user is about to destroy.
+   ============================================================ */
+.confirmDetail {
+  margin: .75rem 0 .25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.confirmFile {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px;
+  border: 1px solid var(--border, #444);
+  border-radius: 8px;
+}
+.confirmThumb {
+  width: 56px;
+  height: 56px;
+  flex: 0 0 auto;
+  object-fit: cover;
+  border-radius: 6px;
+  background: var(--bg-tertiary, #2a2a2a);
+}
+.confirmFileText { min-width: 0; }
+.confirmFileText b {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.confirmMore { padding-left: 6px; }
+.confirmNote { margin-top: .6rem; }
+
+/* The first-run steps in the results panel (#103). */
+.emptySteps {
+  margin: .9rem 0 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+  text-align: left;
+  color: var(--text-muted, #888);
+  font-size: .9rem;
+}
+.emptySteps li {
+  counter-increment: step;
+  padding: 3px 0 3px 28px;
+  position: relative;
+}
+.emptySteps li::before {
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid var(--border, #444);
+  font-size: .75rem;
+  line-height: 19px;
+  text-align: center;
+}
+
+/* Keyboard shortcuts panel (#110) — a persistent reference, replacing a toast
+   that listed five of twenty shortcuts and vanished after four seconds. */
+.shortcutGroup {
+  margin: 1rem 0 .4rem;
+  font-size: .8rem;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--text-muted, #888);
+}
+.shortcutGroup:first-child { margin-top: 0; }
+.shortcutList {
+  display: grid;
+  grid-template-columns: minmax(96px, auto) 1fr;
+  gap: 6px 14px;
+  margin: 0;
+  align-items: baseline;
+}
+.shortcutList dt { margin: 0; }
+.shortcutList dd { margin: 0; color: var(--text-muted, #888); font-size: .88rem; }
+kbd {
+  display: inline-block;
+  min-width: 1.6em;
+  padding: 2px 6px;
+  font: inherit;
+  font-size: .78rem;
+  text-align: center;
+  color: var(--text-primary, #e0e0e0);
+  background: var(--bg-tertiary, #2a2a2a);
+  border: 1px solid var(--border, #444);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+}
+
+/* Touch targets (#111). The visual size is unchanged; the hit area is not.
+   Help icons and the per-row mini actions sit shoulder to shoulder, and one of
+   them deletes a file. */
+@media (pointer: coarse) {
+  .helpIcon,
+  .btnMiniIcon,
+  .btnMiniDanger,
+  .btnClose,
+  .toastClose {
+    position: relative;
+  }
+  .helpIcon::after,
+  .btnMiniIcon::after,
+  .btnMiniDanger::after,
+  .btnClose::after,
+  .toastClose::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 44px;
+    height: 44px;
+    transform: translate(-50%, -50%);
+  }
+  .cellActions { gap: 10px; }
+
+  /* The ordinary buttons and text fields were 26-30px tall, which the audit
+     only found once it measured every visible control rather than the icons
+     the issue named. Padding keeps the type and the visual weight as they are;
+     min-height does the rest. */
+  button,
+  input,
+  select,
+  textarea,
+  a.linkButton {
+    min-height: 44px;
+  }
+  button,
+  a.linkButton {
+    min-width: 44px;      /* the icon buttons (⚡, ⌨, ✕) were 31px wide */
+  }
+  input[type="checkbox"],
+  input[type="radio"] {
+    min-height: 0;
+    width: 22px;
+    height: 22px;
+  }
+  /* Those two are small by convention, so the hit area goes around them. */
+  input[type="checkbox"],
+  input[type="radio"] { position: relative; }
+  input[type="checkbox"]::after,
+  input[type="radio"]::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 44px;
+    height: 44px;
+    transform: translate(-50%, -50%);
+  }
+}
+
+/* OAuth setup steps (#111). The console flow is five screens long and the
+   origin step is the one that silently breaks sign-in. */
+.setupSteps {
+  margin: .9rem 0;
+  padding-left: 1.3rem;
+  font-size: .88rem;
+  line-height: 1.55;
+}
+.setupSteps li { margin-bottom: .45rem; }
+.setupSteps .muted { display: block; font-size: .82rem; }
+.originRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: .35rem 0;
+  flex-wrap: wrap;
+}
+.originRow code {
+  padding: 3px 7px;
+  background: var(--bg-tertiary, #2a2a2a);
+  border: 1px solid var(--border, #444);
+  border-radius: 5px;
+  overflow-wrap: anywhere;
 }

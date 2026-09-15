@@ -122,6 +122,9 @@ function initHelpTooltips() {
   }
 }
 
+// The most recent phase, kept so the progress bar can describe itself.
+let lastPhase = "";
+
 function flush() {
   rafId = 0;
   const statusEl = el("status");
@@ -134,10 +137,18 @@ function flush() {
   }
   if (phasePending !== null && phaseEl) {
     phaseEl.textContent = "Phase: " + phasePending;
+    lastPhase = phasePending;
     phasePending = null;
   }
   if (progressPending !== null && progressEl) {
     progressEl.value = progressPending;
+    // A bare number tells a screen-reader user nothing about what is happening.
+    // The phase is the useful half, and #status is a live region that announces
+    // it -- this is for anyone who navigates to the bar itself (#104).
+    progressEl.setAttribute(
+      "aria-valuetext",
+      `${Math.round(progressPending)}%${lastPhase ? " — " + lastPhase : ""}`
+    );
     progressPending = null;
   }
 }
@@ -271,15 +282,80 @@ export function clearResults() {
   showEmptyState(true);
 }
 
+/**
+ * The panel where results go, when there are none.
+ *
+ * It used to say "No duplicates found" from the very first paint -- a verdict
+ * on a scan that had never run, above a toolbar of ten disabled controls. That
+ * is the first thing a new user reads (#103). Three states, because they are
+ * three different situations:
+ *
+ *   before-signin : nothing has been attempted, and the next step is sign-in
+ *   ready         : signed in, nothing scanned yet
+ *   none-found    : a scan really did run and really did find nothing -- the
+ *                   only state in which the old copy was true
+ */
+const EMPTY_STATES = {
+  "before-signin": {
+    icon: "🖼️",
+    title: "Find duplicate photos in Google Drive",
+    body: "Sign in to get started.",
+    steps: ["Sign in with Google", "Choose the folders to search", "Start the scan"],
+  },
+  ready: {
+    icon: "📂",
+    title: "Ready to scan",
+    body: "Choose the folders to search, then start the scan.",
+    steps: null,
+  },
+  "none-found": {
+    icon: "✅",
+    title: "No duplicates found",
+    body: "Nothing in the folders you scanned looks like a duplicate.",
+    steps: null,
+  },
+};
+
+let emptyStateKind = "before-signin";
+
+/** @param {'before-signin'|'ready'|'none-found'} kind */
+export function setEmptyState(kind, detail = "") {
+  const s = EMPTY_STATES[kind] || EMPTY_STATES["before-signin"];
+  emptyStateKind = kind;
+
+  const icon = el("emptyIcon");
+  const title = el("emptyTitle");
+  const body = el("emptyBody");
+  const steps = el("emptySteps");
+
+  if (icon) icon.textContent = s.icon;
+  if (title) title.textContent = s.title;
+  // `detail` says what was actually searched, so "no duplicates" is a finding
+  // rather than an assertion: "No duplicates among 4,812 images in 12 folders."
+  if (body) body.textContent = detail || s.body;
+  if (steps) {
+    steps.hidden = !s.steps;
+    if (s.steps) steps.innerHTML = s.steps.map((t) => `<li>${t}</li>`).join("");
+  }
+}
+
+export function getEmptyStateKind() {
+  return emptyStateKind;
+}
+
 export function showEmptyState(show) {
   const emptyState = el("emptyState");
   const resultsTable = el("resultsTable");
-  
+
   if (emptyState) emptyState.style.display = show ? "flex" : "none";
   if (resultsTable) resultsTable.style.display = show ? "none" : "table";
 }
 
 export function setSignedInUi(on, clientId = '') {
+  // The first-run state is only true before sign-in (#103).
+  if (getEmptyStateKind() !== "none-found" || !on) {
+    setEmptyState(on ? "ready" : "before-signin");
+  }
   const btnAuth = el("btnAuth");
   const clientIdDisplay = el("clientIdDisplay");
   const btnScan = el("btnScan");
@@ -359,23 +435,131 @@ export function setSearchSummary(recursive, maxItems, useDb) {
   el_.textContent = parts.join(' • ');
 }
 
-export function showToast(message, type = 'info', duration = 3000) {
-  const existing = document.querySelector('.toast');
-  if (existing) existing.remove();
-  
+// Toasts stack instead of replacing each other.
+//
+// There used to be exactly one slot and a new message removed whatever was in
+// it. That is not a rare collision -- the trash path emits two messages back to
+// back BY DESIGN ("Trashed 40 file(s)" then "Failed to trash 3"), so on a
+// partially failed run the user saw only the failure and never the count that
+// succeeded or the mention of Undo (#107).
+const TOAST_MAX = 3;
+
+function toastContainer() {
+  let c = document.getElementById("toastStack");
+  if (!c) {
+    c = document.createElement("div");
+    c.id = "toastStack";
+    c.className = "toastStack";
+    // Errors interrupt; everything else waits its turn.
+    c.setAttribute("aria-live", "polite");
+    c.setAttribute("aria-atomic", "false");
+    document.body.appendChild(c);
+  }
+  return c;
+}
+
+function dismissToast(toast) {
+  if (!toast || toast.dataset.leaving) return;
+  toast.dataset.leaving = "1";
+  toast.classList.remove("show");
+  setTimeout(() => toast.remove(), 300);
+}
+
+/**
+ * @param {string} message
+ * @param {'info'|'success'|'error'} type
+ * @param {number} duration  ms; errors default to persisting until dismissed
+ * @param {{label: string, onClick: function}} [action] optional inline action
+ */
+export function showToast(message, type = 'info', duration = null, action = null) {
+  const container = toastContainer();
+
+  // Collapse an identical message rather than stacking duplicates.
+  const twin = [...container.children].find(
+    (t) => t.dataset.message === message && !t.dataset.leaving
+  );
+  if (twin) {
+    const n = (Number(twin.dataset.count) || 1) + 1;
+    twin.dataset.count = String(n);
+    const badge = twin.querySelector(".toastCount");
+    if (badge) { badge.textContent = `×${n}`; badge.hidden = false; }
+    return twin;
+  }
+
   const toast = document.createElement('div');
   toast.className = `toast toast-${type}`;
-  toast.textContent = message;
-  document.body.appendChild(toast);
-  
-  requestAnimationFrame(() => {
-    toast.classList.add('show');
-  });
-  
-  setTimeout(() => {
-    toast.classList.remove('show');
-    setTimeout(() => toast.remove(), 300);
-  }, duration);
+  toast.dataset.message = message;
+  toast.setAttribute("role", type === "error" ? "alert" : "status");
+
+  const text = document.createElement("span");
+  text.className = "toastText";
+  text.textContent = message;
+  toast.appendChild(text);
+
+  const count = document.createElement("span");
+  count.className = "toastCount";
+  count.hidden = true;
+  toast.appendChild(count);
+
+  if (action?.label && typeof action.onClick === "function") {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "toastAction";
+    btn.textContent = action.label;
+    btn.onclick = () => { dismissToast(toast); action.onClick(); };
+    toast.appendChild(btn);
+  }
+
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "toastClose";
+  close.setAttribute("aria-label", "Dismiss");
+  close.textContent = "✕";
+  close.onclick = () => dismissToast(toast);
+  toast.appendChild(close);
+
+  container.appendChild(toast);
+  // Evict over the cap by walking a SNAPSHOT of the live toasts, not by
+  // re-reading container.children. dismissToast only marks a toast and removes
+  // it 300ms later, so `while (children.length > MAX) dismissToast(first)` never
+  // terminates -- the first child is still a child on the next iteration, and
+  // the second dismissToast returns early because it is already leaving. That
+  // spun the renderer until Chromium killed the tab, which is how it showed up:
+  // as tools/trash-partial.mjs losing the page, not as a visible UI bug.
+  const live = [...container.children].filter((t) => !t.dataset.leaving);
+  while (live.length > TOAST_MAX) dismissToast(live.shift());
+
+  requestAnimationFrame(() => toast.classList.add('show'));
+
+  // An error stays until the user deals with it; a confirmation does not need
+  // to. A toast carrying an action gets longer, since it has to be reachable.
+  const ms = duration != null ? duration
+    : type === "error" ? 0
+    : action ? 10000
+    : 4000;
+  if (ms > 0) setTimeout(() => dismissToast(toast), ms);
+
+  return toast;
+}
+
+/**
+ * Report a deletion with the way back attached.
+ *
+ * Every trash path used to say "— use Undo to restore" in prose, in a toast
+ * that vanished in 3 seconds, against an undo window of 30 MINUTES (#106). The
+ * action belongs in the message, not a description of where to find it.
+ *
+ * `onUndo` is injected rather than imported so ui.js stays free of a dependency
+ * on undo.js, which imports ui.js for showToast.
+ */
+export function showTrashedToast(count, onUndo) {
+  const what = count === 1 ? "1 file" : `${count.toLocaleString()} files`;
+  return showToast(
+    `Moved ${what} to Google Drive Trash`,
+    "success",
+    null,
+    typeof onUndo === "function" ? { label: "Undo", onClick: onUndo } : null
+  );
 }
 
 export function lockBodyScroll(lock) {

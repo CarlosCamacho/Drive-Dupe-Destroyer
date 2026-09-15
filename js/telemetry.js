@@ -14,6 +14,7 @@
 // Hashing speed & pipeline telemetry overlay - Feature #3
 
 import { el } from "./util.js";
+import { confirmAction } from "./confirm.js";
 import { clearRejections, getRejectionStats } from "./rejection.js";
 import { showToast } from "./ui.js";
 
@@ -103,10 +104,12 @@ export function updateTelemetry(stats) {
     btn.title = "Stop suppressing the pairs you marked as not duplicates. They reappear on the next scan.";
     btn.onclick = async () => {
       const n = stats.rejectedPairs ?? 0;
-      if (!confirm(
-        `Forget ${n.toLocaleString()} rejected pair(s)?\n\n` +
-        `They will be offered as duplicates again on the next scan. This cannot be undone.`
-      )) return;
+      if (!await confirmAction({
+        title: "Forget rejected pairs?",
+        message: `${n.toLocaleString()} pair(s) you marked as "not a duplicate" will be offered again on the next scan.`,
+        confirmLabel: "Forget them",
+        note: "This cannot be undone.",
+      })) return;
       btn.disabled = true;
       try {
         await clearRejections();
