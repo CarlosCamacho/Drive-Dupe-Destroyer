@@ -17,6 +17,72 @@
 import { el, nowMs, humanDuration, CONFIG } from "./util.js";
 import { validateFolderId, sanitizeText } from "./security.js";
 import { setStatus, setPhase, setProgress, showSpinner, updateStats, setSearchSummary, showEmptyState, setScanningState, showToast, setHashingErrors, updateEta, resetEta, showCollectingSpinner, setEmptyState } from "./ui.js";
+
+/**
+ * Everything the scan says about itself, in one place (#122).
+ *
+ * runScan is ~570 lines that interleave the pipeline -- enumerate, filter,
+ * exact-group, hash, reconcile, match, group, resolve paths -- with roughly 50
+ * calls into js/ui.js. There is no point at which the pipeline exists as
+ * something you can call and inspect, which is why the scan is only ever
+ * exercised through a browser: the sequence of phases, whether progress is
+ * monotonic, which empty state is chosen and whether the stats arithmetic is
+ * right all need a DOM to observe, and none of them should.
+ *
+ * Swapping this object for a recorder makes all four observable. It is a
+ * module-level default with a setter rather than a parameter threaded through
+ * a dozen helpers, matching the provider pattern ui.js already uses
+ * (setSelectedCountProvider, setRowCountProvider, setSizeStatsProvider).
+ */
+const UI_REPORTER = {
+  status: setStatus,
+  phase: setPhase,
+  progress: setProgress,
+  stats: updateStats,
+  spinner: showSpinner,
+  emptyState: setEmptyState,
+  showEmpty: showEmptyState,
+  eta: updateEta,
+  resetEta,
+  collecting: showCollectingSpinner,
+  searchSummary: setSearchSummary,
+  hashingErrors: setHashingErrors,
+  scanning: setScanningState,
+  toast: showToast,
+};
+
+let report = UI_REPORTER;
+
+/**
+ * Point the scan at a different reporter, or back at the UI with no argument.
+ *
+ * Anything the replacement leaves out falls back to the real thing, so a
+ * recorder that only cares about phases does not have to stub the other nine
+ * and silently break the ones it forgot.
+ */
+export function setScanReporter(r) {
+  report = r ? { ...UI_REPORTER, ...r } : UI_REPORTER;
+}
+
+/**
+ * A reporter that remembers instead of rendering.
+ *
+ * Lives here rather than in the harness so the recorded shape and the thing
+ * being recorded cannot drift apart, and so more than one test can use it.
+ */
+export function makeRecordingReporter() {
+  const calls = [];
+  const rec = (name) => (...args) => { calls.push({ name, args }); };
+  return {
+    calls,
+    phases: () => calls.filter(c => c.name === "phase").map(c => c.args[0]),
+    progresses: () => calls.filter(c => c.name === "progress").map(c => c.args[0]),
+    statuses: () => calls.filter(c => c.name === "status").map(c => c.args[0]),
+    emptyStates: () => calls.filter(c => c.name === "emptyState").map(c => c.args[0]),
+    lastStats: () => [...calls].reverse().find(c => c.name === "stats")?.args[0] ?? null,
+    reporter: Object.fromEntries(Object.keys(UI_REPORTER).map(k => [k, rec(k)])),
+  };
+}
 import { driveFetch, fetchChangesSince, getChangesStartToken, isFolderMime } from "./drive.js";
 
 import { ensureValidToken } from "./auth.js";
@@ -663,7 +729,7 @@ async function findMatchesProgressively({
     }
   };
   const handleStatus = ({ groups, matches }) =>
-    setStatus(`Finding matches… ${groups} groups (${matches} pairs)`);
+    report.status(`Finding matches… ${groups} groups (${matches} pairs)`);
 
   const finish = (result) => ({
     groups: result.groups.map(toFiles).filter(g => g.length > 1),
@@ -755,11 +821,11 @@ export async function runScan({
   resume = null       // Saved collection frontier from an interrupted scan
 }) {
   const start = nowMs();
-  showSpinner(true);
-  setScanningState(true);
-  setProgress(0);
-  resetEta();
-  setPhase("1/4 Collecting files");
+  report.spinner(true);
+  report.scanning(true);
+  report.progress(0);
+  report.resetEta();
+  report.phase("1/4 Collecting files");
   
   // Record scan history
   if (folders.length > 0) {
@@ -825,14 +891,14 @@ export async function runScan({
     // Feature #13: Delta scan - fetch only changed files
     const useChangesApi = el("useDeltaScan")?.checked || false;
 
-    setSearchSummary(recursive, maxItems, useDb);
+    report.searchSummary(recursive, maxItems, useDb);
 
     // Phase 1: Collect files
-    setStatus("Collecting files from Drive…");
+    report.status("Collecting files from Drive…");
     await ensureValidToken();
     
     if (resume) {
-      setStatus(`Resuming: ${resume.files?.length || 0} image(s) already collected, ${resume.pendingFolderIds?.length || 0} folder(s) left…`);
+      report.status(`Resuming: ${resume.files?.length || 0} image(s) already collected, ${resume.pendingFolderIds?.length || 0} folder(s) left…`);
       console.log(`[DDD] Resuming collection from ${resume.pendingFolderIds?.length || 0} pending folder(s)`);
     }
 
@@ -892,9 +958,9 @@ export async function runScan({
 
     images = allItems.filter(passesFilters);
 
-    setStatus(`Found ${images.length} image(s).`);
-    setProgress(10);
-    showCollectingSpinner(false);
+    report.status(`Found ${images.length} image(s).`);
+    report.progress(10);
+    report.collecting(false);
 
     // MD5 exact-duplicate fast path.
     //
@@ -927,7 +993,7 @@ export async function runScan({
     }
 
     if (exactDupeGroups.length > 0) {
-      setStatus(
+      report.status(
         `Found ${exactDupeGroups.length} exact duplicate group(s) via MD5 ` +
         `(${md5ExactCount} files, skipping ${md5Redundant.size} redundant download(s))…`
       );
@@ -958,7 +1024,7 @@ export async function runScan({
       try {
         const savedToken = await getChangesToken();
         if (savedToken) {
-          setStatus("Fetching changes since last scan…");
+          report.status("Fetching changes since last scan…");
           const { files: changed, nextToken } = await fetchChangesSince(savedToken, { signal });
           const removedIds = changed.filter(f => f._removed).map(f => f.id);
           deltaRemovedIds = new Set(removedIds);
@@ -995,7 +1061,7 @@ export async function runScan({
           // Remove deleted files
           images = images.filter(f => !deltaRemovedIds.has(f.id));
           if (nextToken) await setChangesToken(nextToken);
-          setStatus(`Delta scan: ${changed.length} change(s), ${added} added, ${removedIds.length} removed, ${images.length} image(s) to process`);
+          report.status(`Delta scan: ${changed.length} change(s), ${added} added, ${removedIds.length} removed, ${images.length} image(s) to process`);
         } else {
           // First run: get start token for future delta scans
           const startToken = await getChangesStartToken({ signal });
@@ -1007,29 +1073,29 @@ export async function runScan({
     }
 
     if (images.length === 0) {
-      setEmptyState("none-found", "No images matched your folder and file-type settings.");
-      showEmptyState(true);
-      setStatus("No images found.");
-      setPhase("Complete");
-      showSpinner(false);
-      setScanningState(false);
-      updateStats({ groups: 0, files: 0, totalBytes: 0, cacheHit: null, durationMs: nowMs() - start });
+      report.emptyState("none-found", "No images matched your folder and file-type settings.");
+      report.showEmpty(true);
+      report.status("No images found.");
+      report.phase("Complete");
+      report.spinner(false);
+      report.scanning(false);
+      report.stats({ groups: 0, files: 0, totalBytes: 0, cacheHit: null, durationMs: nowMs() - start });
       return;
     }
 
     // Quick scan mode (MD5 only)
     if (quickScan) {
-      setPhase("2/4 Finding exact matches");
+      report.phase("2/4 Finding exact matches");
       const groups = quickExactGroups(images);
       
-      setPhase("3/4 Building paths");
+      report.phase("3/4 Building paths");
       // Only grouped files need folder paths (see Phase 4 note below).
       const pathMap = await buildPathsParallel(groups.flat(), { 
         concurrency: CONFIG.PATH_CONCURRENCY, signal, 
-        onProgress: (d, t) => setStatus(`Building paths… ${d}/${t}`) 
+        onProgress: (d, t) => report.status(`Building paths… ${d}/${t}`) 
       });
       
-      setPhase("4/4 Rendering");
+      report.phase("4/4 Rendering");
       await renderCb({ 
         groups, idToEntry: new Map(), pathMap, keepRule, folderPriority, 
         bitsCount: SIMILARITY_BITS, hamThresh, withVariants: false 
@@ -1037,7 +1103,7 @@ export async function runScan({
       
       if (emitGroupsCb) emitGroupsCb(groups);
       
-      updateStats({
+      report.stats({
         groups: groups.length,
         files: allItems.length,
         totalBytes: allItems.reduce((s, f) => s + (Number(f.size || 0) || 0), 0),
@@ -1045,16 +1111,16 @@ export async function runScan({
         durationMs: nowMs() - start
       });
       
-      showSpinner(false);
-      setScanningState(false);
-      setStatus(`Done. ${groups.length} exact duplicate group(s) found.`);
-      setPhase("Complete");
-      setProgress(100);
+      report.spinner(false);
+      report.scanning(false);
+      report.status(`Done. ${groups.length} exact duplicate group(s) found.`);
+      report.phase("Complete");
+      report.progress(100);
       return;
     }
 
     // Phase 2: Hash images
-    setPhase("2/4 Hashing (download + compute)");
+    report.phase("2/4 Hashing (download + compute)");
     let lastRateT = nowMs();
     let lastDone = 0;
     let errorCount = 0;
@@ -1092,8 +1158,8 @@ export async function runScan({
         if (signal?.aborted) return;
         
         const pct = 10 + (done / Math.max(1, total)) * 45;
-        setProgress(pct);
-        updateEta(pct);
+        report.progress(pct);
+        report.eta(pct);
         
         const now = nowMs();
         if (now - lastRateT > 800) {
@@ -1101,7 +1167,7 @@ export async function runScan({
           lastRateT = now;
           lastDone = done;
           const failedStr = errorCount > 0 ? ` (${errorCount} errors)` : "";
-          setStatus(`Hashing… ${done}/${total} (${rate.toFixed(1)} img/s)${failedStr}`);
+          report.status(`Hashing… ${done}/${total} (${rate.toFixed(1)} img/s)${failedStr}`);
         }
       },
       onError: (errorInfo) => {
@@ -1113,16 +1179,16 @@ export async function runScan({
     const { idToEntry, cacheHit, errors: hashErrors = [] } = hashResult;
     hashingFailed = hashResult.hashingFailed || 0;
     
-    setHashingErrors(hashErrors);
+    report.hashingErrors(hashErrors);
     
     if (hashingFailed > 0) {
       console.warn(`Hashing completed with ${hashingFailed} failures`);
     }
 
-    setProgress(55);
+    report.progress(55);
 
     // Phase 3: Find matches PROGRESSIVELY
-    setPhase("3/4 Finding matches");
+    report.phase("3/4 Finding matches");
     const idToFile = new Map(images.map(f => [f.id, f]));
 
     // Load the user's rejected-pairs set once so the matching loop can skip
@@ -1180,8 +1246,8 @@ export async function runScan({
       },
       onProgress: (current, total, matches, groups) => {
         const pct = 55 + (current / Math.max(1, total)) * 30;
-        setProgress(pct);
-        updateEta(pct);
+        report.progress(pct);
+        report.eta(pct);
       }
     });
 
@@ -1191,11 +1257,11 @@ export async function runScan({
     
     console.log(`[DDD] Matching complete: ${comparisons} comparisons, ${matches} matches, ${groups.length} groups`);
 
-    setProgress(85);
-    setStatus(`Found ${groups.length} group(s) from ${matches} matches.`);
+    report.progress(85);
+    report.status(`Found ${groups.length} group(s) from ${matches} matches.`);
 
     // Phase 4: Build paths and final render
-    setPhase("4/4 Building paths");
+    report.phase("4/4 Building paths");
     // Only resolve folder paths for files that actually appear in results.
     // Previously this ran over ALL scanned images (allItems), making a Drive
     // API call per unique parent folder even for non-duplicate files — on a
@@ -1205,10 +1271,10 @@ export async function runScan({
     const pathMap = await buildPathsParallel(filesNeedingPaths, { 
       concurrency: CONFIG.PATH_CONCURRENCY, 
       signal, 
-      onProgress: (d, t) => setStatus(`Building paths… ${d}/${t}`) 
+      onProgress: (d, t) => report.status(`Building paths… ${d}/${t}`) 
     });
 
-    setPhase("Rendering");
+    report.phase("Rendering");
     await renderCb({ 
       groups, 
       idToEntry, 
@@ -1230,7 +1296,7 @@ export async function runScan({
 
     const durationMs = nowMs() - start;
     
-    updateStats({
+    report.stats({
       groups: groups.length,
       files: images.length,
       totalBytes: images.reduce((s, f) => s + (Number(f.size || 0) || 0), 0),
@@ -1246,22 +1312,22 @@ export async function runScan({
     } catch {}
 
     await clearResumeState().catch(() => {});
-    setProgress(100);
-    setPhase("Complete");
+    report.progress(100);
+    report.phase("Complete");
     
     let statusMsg = `Done. ${groups.length} group(s), ${images.length} file(s) in ${humanDuration(durationMs)}.`;
     if (hashingFailed > 0) {
       statusMsg += ` (${hashingFailed} file(s) could not be hashed)`;
       showToast(`Scan complete with ${hashingFailed} errors.`, "info", 5000);
     }
-    setStatus(statusMsg);
+    report.status(statusMsg);
 
   } catch (e) {
     scanError = e;
     
     if (e.message === "Scan stopped.") {
-      setStatus("Scan stopped by user.");
-      setPhase("Stopped");
+      report.status("Scan stopped by user.");
+      report.phase("Stopped");
     } else {
       console.error("Scan failed:", e);
       
@@ -1293,13 +1359,13 @@ export async function runScan({
         errorMsg += e?.message || "Unknown error";
       }
       
-      setStatus(errorMsg);
-      setPhase("Failed");
+      report.status(errorMsg);
+      report.phase("Failed");
       showToast(errorMsg, "error", 8000);
     }
   } finally {
-    showSpinner(false);
-    setScanningState(false);
+    report.spinner(false);
+    report.scanning(false);
     // Drop the per-scan memo, KEEP the durable rows. This used to call
     // clearPathCaches(), which also empties the IndexedDB store -- so every path
     // resolved during a scan was deleted the moment it ended and the cache never
@@ -1341,7 +1407,7 @@ export function wireScanControls({ onScan }) {
     btnStop.onclick = () => {
       if (controller) {
         controller.abort();
-        setStatus("Stopping…");
+        report.status("Stopping…");
       }
     };
   }
