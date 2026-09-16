@@ -92,7 +92,7 @@ import { computeHashesForFiles, getHashingStats, HASH_VERSION, HASH_CONCURRENCY 
 import { runMatching, packEntries } from "./matcher.js";
 import { saveResumeState, clearResumeState } from "./resume.js";
 import {
-  enumerationScopeKey, loadFileList, saveFileList, applyChangesToList,
+  enumerationScopeKey, loadFileList, saveFileList, clearFileList, applyChangesToList,
 } from "./fileListCache.js";
 import { getRejectionStats, preloadRejections, getRejectionKeys } from "./rejection.js";
 import { updateTelemetry } from "./telemetry.js";
@@ -310,7 +310,6 @@ async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSi
     const folderId = queue.shift();
     if (visited.has(folderId)) continue;
     visited.add(folderId);
-    walked.add(folderId);
     foldersScanned++;
 
     if (Date.now() - lastTokenCheck > TOKEN_CHECK_INTERVAL) {
@@ -330,6 +329,11 @@ async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSi
 
     try {
       const { images, subfolders } = await listFolderContents(folderId, pageSize, signal);
+      // Only now. `walked` means "folders we actually listed" -- the delta scan
+      // reads it to decide whether a changed file is inside the selection, and
+      // marking a folder before the request meant a folder we could NOT read
+      // counted as covered (#134).
+      walked.add(folderId);
 
       for (const img of images) {
         if (maxItems > 0 && allFiles.length >= maxItems) break;
@@ -345,7 +349,14 @@ async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSi
       // of collection (as before) was useless: a crash during the long phase
       // had nothing to resume from.
       if (onCheckpoint && foldersScanned % checkpointInterval(allFiles.length) === 0) {
-        onCheckpoint({ files: allFiles, visitedFolderIds: Array.from(walked), pendingFolderIds: [...queue] });
+        onCheckpoint({
+          files: allFiles,
+          visitedFolderIds: Array.from(walked),
+          // A folder we could not read belongs on the frontier, not behind it.
+          // Resuming exists to retry what was interrupted, and these are
+          // precisely the folders that need retrying (#134).
+          pendingFolderIds: [...queue, ...unreadable.map((u) => u.folderId)],
+        });
       }
     } catch (e) {
       if (signal?.aborted || e.message === "Scan stopped.") throw e;
@@ -396,9 +407,15 @@ async function fetchAllImagesFlat({ folderIds, exclusions, maxItems, pageSize, s
     }
   }
 
+  // Only the folders actually listed (#134). This used to return every selected
+  // folder whether or not it could be read, which is the same defect as the
+  // recursive walk's early walked.add in a different shape.
+  const unreadableIds = new Set(unreadable.map((u) => u.folderId));
   return {
     files: allFiles,
-    visitedFolderIds: new Set(folderIds.filter(id => !excludedSet.has(id))),
+    visitedFolderIds: new Set(
+      folderIds.filter(id => !excludedSet.has(id) && !unreadableIds.has(id))
+    ),
     unreadable,
   };
 }
@@ -1140,8 +1157,17 @@ export async function runScan({
     // learn what moved since, and a cached list with no way to update it is
     // just a stale list. Fire-and-forget -- a failed write costs one repeated
     // enumeration, which is exactly what happened before this existed.
-    if (useChangesApi && !quickScan && allItems.length > 0) {
+    // Never cache an enumeration we know is incomplete (#134). A short list
+    // here is reused for MAX_AGE_MS -- seven days -- with the enumeration
+    // skipped entirely, which turns one loud failed scan into a silent week of
+    // them: the warning appears once and the missing files never come back,
+    // however many times the user re-scans.
+    if (useChangesApi && !quickScan && allItems.length > 0 && unreadableFolders.length === 0) {
       saveFileList({ scope: scopeKey, files: allItems, visitedFolderIds }).catch(() => {});
+    } else if (unreadableFolders.length > 0) {
+      // And drop any cache from an earlier run, so the next scan re-enumerates
+      // instead of reusing a list this one has just shown to be unreliable.
+      clearFileList().catch(() => {});
     }
 
     if (images.length === 0) {

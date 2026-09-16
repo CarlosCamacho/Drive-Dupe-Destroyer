@@ -60,15 +60,18 @@ await page.waitForTimeout(1200);
  * `failTimes`   how many consecutive calls from there fail (1 = a transient
  *               blip the retry should absorb; 99 = a folder that is genuinely
  *               unreadable and must be REPORTED, not hidden)
+ * `keepCache`   leave the enumeration cache in place, the way a user re-running
+ *               a scan does. Every other run starts from a cleared cache.
  */
-const run = ({ folders, failAt = 0, failTimes = 1, failStatus = 503, retryAfter = null }) =>
-  page.evaluate(async ({ folders, failAt, failTimes, failStatus, retryAfter }) => {
+const run = ({ folders, failAt = 0, failTimes = 1, failStatus = 503, retryAfter = null,
+               keepCache = false, failFolder = null, abortAfter = 0 }) =>
+  page.evaluate(async ({ folders, failAt, failTimes, failStatus, retryAfter, keepCache, failFolder, abortAfter }) => {
     const scan = await import('/js/scan.js');
     const auth = await import('/js/auth.js');
     const drive = await import('/js/drive.js');
     const c = await import('/js/fileListCache.js');
     const db = await import('/js/db.js');
-    await c.clearFileList(); await db.clearChangesToken();
+    if (!keepCache) { await c.clearFileList(); await db.clearChangesToken(); }
     await auth.ensureToken();
     // Real backoff would make this harness minutes long for no extra signal.
     drive.setDriveRetryBaseMs(1);
@@ -77,6 +80,7 @@ const run = ({ folders, failAt = 0, failTimes = 1, failStatus = 503, retryAfter 
     scan.setScanReporter(rec.reporter);
 
     const counts = { list: 0, injected: 0, returned: [] };
+    const ctrl = new AbortController();
     const realFetch = window.fetch;
     window.fetch = async (url, opts) => {
       const u = String(url);
@@ -86,6 +90,16 @@ const run = ({ folders, failAt = 0, failTimes = 1, failStatus = 503, retryAfter 
         return new Response(JSON.stringify({ changes: [], newStartPageToken: '101' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       if (u.includes('/drive/v3/files') && u.includes('q=')) {
         counts.list++;
+        const qq = new URL(u).searchParams.get('q') || '';
+        // Failing by FOLDER is clearer than failing by call number, which the
+        // retries themselves shift: three attempts on one folder consume three
+        // call numbers, so a by-number window silently spills onto the next
+        // folder.
+        if (failFolder && qq.includes(`'${failFolder}' in parents`)) {
+          counts.injected++;
+          return new Response('{"error":{"message":"Backend Error"}}', { status: failStatus, headers: { 'Content-Type': 'application/json' } });
+        }
+        if (abortAfter > 0 && counts.list >= abortAfter) ctrl.abort();
         if (failAt > 0 && counts.list >= failAt && counts.list < failAt + failTimes) {
           counts.injected++;
           const headers = { 'Content-Type': 'application/json' };
@@ -113,20 +127,32 @@ const run = ({ folders, failAt = 0, failTimes = 1, failStatus = 503, retryAfter 
     setVal('imgMinSize', '0'); setVal('imgMinUnit', 'KB'); setVal('imgMaxSize', '9999');
     setVal('maxItems', '0'); setVal('useDb', 'no');
     document.querySelectorAll('.imgTypeToggle').forEach(cb => { cb.checked = true; });
+    const delta = document.getElementById('useDeltaScan');
+    if (delta) delta.checked = true;
 
     let error = null;
     try {
       await scan.runScan({
         folderIds: ['root'], folders: [{ id: 'root', name: 'root' }],
         exclusions: new Set(), renderCb: () => {}, emitGroupsCb: () => {},
+        signal: abortAfter > 0 ? ctrl.signal : undefined,
       });
     } catch (e) { error = e.message; }
 
     window.fetch = realFetch;
     scan.setScanReporter(null);
     const statuses = rec.statuses();
-    return { error, counts, stats: rec.lastStats(), statuses, lastStatus: statuses[statuses.length - 1] || '' };
-  }, { folders, failAt, failTimes, failStatus, retryAfter });
+    const resumeMod = await import('/js/resume.js');
+    const saved = await resumeMod.loadResumeState().catch(() => null);
+    return {
+      error, counts, stats: rec.lastStats(), statuses,
+      lastStatus: statuses[statuses.length - 1] || '',
+      resume: saved ? {
+        visited: saved.visitedFolderIds || [],
+        pending: saved.pendingFolderIds || [],
+      } : null,
+    };
+  }, { folders, failAt, failTimes, failStatus, retryAfter, keepCache, failFolder, abortAfter });
 
 // --- fixtures -------------------------------------------------------------
 // Drive folder IDs are 33 characters and quoteFolderId rejects anything else.
@@ -209,6 +235,62 @@ ck(/could not be read/.test(permanentDeep.lastStatus),
 const notFound = await run({ folders: flat, failAt: midCall, failTimes: 1, failStatus: 404 });
 ck(notFound.counts.list === flatClean.counts.list,
    `#132 a 404 is an answer, not a failure: no extra requests (${notFound.counts.list} vs ${flatClean.counts.list} clean)`);
+
+// --- #134: a short enumeration must not be cached and reused --------------
+// #132 stops a transient error shrinking ONE scan. It does nothing about that
+// shrunken result being written to the cache, which is what made the damage
+// permanent: measured before the fix, scan 2 over a perfectly healthy Drive
+// found 38 of 40, made ZERO list calls, and dropped the warning -- the one
+// signal the user had, removed while the loss stayed. The cache holds for
+// MAX_AGE_MS, seven days.
+const damaged = await run({ folders: flat, failAt: midCall, failTimes: 5, failStatus: 503 });
+ck(damaged.stats?.files === 38 && /could not be read/.test(damaged.lastStatus),
+   `#134 (fixture) scan 1 really is damaged and says so (${damaged.stats?.files} of 40)`);
+
+const recovery = await run({ folders: flat, keepCache: true });
+ck(recovery.stats?.files === 40,
+   `#134 re-scanning a healthy Drive recovers the missing files (${recovery.stats?.files} of 40, was 38 forever)`);
+ck(recovery.counts.list > 0,
+   `#134 because the incomplete enumeration was never cached (${recovery.counts.list} list calls, was 0)`);
+ck(!/could not be read/.test(recovery.lastStatus),
+   `#134 and the recovered scan no longer warns: ${JSON.stringify(recovery.lastStatus)}`);
+
+// --- and the #116 cache still works for a scan that WAS complete ----------
+// The cheap wrong fix is to stop caching. This is the control that says the
+// fix is "do not cache a list known to be short", not "do not cache".
+const clean1 = await run({ folders: flat });
+ck(clean1.stats?.files === 40, `#116 (fixture) a complete scan finds everything (${clean1.stats?.files})`);
+const clean2 = await run({ folders: flat, keepCache: true });
+ck(clean2.counts.list === 0,
+   `#116 a COMPLETE enumeration is still cached and reused (${clean2.counts.list} list calls)`);
+ck(clean2.stats?.files === 40,
+   `#116 and still sees the whole library from cache (${clean2.stats?.files})`);
+
+// --- #134: a folder we could not read must stay ON the frontier -----------
+// `walked` is documented as "only folders we actually listed", and the delta
+// scan and the resume state both read it as coverage. Marking a folder walked
+// BEFORE the request meant an unreadable folder counted as covered, so a
+// resumed scan -- which exists to retry what was interrupted -- skipped exactly
+// the folders that needed retrying.
+//
+// Needs a fixture past the 25-folder checkpoint interval, and an interruption,
+// because a completed scan clears its own resume state.
+const BIG_PREFIX = '1BxYzBigFolderIdBBBBBBBBBBBBBB';   // 30 chars
+const big = { root: [] };
+for (let i = 0; i < 60; i++) {
+  const f = mkId(BIG_PREFIX, i);
+  big.root.push(folder(f, 'root'));
+  big[f] = [img(`${f}a`, `B${i}`, f), img(`${f}b`, `B${i}`, f)];
+}
+const doomed = mkId(BIG_PREFIX, 1);
+
+const interrupted = await run({ folders: big, failFolder: doomed, abortAfter: 45 });
+ck(!!interrupted.resume,
+   `#134 (fixture) the interrupted scan really checkpointed a resume state (${interrupted.resume ? interrupted.resume.visited.length + ' walked, ' + interrupted.resume.pending.length + ' pending' : 'none'})`);
+ck(interrupted.resume && !interrupted.resume.visited.includes(doomed),
+   `#134 an unreadable folder is NOT recorded as covered`);
+ck(interrupted.resume && interrupted.resume.pending.includes(doomed),
+   `#134 it is put back on the frontier, so resuming retries it`);
 
 console.log(fails === 0 ? '\nALL CHECKS PASSED' : `\n${fails} CHECK(S) FAILED`);
 await b.close();
