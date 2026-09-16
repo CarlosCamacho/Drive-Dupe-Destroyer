@@ -1,0 +1,15 @@
+{
+  "n": 6000,
+  "tolerance": {
+    "workerMs": 2.5,
+    "mainMs": 2.5,
+    "distMs": 1.6
+  },
+  "recordedAt": "2026-09-16",
+  "note": "Scores are ms divided by the calibration loop measured in the same run, so they are comparable across machines. Re-record with --update only when a change is MEANT to move them, and say why in the commit.",
+  "score": {
+    "workerMs": 15.905511811081942,
+    "mainMs": 17.637795275655222,
+    "distMs": 5.055118110251089
+  }
+}

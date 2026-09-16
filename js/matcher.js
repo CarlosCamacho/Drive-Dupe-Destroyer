@@ -35,7 +35,7 @@
 
 import { makeUnionFind } from "./unionfind.js";
 import { buildAutoTunedLshIndex, lshCandidates, lshStats } from "./lsh.js";
-import { bestDist, bestDistExtended, bestDistWithPHash, aspectRatioCompatible } from "./common.js";
+import { aspectRatioCompatible, bestDist, bestDistExtended, bestDistWithPHash } from "./distance.js";
 
 // The rejection set arrives as plain "hashA|hashB" keys so the worker needs no
 // database access. Mirrors entryHashStr in rejection.js.
@@ -68,7 +68,7 @@ const B12 = 18;   // 144-bit dHash
 const B8 = 8;     // 64-bit dHash
 
 /**
- * Every entry field beyond the two base hashes that a comparator in common.js
+ * Every entry field beyond the two base hashes that a comparator in distance.js
  * reads. Packing and unpacking both drive off this list, so adding a field to
  * the hasher and forgetting the transport is one edit, not two.
  */
@@ -84,11 +84,11 @@ export const OPTIONAL_ENTRY_FIELDS = ["pHashBits", "cropHashes", "colorHist", "e
  * field would complicate the common path for nothing.
  *
  * But they MUST all ride along. This list is the entry as the comparators in
- * common.js see it, and anything missing from it is a matching feature that
+ * distance.js see it, and anything missing from it is a matching feature that
  * silently does nothing: `pHashBits` was carried under the wrong name (#84),
  * and `cropHashes` was not carried at all (#86). OPTIONAL_ENTRY_FIELDS is the
  * single list both sides use, and test/phash-plumbing.test.js checks it against
- * what common.js actually reads.
+ * what distance.js actually reads.
  */
 export function packEntries(entries) {
   const ids = [];

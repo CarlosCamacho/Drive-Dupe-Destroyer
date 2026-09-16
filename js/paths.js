@@ -78,7 +78,7 @@ export async function getPathForItem(file, { signal = null } = {}) {
  * that used to be written to the durable IndexedDB cache as though it were
  * correct -- a file in /My Drive/Photos/2019/Hawaii recorded as /Hawaii,
  * permanently, and never retried. `_path` decides folder-priority keep
- * selection in common.js and is what the CSV export reports as the file's
+ * selection in keeprule.js and is what the CSV export reports as the file's
  * location, so a truncated path silently changes which file the app offers to
  * delete.
  *

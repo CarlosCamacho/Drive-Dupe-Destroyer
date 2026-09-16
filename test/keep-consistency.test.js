@@ -7,7 +7,7 @@
 // The keeper must be decided in exactly ONE place.
 //
 // compare.js used to carry a private copy, chooseKeepIndexLocal, that had
-// drifted from common.js in four ways. On the same group it picked a different
+// drifted from keeprule.js in four ways. On the same group it picked a different
 // file in all four cases — and because the compare view then hard-coded the
 // LEFT pane as the keeper, the file the rest of the app wanted kept landed on
 // the right, where the "deleting the KEEP file" warning is disabled.
@@ -22,7 +22,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-import { chooseKeepIndex, DEFAULT_KEEP_RULE } from "../js/common.js";
+import { DEFAULT_KEEP_RULE, chooseKeepIndex } from "../js/keeprule.js";
 
 const JS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "js");
 
@@ -38,12 +38,12 @@ describe("one keeper decision, shared", () => {
       if (/function\s+chooseKeepIndex\w+/.test(code)) offenders.push(`${f}: private chooseKeepIndex* function`);
       if (/case\s+["']hires["']\s*:/.test(code))       offenders.push(`${f}: its own switch over keep rules`);
     }
-    assert.deepEqual(offenders, [], "the keeper is decided in common.js only");
+    assert.deepEqual(offenders, [], "the keeper is decided in keeprule.js only");
   });
 
   test("compare.js imports the shared decision", () => {
     const src = readFileSync(join(JS_DIR, "compare.js"), "utf8");
-    assert.match(src, /import\s*\{[^}]*chooseKeepIndex[^}]*\}\s*from\s*["']\.\/common\.js["']/);
+    assert.match(src, /import\s*\{[^}]*chooseKeepIndex[^}]*\}\s*from\s*["']\.\/keeprule\.js["']/);
   });
 
   // Regression 1: the copy's res() fell back to the byte count, so a pixel

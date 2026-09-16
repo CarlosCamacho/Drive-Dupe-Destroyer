@@ -19,7 +19,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
 import { runMatching } from "../js/matcher.js";
-import { bestDist, distToPercent, SIMILARITY_BITS } from "../js/common.js";
+import { SIMILARITY_BITS, bestDist, distToPercent } from "../js/distance.js";
 import { cacheRecordNeedsRecompute } from "../js/scan.js";
 import { HASH_VERSION } from "../js/hashing.js";
 

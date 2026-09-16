@@ -16,7 +16,8 @@
 import { el } from "./util.js";
 import { showToast } from "./ui.js";
 import { APP_VERSION } from "./ui.js";
-import { chooseKeepIndex, bestDist, distToPercent, DEFAULT_KEEP_RULE, SIMILARITY_BITS } from "./common.js";
+import { SIMILARITY_BITS, bestDist, distToPercent } from "./distance.js";
+import { DEFAULT_KEEP_RULE, chooseKeepIndex } from "./keeprule.js";
 
 let exportState = {
   groups: [],
@@ -202,8 +203,4 @@ export function wireExport() {
       }
     };
   }
-}
-
-export function getExportState() {
-  return exportState;
 }

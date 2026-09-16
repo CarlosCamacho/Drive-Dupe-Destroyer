@@ -15,7 +15,7 @@
 // Fixed: Proper folder path display from pathMap
 
 import { recordRejection } from "./rejection.js";
-import { chooseKeepIndex, DEFAULT_KEEP_RULE } from "./common.js";
+import { DEFAULT_KEEP_RULE, chooseKeepIndex } from "./keeprule.js";
 import { pushUndoDeleteBatch, undoLastDelete } from "./undo.js";
 import { el, bytesToHuman, formatDate, IMAGE_PLACEHOLDER } from "./util.js";
 import { getThumbUrlForFile } from "./hashing.js";
@@ -103,7 +103,7 @@ function removeModalKeyboard() {
   }
 }
 
-// The keeper is decided in exactly one place, common.js. This file used to
+// The keeper is decided in exactly one place, keeprule.js. This file used to
 // carry its own copy, chooseKeepIndexLocal, which had drifted: it compared a
 // byte count against a pixel count under the "hires" rule, matched a folder
 // priority term against the opaque parent ID and the file's own name, kept

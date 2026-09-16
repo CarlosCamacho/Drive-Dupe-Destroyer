@@ -31,6 +31,34 @@ let rafId = 0;
 
 // Store a reference to the getSelectedCount function from render.js
 let getSelectedCountFn = null;
+let getRowCountFn = null;
+
+/**
+ * How many rows the result set HAS, which is not how many are painted.
+ *
+ * The table is virtualised, so `#resultsTbody tr` counts the visible window and
+ * two spacers. renderGroups() clears the tbody, then calls refreshActionButtons
+ * BEFORE the rAF that paints the first window -- so the DOM count was 0 exactly
+ * when the toolbar was being enabled, and nothing called it again afterwards.
+ * The selected count was moved off the DOM for this same reason; the row count
+ * was left behind (#113).
+ */
+export function setRowCountProvider(fn) {
+  getRowCountFn = fn;
+}
+
+let getSizeStatsFn = null;
+
+/**
+ * Where the reclaimable figure comes from (#114). Read from inside
+ * refreshActionButtons rather than called separately, because the events that
+ * change it -- selection, pinning a keeper, filtering, deleting -- are exactly
+ * the events that already refresh the toolbar. One wiring point, no call site
+ * left behind.
+ */
+export function setSizeStatsProvider(fn) {
+  getSizeStatsFn = fn;
+}
 
 export function setSelectedCountProvider(fn) {
   getSelectedCountFn = fn;
@@ -238,15 +266,50 @@ export function updateStats({ groups = 0, files = 0, totalBytes = 0, cacheHit = 
   if (statDuration) statDuration.textContent = durationMs == null ? "—" : humanDuration(durationMs);
 }
 
-export function updateFilterStats(groups, files, filter) {
-  const filterStatsEl = el("filterStats");
-  if (filterStatsEl) {
-    if (filter === "all") {
-      filterStatsEl.textContent = "";
-    } else {
-      filterStatsEl.textContent = `(${groups} groups, ${files} files)`;
-    }
+/**
+ * "Reclaimable: 8.3 GB — 1.2 GB selected" (#114).
+ *
+ * A floor, not a promise, when Drive reported no size for some files: saying
+ * "at least" is the difference between a number the user can trust and one
+ * that quietly over-promises.
+ */
+export function updateSizeStats() {
+  const reclaimEl = el("statReclaimable");
+  const selEl = el("statSelectedBytes");
+  if (!reclaimEl && !selEl) return;
+
+  const s = getSizeStatsFn ? getSizeStatsFn() : null;
+  if (!s) {
+    if (reclaimEl) reclaimEl.textContent = "—";
+    if (selEl) { selEl.textContent = ""; selEl.title = ""; }
+    return;
   }
+
+  if (reclaimEl) {
+    reclaimEl.title = s.unknown > 0
+      ? `At least this much: Google Drive reported no size for ${s.unknown} duplicate(s), so they are not counted.`
+      : "The total size of every duplicate that is not its group's keeper.";
+    reclaimEl.textContent = s.reclaimable <= 0
+      ? "—"
+      : s.unknown > 0 ? `≥ ${bytesToHuman(s.reclaimable)}` : bytesToHuman(s.reclaimable);
+  }
+  if (selEl) {
+    selEl.textContent = s.selected > 0 ? ` — ${bytesToHuman(s.selected)} selected` : "";
+  }
+}
+
+export function updateFilterStats(groups, files, filter, review = null) {
+  const filterStatsEl = el("filterStats");
+  if (!filterStatsEl) return;
+
+  const parts = [];
+  if (filter !== "all") parts.push(`${groups} groups, ${files} files`);
+  // How much is left to do -- the number that tells someone coming back
+  // whether this is a five-minute job or an evening (#117).
+  if (review && review.total > 0 && review.untouched < review.total) {
+    parts.push(`${(review.total - review.untouched).toLocaleString()} of ${review.total.toLocaleString()} reviewed`);
+  }
+  filterStatsEl.textContent = parts.length ? `(${parts.join(" · ")})` : "";
 }
 
 export function refreshActionButtons() {
@@ -261,11 +324,14 @@ export function refreshActionButtons() {
     checkedCount = document.querySelectorAll('#resultsTbody input[type=checkbox]:checked').length;
   }
   
-  const rowCount = document.querySelectorAll('#resultsTbody tr:not(.virtualSpacer)').length;
+  const rowCount = getRowCountFn
+    ? getRowCountFn()
+    : document.querySelectorAll('#resultsTbody tr:not(.virtualSpacer)').length;
   
   const btnSelectAll = el("btnSelectAll");
   const btnSelectNone = el("btnSelectNone");
   const btnTrashNow = el("btnTrashNow");
+  const btnQueueSelected = el("btnQueueSelected");
   
   if (btnSelectAll) btnSelectAll.disabled = rowCount === 0;
   if (btnSelectNone) btnSelectNone.disabled = rowCount === 0;
@@ -273,6 +339,14 @@ export function refreshActionButtons() {
     btnTrashNow.disabled = checkedCount === 0;
     btnTrashNow.textContent = checkedCount > 0 ? `🗑️ Trash Selected (${checkedCount})` : '🗑️ Trash Selected';
   }
+  // #113: the queue's bulk entry point. Tracks the same selection as Trash
+  // Selected, because the two are the same decision -- now versus later.
+  if (btnQueueSelected) {
+    btnQueueSelected.disabled = checkedCount === 0;
+    btnQueueSelected.textContent = checkedCount > 0 ? `📋 Queue Selected (${checkedCount})` : '📋 Queue Selected';
+  }
+
+  updateSizeStats();
 }
 
 export function clearResults() {
@@ -592,10 +666,6 @@ export function setHashingErrors(errors) {
   }
 }
 
-export function getHashingErrors() {
-  return currentErrors;
-}
-
 export function showErrorModal() {
   const modal = el("errorModal");
   const errorList = el("errorList");
@@ -622,7 +692,7 @@ export function showErrorModal() {
         <div class="errorReason">Error: ${escapeHtml(err.error || "Unknown error")}</div>
       </div>
       <div class="errorActions">
-        <a href="https://drive.google.com/file/d/${err.fileId}/view" target="_blank" rel="noopener" class="btnGhost btnSmall">View</a>
+        <a href="https://drive.google.com/file/d/${encodeURIComponent(err.fileId || "")}/view" target="_blank" rel="noopener" class="btnGhost btnSmall">View</a>
       </div>
     `;
     errorList.appendChild(row);

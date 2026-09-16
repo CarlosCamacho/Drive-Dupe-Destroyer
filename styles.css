@@ -1872,6 +1872,21 @@ input[type="checkbox"] {
   color: var(--text-muted);
 }
 
+/* The two-canvas crop stack (#118). */
+.cropCanvasStack {
+  position: relative;
+  line-height: 0;   /* no inline-descender gap under the canvas */
+}
+.cropOverlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  /* The overlay sits on top of the image canvas but must not swallow the
+     drag that selects a crop area -- those listeners are on cropCanvas. */
+  pointer-events: none;
+  border-radius: var(--radius-sm);
+}
+
 .cropCanvas {
   cursor: crosshair;
   border-radius: var(--radius-sm);
@@ -2701,4 +2716,18 @@ kbd {
   border: 1px solid var(--border, #444);
   border-radius: 5px;
   overflow-wrap: anywhere;
+}
+
+/* Reclaimable bytes (#114).
+   NOT coloured. --accent-green (#06d6a0) is 8.7:1 on the dark theme and 1.89:1
+   on the light theme's white panel, so tinting this would have been legible
+   only where it was tested. Tabular figures instead, which is what the number
+   actually needs: it changes on every selection click, and proportional digits
+   make the whole stats bar reflow each time. */
+.statsBar .statReclaim b,
+.statsBar .statReclaim .muted {
+  font-variant-numeric: tabular-nums;
+}
+.statsBar .statReclaim .muted {
+  font-weight: 400;
 }

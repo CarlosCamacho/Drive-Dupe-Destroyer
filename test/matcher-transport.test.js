@@ -24,7 +24,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { runMatching, packEntries, unpackEntries, OPTIONAL_ENTRY_FIELDS } from "../js/matcher.js";
-import { bestDist, bestCropDist, pHashDistance } from "../js/common.js";
+import { bestCropDist, bestDist, pHashDistance } from "../js/distance.js";
 import { cacheRecordNeedsRecompute, entryFromCacheRecord } from "../js/scan.js";
 import { HASH_VERSION } from "../js/hashing.js";
 
@@ -194,23 +194,24 @@ describe("entryFromCacheRecord", () => {
 // undefined against undefined, and silently returned "no match". Neither was
 // visible from any single file.
 //
-// So assert the relationship directly. Read what common.js actually reaches for
-// on an entry, and require the transport to carry all of it. Over-inclusive by
-// design: a field named in a comment counts as read, which can only make this
-// stricter, never let a real omission through.
+// So assert the relationship directly. Read what the comparators actually reach
+// for on an entry, and require the transport to carry all of it. Over-inclusive
+// by design: a field named in a comment counts as read, which can only make
+// this stricter, never let a real omission through.
 
 describe("the worker payload carries every field the comparators read", () => {
-  const commonSrc = readFileSync(
-    fileURLToPath(new URL("../js/common.js", import.meta.url)), "utf8"
+  // The comparators moved to js/distance.js when common.js was split (#121).
+  const distanceSrc = readFileSync(
+    fileURLToPath(new URL("../js/distance.js", import.meta.url)), "utf8"
   );
 
   const fieldsRead = new Set();
-  for (const m of commonSrc.matchAll(/\bentry[AB]\.([A-Za-z_$][\w$]*)/g)) fieldsRead.add(m[1]);
+  for (const m of distanceSrc.matchAll(/\bentry[AB]\.([A-Za-z_$][\w$]*)/g)) fieldsRead.add(m[1]);
 
   // base12 and base8 ride in the flat buffers, not the extras map.
   const PACKED_IN_BUFFERS = ["base12", "base8"];
 
-  test("the scan of common.js found the fields we expect", () => {
+  test("the scan of distance.js found the fields we expect", () => {
     // A guard on the guard: if this regex ever stops matching, the test below
     // would pass vacuously.
     assert.ok(fieldsRead.size >= 6, `expected several fields, found ${[...fieldsRead]}`);
@@ -222,7 +223,7 @@ describe("the worker payload carries every field the comparators read", () => {
     const missing = [...fieldsRead].filter((f) => !carried.has(f));
     assert.deepEqual(
       missing, [],
-      `common.js reads ${missing.join(", ")} but packEntries does not carry it — ` +
+      `distance.js reads ${missing.join(", ")} but packEntries does not carry it — ` +
       `that feature will silently find nothing in the worker (#84, #86)`
     );
   });

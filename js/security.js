@@ -102,7 +102,6 @@ export function validateFolderId(folderId) {
 // for their own Client ID. See the Picker + drive.file issue for the
 // alternative.
 export const REQUIRED_SCOPE = "https://www.googleapis.com/auth/drive";
-export const APP_SCOPE = REQUIRED_SCOPE;
 
 // ─── Referrer leak prevention ─────────────────────────────────────────────────
 // Call once on init; sets meta referrer policy if not already set by headers.

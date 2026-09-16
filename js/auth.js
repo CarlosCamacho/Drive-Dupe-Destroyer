@@ -15,7 +15,7 @@
 // Authentication with better GIS loading detection and error handling
 
 import { el, CONFIG } from "./util.js";
-import { validateClientId, applyAllSecurityPolicies, sanitizeText } from "./security.js";
+import { validateClientId, applyAllSecurityPolicies, sanitizeText, REQUIRED_SCOPE } from "./security.js";
 import { setSignedInUi, setStatus, showSpinner, showToast, lockBodyScroll } from "./ui.js";
 import { settingGet, settingSet, settingDel } from "./db.js";
 
@@ -31,7 +31,14 @@ let gisReadyPromise = null;
 // Refresh token every 30 minutes to stay logged in
 const KEEPALIVE_INTERVAL_MS = 30 * 60 * 1000;
 
-export const SCOPES_DELETE = "https://www.googleapis.com/auth/drive"; // Minimal scope needed to list, read, and trash files
+// The one OAuth scope this app asks for, defined once in security.js.
+//
+// It was declared here as well, with the same string and a comment calling it
+// "minimal" -- while security.js's copy documents it as Google's RESTRICTED
+// full-access drive scope, which is what it actually is. Two sources of truth
+// for the single most security-relevant string in the app, disagreeing about
+// what it grants (#120).
+export const SCOPES_DELETE = REQUIRED_SCOPE;
 const CLIENT_ID_KEY = "destroyer_oauth_client_id";  // Namespaced: avoids Decimator collision
 
 export async function getStoredClientId() {
@@ -488,10 +495,6 @@ export async function authedFetch(url, { method = "GET", headers = {}, body = nu
 
 export function getAccessToken() {
   return accessToken;
-}
-
-export function getCurrentClientId() {
-  return currentClientId;
 }
 
 export function isSignedIn() {

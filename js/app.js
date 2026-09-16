@@ -14,13 +14,15 @@
 // Security-hardened: localStorage replaced with IndexedDB for all persistence
 // Main application entry point
 
-import { SIMILARITY_BITS } from "./common.js";
+import { SIMILARITY_BITS } from "./distance.js";
 import { confirmAction } from "./confirm.js";
 import { el, APP_VERSION } from "./util.js";
-import { uiInit, setSignedInUi, setStatus, showEmptyState, setScanningState, showToast, wireErrorModal, setSelectedCountProvider, lockBodyScroll } from "./ui.js";
+import { uiInit, setSignedInUi, setStatus, showEmptyState, setScanningState, showToast, wireErrorModal, setSelectedCountProvider, setRowCountProvider, setSizeStatsProvider, lockBodyScroll } from "./ui.js";
 import { wireAuth } from "./auth.js";
 import { runScan, setupBackgroundDetection } from "./scan.js";
-import { renderGroups, wireRenderControls, getSelectedCount, beginProgressive, pushProgressiveMatch, endProgressive, mergeProgressivePaths } from "./render.js";
+import { clearReviewState } from "./reviewState.js";
+import { clearFileList } from "./fileListCache.js";
+import { renderGroups, wireRenderControls, restoreReviewState, getSelectedCount, getRowCount, getSizeStats, beginProgressive, pushProgressiveMatch, endProgressive, mergeProgressivePaths } from "./render.js";
 import { wireCompare } from "./compare.js";
 import { wireCrop } from "./crop.js";
 import { wireFolderPicker, getIncludedFolderIds, getIncludedFolders, getExclusions } from "./folderPicker.js";
@@ -33,8 +35,8 @@ import { initPersistentSettings } from "./settings.js";
 import { toggleTelemetry } from "./telemetry.js";
 import { undoLastDelete, loadUndoStack } from "./undo.js";
 import { loadResumeState, clearResumeState, formatResumeDescription } from "./resume.js";
-import { wireQueue } from "./queue.js";
-import { dbClearImages, dbCountImages, dbExportImages, dbImportImages } from "./db.js";
+import { wireQueue, renderQueue } from "./queue.js";
+import { dbClearImages, dbCountImages, dbExportImages, dbImportImages, clearChangesToken } from "./db.js";
 import { releaseAllThumbBlobs } from "./hashing.js";
 import { clearPathCaches } from "./paths.js";
 
@@ -190,6 +192,11 @@ function wireScanControls() {
       
       abortCtrl = new AbortController();
       
+      // Restore how far through the review we got last time, for THIS folder
+      // selection (#117). Done before the scan rather than after, so the
+      // keeper pins are in place by the time the first groups render.
+      await restoreReviewState({ folderIds, exclusions: getExclusions() });
+      
       try {
         // Consume the resume offer on the first scan after boot; a later scan in
         // the same session starts clean.
@@ -315,6 +322,15 @@ function wireDbControls() {
         
         // Clear IndexedDB hash cache
         await dbClearImages();
+        // A full reset clears the review too: the marks describe groups that
+        // came from the hashes being thrown away (#117).
+        await clearReviewState();
+        // And the incremental-scan state. Keeping a cached enumeration and a
+        // changes token past a reset would mean the next scan reported changes
+        // "since last scan" against a library the user has just told us to
+        // forget (#116).
+        await clearFileList();
+        await clearChangesToken();
         releaseAllThumbBlobs();
         // And the resolved folder paths. This is now the only thing that empties
         // them: a scan ending used to wipe the store, which meant the cache never
@@ -638,6 +654,8 @@ async function init() {
   
   // Wire up the selected count provider so UI can get accurate count
   setSelectedCountProvider(getSelectedCount);
+  setRowCountProvider(getRowCount);
+  setSizeStatsProvider(getSizeStats);
   
   wireAuth({ onSignedIn: async () => {} });
   wireFolderPicker();
@@ -649,6 +667,11 @@ async function init() {
   wireActions();
   wireExport();
   wireQueue();
+  // The queue survives a reload in IndexedDB, but the badge is markup that says
+  // 0 until something renders it -- and until #113 nothing could put anything in
+  // the queue, so nobody noticed. Render once at startup so the count is true
+  // before the modal is ever opened.
+  renderQueue().catch(() => {});
   
   wireSliders();
   wireMatchMode();
