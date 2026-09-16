@@ -113,6 +113,12 @@ const r = await withTimeout(page.evaluate(async () => {
   out.originShown = document.getElementById('authOrigin') !== null;
   out.setupSteps = document.querySelectorAll('.setupSteps li').length;
   out.hasCopyButton = !!document.getElementById('btnCopyOrigin');
+  // #115: each console step that HAS a direct URL should be a link, so the
+  // user is not hunting through a console they have never opened. Counted
+  // rather than asserted one by one, so adding a step does not break it.
+  out.setupLinks = [...document.querySelectorAll('.setupSteps a[href]')]
+    .map(a => a.getAttribute('href'))
+    .filter(h => h.startsWith('https://console.cloud.google.com/'));
 
   // --- #108 no orphaned help icons -----------------------------------------
   out.exportHelpIcons = document.querySelectorAll('[data-help="exportResults"]').length;
@@ -182,6 +188,10 @@ ck(r.shortcutsMentionsCtrlZ, '#110 including Ctrl+Z');
 
 ck(r.originShown && r.hasCopyButton, '#111 the origin to paste is shown with a copy button');
 ck(r.setupSteps >= 5, `#111 and the console flow is spelled out (${r.setupSteps} steps)`);
+ck(r.setupLinks.length >= 4,
+   `#115 each console step that has a direct URL is a link, not a hunt (${r.setupLinks.length} links)`);
+ck(new Set(r.setupLinks).size === r.setupLinks.length,
+   `#115 and they go to different pages — the same link four times would be worse than none`);
 
 ck(r.exportHelpIcons === 1 && r.queueHelpIcons === 1, '#108 one help icon each, not two');
 

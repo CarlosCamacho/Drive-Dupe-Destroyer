@@ -692,7 +692,7 @@ export function showErrorModal() {
         <div class="errorReason">Error: ${escapeHtml(err.error || "Unknown error")}</div>
       </div>
       <div class="errorActions">
-        <a href="https://drive.google.com/file/d/${err.fileId}/view" target="_blank" rel="noopener" class="btnGhost btnSmall">View</a>
+        <a href="https://drive.google.com/file/d/${encodeURIComponent(err.fileId || "")}/view" target="_blank" rel="noopener" class="btnGhost btnSmall">View</a>
       </div>
     `;
     errorList.appendChild(row);

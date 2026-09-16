@@ -246,7 +246,7 @@ async function renderList(seq = 0) {
           <div class="folderInfo">
             <b>${escapeHtml(f.name || "(unnamed)")}</b>
             <div class="folderMeta">
-              <span class="muted folderId">${f.id}</span>
+              <span class="muted folderId">${escapeHtml(f.id || "")}</span>
               ${scanInfo}
             </div>
           </div>
