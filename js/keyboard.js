@@ -14,7 +14,7 @@
 // Keyboard navigation
 
 import { el, anyModalOpen } from "./util.js";
-import { showToast } from "./ui.js";
+import { showToast, lockBodyScroll } from "./ui.js";
 
 function focusRow(row) {
   if (!row) return;
@@ -84,6 +84,21 @@ export function wireKeyboard() {
       }
     }
     
+    // The one shortcut people try by reflex after deleting something by
+    // accident, and it was not bound -- Ctrl+A was, Ctrl+Z was not (#106).
+    // Guarded on modals so it cannot fire while a dialog owns the keyboard, and
+    // on the browser's own undo inside a text field.
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z") {
+      if (anyModalOpen()) return;
+      if (e.target?.matches?.("input, textarea, select, [contenteditable]")) return;
+      const btnUndo = el("btnUndo");
+      if (btnUndo && !btnUndo.disabled) {
+        e.preventDefault();
+        btnUndo.click();
+      }
+      return;
+    }
+
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
       const resultsArea = document.querySelector(".tableWrap");
       if (resultsArea?.contains(document.activeElement) || 
@@ -122,6 +137,36 @@ export function wireKeyboard() {
   });
 }
 
-function showKeyboardHelp() {
-  showToast("⌨️ Space=toggle, D=delete, ↑↓=navigate, Ctrl+A=select all duplicates, Esc=clear selection", "info", 4000);
+/**
+ * Open the shortcuts panel.
+ *
+ * This used to be a single-line toast that vanished after four seconds, listing
+ * five of the app's twenty shortcuts and omitting every modal-specific one --
+ * and nothing anywhere told the user that "?" did anything at all (#110).
+ */
+export function showKeyboardHelp() {
+  const modal = el("shortcutsModal");
+  if (!modal) return;
+  modal.style.display = "flex";
+  lockBodyScroll(true);
+  modal.querySelector("#btnShortcutsClose")?.focus();
+}
+
+export function hideKeyboardHelp() {
+  const modal = el("shortcutsModal");
+  if (!modal) return;
+  modal.style.display = "none";
+  lockBodyScroll(false);
+}
+
+export function wireKeyboardHelp() {
+  el("btnShortcuts")?.addEventListener("click", showKeyboardHelp);
+  el("btnShortcutsClose")?.addEventListener("click", hideKeyboardHelp);
+  const modal = el("shortcutsModal");
+  modal?.addEventListener("click", (e) => { if (e.target === modal) hideKeyboardHelp(); });
+  // Listen on document, not the modal: a <div> is not focusable, so Escape
+  // never reaches it otherwise -- the same reason the queue modal does this.
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && modal?.style.display === "flex") hideKeyboardHelp();
+  });
 }

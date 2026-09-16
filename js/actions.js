@@ -14,11 +14,12 @@
 // Bulk actions for selected files
 
 import { el } from "./util.js";
+import { confirmAction, UNDO_NOTE } from "./confirm.js";
 import { batchTrash } from "./drive.js";
 import { selectedIds, getIdToFile } from "./render.js";
-import { setStatus, setProgress, showSpinner, refreshActionButtons, showToast } from "./ui.js";
+import { setStatus, setProgress, showSpinner, refreshActionButtons, showToast, showTrashedToast } from "./ui.js";
 import { getExclusions } from "./folderPicker.js";
-import { pushUndoDeleteBatch } from "./undo.js";
+import { pushUndoDeleteBatch, undoLastDelete } from "./undo.js";
 
 export function wireActions() {
   const btnTrashNow = el("btnTrashNow");
@@ -62,7 +63,13 @@ export async function trashSelectedNow() {
     message += `\n\n(${protectedCount} file(s) in excluded folders will be skipped)`;
   }
   
-  if (!confirm(message)) return;
+  if (!await confirmAction({
+    title: "Move selected files to Trash?",
+    message,
+    confirmLabel: `Move ${filtered.length} to Trash`,
+    note: UNDO_NOTE,
+    files: filtered,
+  })) return;
 
   showSpinner(true);
   setStatus(`Trashing ${filtered.length} file(s)…`);
@@ -82,7 +89,7 @@ export async function trashSelectedNow() {
       window.dispatchEvent(new CustomEvent("ddd:trashed", { 
         detail: { ids: result.success } 
       }));
-      showToast(`Trashed ${result.success.length} file(s) — use Undo to restore`, "success");
+      showTrashedToast(result.success.length, () => undoLastDelete());
     }
     
     if (result.failed.length > 0) {

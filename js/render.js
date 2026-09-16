@@ -16,13 +16,14 @@
 // Added: delete button on all rows, pathMap access for compare modal
 
 import { el, bytesToHuman, escapeHtml, throttle, debounce, IMAGE_PLACEHOLDER } from "./util.js";
-import { setStatus, refreshActionButtons, showEmptyState, showToast, updateFilterStats } from "./ui.js";
+import { confirmAction, UNDO_NOTE } from "./confirm.js";
+import { setStatus, refreshActionButtons, showEmptyState, showToast, updateFilterStats, showTrashedToast, setEmptyState } from "./ui.js";
 import { releaseAllThumbBlobs, getThumbUrlForFile } from "./hashing.js";
 import { openCompare, setCompareCallbacks } from "./compare.js";
 import { setCropCallbacks } from "./crop.js";
 import { batchTrash, driveFilePreviewLink, driveFolderLink, downloadFileBlob, thumbLinkSized } from "./drive.js";
 import { chooseKeepIndex, distToPercent, bestDist, DEFAULT_KEEP_RULE, SIMILARITY_BITS } from "./common.js";
-import { pushUndoDeleteBatch } from "./undo.js";
+import { pushUndoDeleteBatch, undoLastDelete } from "./undo.js";
 
 const ROW_HEIGHT = 58;
 const BUFFER_ROWS = 10;
@@ -420,7 +421,10 @@ function observeThumbnails() {
   }
 }
 
-function handleTableClick(e) {
+// async because the delete paths now await an in-app confirmation rather than
+// a blocking native confirm() (#109). Nothing awaits this handler's result --
+// it is an event listener -- so the change is invisible to its callers.
+async function handleTableClick(e) {
   const target = e.target;
   const tr = target.closest("tr[data-file-id]");
   if (!tr) return;
@@ -492,7 +496,13 @@ function handleTableClick(e) {
     // Rows are ~58px tall and the trash button sits next to Download, so a
     // misclick is easy. Confirm here as the KEEP row already does — the two are
     // the same irreversible action from the user's point of view.
-    if (!confirm(`Move "${file.name}" to Google Drive Trash?`)) return;
+    if (!await confirmAction({
+      title: "Move to Trash?",
+      message: "This file will be moved to Google Drive Trash.",
+      confirmLabel: "Move to Trash",
+      note: UNDO_NOTE,
+      files: [file],
+    })) return;
     handleSingleDelete(file, tr);
     return;
   }
@@ -500,7 +510,13 @@ function handleTableClick(e) {
   if (target.matches('[data-action="delete-keep"]') || target.closest('[data-action="delete-keep"]')) {
     e.stopPropagation();
     const btn = tr.querySelector('[data-action="delete-keep"]');
-    if (btn && !confirm("⚠️ This is the KEEP file (highest quality in this group). Are you sure you want to delete it?")) return;
+    if (btn && !await confirmAction({
+      title: "This is the file the scan chose to keep",
+      message: "It is the best copy in its group by your keep rule. Deleting it leaves the ones you were offered to delete.",
+      confirmLabel: "Delete the keep file",
+      note: UNDO_NOTE,
+      files: [file],
+    })) return;
     handleSingleDelete(file, tr);
     return;
   }
@@ -567,7 +583,7 @@ async function handleSingleDelete(file, tr) {
       selected.delete(file.id);
       removeFileFromResults(file.id);
       window.dispatchEvent(new CustomEvent("ddd:trashed", { detail: { ids: [file.id] } }));
-      showToast("File moved to trash — use Undo to restore", "success");
+      showTrashedToast(1, () => undoLastDelete());
     } else throw new Error("Trash failed");
   } catch (err) {
     showToast("Trash failed: " + (err?.message || err), "error");
@@ -1121,6 +1137,8 @@ export async function renderGroups({ groups, idToEntry, pathMap, keepRule = DEFA
   idToFile = new Map(groups.flat().map(f => [f.id, f]));
 
   if (groups.length === 0) {
+    // A real finding now, reported with what was actually searched (#103).
+    setEmptyState("none-found");
     showEmptyState(true);
     setStatus("No duplicate groups found.");
     refreshActionButtons();

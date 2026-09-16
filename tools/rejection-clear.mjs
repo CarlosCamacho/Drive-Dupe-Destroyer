@@ -24,7 +24,14 @@ const page = await (await b.newContext()).newPage();
 page.on('pageerror', e => console.log('PAGEERROR:', e.message));
 await page.goto('http://localhost:8080/index.html', { waitUntil: 'load' });
 await page.waitForTimeout(1500);
-await page.evaluate(() => { window.confirm = () => true; });
+// The Clear action now opens the in-app confirm dialog rather than a native
+// confirm() (#109), so stubbing window.confirm no longer does anything -- the
+// harness has to answer the real dialog.
+const answerConfirm = () => page.evaluate(() => {
+  const ok = document.querySelector('#confirmModal [data-confirm="ok"]');
+  if (ok) { ok.click(); return true; }
+  return false;
+});
 
 const r = await page.evaluate(async () => {
   const rej = await import('/js/rejection.js');
@@ -56,9 +63,15 @@ const r = await page.evaluate(async () => {
   const btn = document.getElementById('btnClearRejections');
   const reachableBeforeAnyScan = !!btn;
 
-  let afterClick = null, toldTheUser = null;
+  let afterClick = null, toldTheUser = null, confirmDialogShown = false;
   if (btn) {
     btn.click();
+    await settle();
+    // Answer the in-app dialog the click opened.
+    const ok = document.querySelector('#confirmModal [data-confirm="ok"]');
+    confirmDialogShown = !!ok;
+    ok?.click();
+    await settle();
     await settle();
     afterClick = (await rej.getRejectionStats()).count;
     toldTheUser = !!document.getElementById('btnClearRejections') === false;
@@ -70,7 +83,7 @@ const r = await page.evaluate(async () => {
   const hiddenWhenEmpty = !document.getElementById('btnClearRejections');
 
   tel.hideTelemetry();
-  return { afterPress, suppressesOther, survivesFullReset, reachableBeforeAnyScan, afterClick, toldTheUser, hiddenWhenEmpty };
+  return { afterPress, suppressesOther, survivesFullReset, reachableBeforeAnyScan, afterClick, toldTheUser, hiddenWhenEmpty, confirmDialogShown };
 });
 
 console.log('  ', r);
@@ -78,7 +91,8 @@ ck(r.afterPress === 1, '#101 one press of "not a duplicate" is recorded');
 ck(r.suppressesOther === true, '#101 and it suppresses any pair sharing those hashes — which is why it must be reversible');
 ck(r.survivesFullReset === 1, '#101 the full-reset button leaves it alone (hashes and paths only)');
 ck(r.reachableBeforeAnyScan === true, '#101 the Clear action is in the telemetry panel before any scan has run');
-ck(r.afterClick === 0, '#101 clicking it actually forgets them');
+ck(r.confirmDialogShown === true, '#101 clicking it asks for confirmation first (#109 dialog)');
+ck(r.afterClick === 0, '#101 and confirming actually forgets them');
 ck(r.hiddenWhenEmpty === true, '#101 and the action is gone once there is nothing to forget');
 
 await b.close();

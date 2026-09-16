@@ -15,6 +15,7 @@
 // Main application entry point
 
 import { SIMILARITY_BITS } from "./common.js";
+import { confirmAction } from "./confirm.js";
 import { el, APP_VERSION } from "./util.js";
 import { uiInit, setSignedInUi, setStatus, showEmptyState, setScanningState, showToast, wireErrorModal, setSelectedCountProvider, lockBodyScroll } from "./ui.js";
 import { wireAuth } from "./auth.js";
@@ -23,7 +24,7 @@ import { renderGroups, wireRenderControls, getSelectedCount, beginProgressive, p
 import { wireCompare } from "./compare.js";
 import { wireCrop } from "./crop.js";
 import { wireFolderPicker, getIncludedFolderIds, getIncludedFolders, getExclusions } from "./folderPicker.js";
-import { wireKeyboard } from "./keyboard.js";
+import { wireKeyboard, wireKeyboardHelp } from "./keyboard.js";
 import { wireActions } from "./actions.js";
 import { wireExport, setExportState } from "./exporter.js";
 import { applyAllSecurityPolicies } from "./security.js";
@@ -296,7 +297,15 @@ function wireDbControls() {
   // Clear button now does full reset (clear cache + service worker + reload)
   if (btnDbClear) {
     btnDbClear.onclick = async () => {
-      if (!confirm("Clear all cached hashes and reload?\n\nThis ensures a clean state for scanning.")) {
+      if (!await confirmAction({
+        title: "Clear the cache and reload?",
+        message: "Cached image hashes and resolved folder paths are deleted, and the page reloads. " +
+                 "No files in Drive are touched.",
+        confirmLabel: "Clear cache and reload",
+        note: "The next scan re-hashes every image, so it will take longer than usual. " +
+              "Your \u201cnot a duplicate\u201d decisions are kept.",
+        danger: false,
+      })) {
         return;
       }
       
@@ -537,13 +546,13 @@ async function checkResumeState() {
   }
 
   const desc = formatResumeDescription(state);
-  const confirmed = confirm(
-    `Resume previous scan?
-
-${desc}
-
-Click OK to resume, Cancel to start fresh.`
-  );
+  const confirmed = await confirmAction({
+    title: "Resume the previous scan?",
+    message: desc,
+    confirmLabel: "Resume",
+    note: "Starting fresh re-lists every folder from Drive.",
+    danger: false,
+  });
 
   if (confirmed) {
     pendingResume = state;
@@ -636,6 +645,7 @@ async function init() {
   wireCompare();
   wireCrop();
   wireKeyboard();
+  wireKeyboardHelp();
   wireActions();
   wireExport();
   wireQueue();

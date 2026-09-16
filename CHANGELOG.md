@@ -37,6 +37,98 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   `getPooledCtx`, which had nothing testing it. No app code changed in this
   entry.
 
+## [14.7.12] - 2026-09-15
+
+Nine usability findings from an audit of the running app (#103–#111), taken
+together because they overlap: the undo affordance (#106) needs toasts that
+survive each other (#107), and the toast that carries it needs somewhere to
+announce itself (#104).
+
+Measured by `tools/ux-audit.mjs`, a new harness that reads the **live DOM**
+after the app has booted. That distinction is the point: the first pass of this
+audit grepped `index.html` and got two of its own findings wrong — it reported
+`aria-expanded: 0` when `wireCollapsibles()` sets it on six headers at runtime,
+and it listed twelve unlabelled controls when four are wrapped by their
+`<label>` and two `<select>`s it never looked at were unlabelled. Both
+corrections are on the issues.
+
+### Added
+
+- **An in-app confirm dialog** (#109), `js/confirm.js`. Ten destructive
+  confirmations were native `confirm()` calls, in an app whose whole purpose is
+  choosing which of two near-identical photographs to destroy — and a native
+  dialog cannot show either photograph. The replacement shows thumbnail, name,
+  folder path, size and resolution for up to four files, puts a verb on the
+  button ("Move 250 to Trash", never "OK"), focuses the *safe* choice, and says
+  the undo window once, from a single exported constant, so the reassurance
+  cannot drift between call sites.
+
+  It also removes a real failure mode: on mobile, the browser's "prevent this
+  page from creating additional dialogs" checkbox suppresses `confirm()`
+  entirely, after which every guarded action silently did nothing.
+
+- **A shortcuts panel** (#110). The entire keyboard reference was a 4-second
+  toast listing five shortcuts, discoverable only by pressing `?` — which
+  nothing mentioned. It is now a modal with a visible ⌨ trigger, listing 19
+  shortcuts grouped by context so the compare and crop bindings are findable
+  while you are in those modals. `?` still works.
+
+- **Ctrl/Cmd+Z** (#106), guarded so it does nothing while a modal or a text
+  field owns the keyboard. The undo window is 30 minutes; the only notice that
+  undo existed lasted 3 seconds. The post-delete toast now carries an **Undo**
+  button rather than prose about one, through a single `showTrashedToast()`
+  used by all six trash paths.
+
+- **Numbered OAuth setup steps** (#111), with `location.origin` shown and a copy
+  button beside it. Missing that one field is the failure that makes sign-in
+  fail with a Google error page that never mentions this app, and the app knows
+  the value it needs pasted.
+
+- **Three distinct empty states** (#103). Before any scan had been attempted the
+  main panel read "No duplicates found" — a verdict on a scan that never
+  happened — above ten disabled controls. It now names the three steps before
+  sign-in, says what is ready to scan after it, and keeps "No duplicates found"
+  for the case where it is true, where it also says what was searched.
+
+### Fixed
+
+- **Toasts destroyed each other** (#107). There was one slot and last writer
+  won, so on a partially failed trash run you saw only the failure and never the
+  count that succeeded or the mention of Undo. They now stack (cap 3, repeats
+  collapse to `×N`), are dismissible, can carry an action, and errors persist
+  rather than expiring in 3 seconds alongside a confirmation.
+
+- **Nothing was announced to assistive technology** (#104): 0 live regions,
+  0 `aria-modal`. A scan runs for minutes through four reporting channels and a
+  screen-reader user got silence. The status line is now a live region, the
+  progress bar carries `aria-valuetext` ("45% — 2/4 Hashing"), and all 8 modals
+  carry dialog semantics and a label.
+
+- **Nine unlabelled controls** (#105), including the two unit `<select>`s beside
+  the min/max size boxes — which is what made "Minimum size" ambiguous in the
+  first place.
+
+- **Four orphaned question marks in the bottom bar** (#108). The help icons for
+  Export Results and Queue were each declared twice in the markup.
+
+- **Touch targets under 32px** (#111): 20 of 81 controls on a 390px-wide coarse
+  pointer, ordinary buttons and text fields at 26–30px tall, not just the icon
+  buttons the issue named. Raised to 44px under `@media (pointer: coarse)` with
+  the visual size unchanged.
+
+- **A toast overflow loop that hung the renderer.** Eviction over the cap read
+  `container.children.length` while `dismissToast` removed the node 300ms later,
+  so the loop never terminated: six messages in a row spun the tab until
+  Chromium killed it. It surfaced as `tools/trash-partial.mjs` losing its page
+  on the second queue run, with no output and no error — which is why the audit
+  harness now races its own `page.evaluate` and reports a hang as a failing
+  check rather than a timeout.
+
+### Testing
+
+- `tools/ux-audit.mjs`, 28 checks across all nine issues, every one of them read
+  from the live DOM. Each was verified by reintroducing the bug it guards.
+
 ## [14.7.11] - 2026-09-15
 
 ### Fixed

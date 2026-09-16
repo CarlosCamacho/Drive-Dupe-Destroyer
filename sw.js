@@ -20,7 +20,7 @@
 // against APP_VERSION at boot and warns if they diverge -- a mismatch means a
 // release bumped util.js without bumping the cache, which would serve stale JS.
 // Keep SW_VERSION in step with APP_VERSION in js/util.js.
-const SW_VERSION = "14.7.11";
+const SW_VERSION = "14.7.12";
 // Deriving the cache name from the version means every release gets a fresh
 // cache and the activate handler evicts the old one. Bumping the version is
 // now sufficient to invalidate; it is no longer a separate thing to remember.
@@ -46,6 +46,7 @@ const PRECACHE = [
   "./js/auth.js",
   "./js/common.js",
   "./js/compare.js",
+  "./js/confirm.js",
   "./js/crop.js",
   "./js/db.js",
   "./js/drive.js",

@@ -229,7 +229,14 @@ function updateUndoButton() {
 
   btn.disabled = ops === 0;
   btn.textContent = ops > 0 ? `↩ Undo (${ops})` : "↩ Undo";
+
+  // Undo expires. The button used to give no hint of that, so a user could read
+  // "Undo (3)" an hour after the fact and find nothing there (#106).
+  const newest = undoStack.filter(isFresh).reduce((t, op) => Math.max(t, op.trashedAt), 0);
+  const minsLeft = newest ? Math.max(0, Math.round((UNDO_TTL_MS - (Date.now() - newest)) / 60000)) : 0;
+
   btn.title = ops > 0
-    ? `Undo the last delete — restores ${files} file(s) from Google Drive Trash (${ops} operation(s) available)`
+    ? `Undo the last delete (Ctrl+Z) — restores ${files} file(s) from Google Drive Trash. ` +
+      `${ops} operation(s) available, expiring in about ${minsLeft} minute(s).`
     : "Nothing to undo";
 }

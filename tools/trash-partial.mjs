@@ -44,7 +44,13 @@ await page.addInitScript(() => {
     },
     revoke: (t, cb) => { (window.__revoked ||= []).push(t); cb && cb(); },
   } } };
-  window.confirm = () => true;
+  // processQueue now awaits the in-app confirm dialog rather than a native
+  // confirm() (#109), so `window.confirm = () => true` does nothing here any
+  // more -- there are no native confirms left in js/. Answer the real dialog
+  // instead, which is what the old stub effectively did.
+  setInterval(() => {
+    document.querySelector('#confirmModal [data-confirm="ok"]')?.click();
+  }, 30);
 });
 
 await page.goto('http://localhost:8080/index.html', { waitUntil: 'load' });

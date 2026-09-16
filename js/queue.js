@@ -15,10 +15,11 @@
 // Trash queue management
 
 import { el, escapeHtml, bytesToHuman } from "./util.js";
+import { confirmAction, UNDO_NOTE } from "./confirm.js";
 import { queueList, queueAdd, queueDel, queueClear } from "./db.js";
 import { batchTrash } from "./drive.js";
-import { setStatus, showSpinner, showToast, lockBodyScroll } from "./ui.js";
-import { pushUndoDeleteBatch } from "./undo.js";
+import { setStatus, showSpinner, showToast, lockBodyScroll, showTrashedToast } from "./ui.js";
+import { pushUndoDeleteBatch, undoLastDelete } from "./undo.js";
 
 export async function renderQueue() {
   const list = el("queueList");
@@ -100,7 +101,13 @@ export async function processQueue() {
     return;
   }
   
-  if (!confirm(`Move ${items.length} queued file(s) to trash?`)) return;
+  if (!await confirmAction({
+    title: "Process the trash queue?",
+    message: `${items.length.toLocaleString()} queued file(s) will be moved to Google Drive Trash.`,
+    confirmLabel: `Move ${items.length} to Trash`,
+    note: UNDO_NOTE,
+    files: items,
+  })) return;
   
   showSpinner(true);
   setStatus(`Processing queue: ${items.length} file(s)…`);
@@ -152,7 +159,7 @@ export async function processQueue() {
     await settle(result);
 
     if (result.success.length > 0) {
-      showToast(`Trashed ${result.success.length} file(s) — use Undo to restore`, "success");
+      showTrashedToast(result.success.length, () => undoLastDelete());
     }
 
     if (stoppedBy) {
@@ -220,7 +227,12 @@ export function wireQueue() {
   
   if (btnQueueClear) {
     btnQueueClear.onclick = async () => {
-      if (!confirm("Clear the entire queue?")) return;
+      if (!await confirmAction({
+        title: "Clear the queue?",
+        message: "The queued files stay in Drive — only the list is emptied.",
+        confirmLabel: "Clear queue",
+        danger: false,
+      })) return;
       try {
         await queueClear();
         await renderQueue();
