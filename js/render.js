@@ -22,7 +22,8 @@ import { releaseAllThumbBlobs, getThumbUrlForFile } from "./hashing.js";
 import { openCompare, setCompareCallbacks } from "./compare.js";
 import { setCropCallbacks } from "./crop.js";
 import { batchTrash, driveFilePreviewLink, driveFolderLink, downloadFileBlob, thumbLinkSized } from "./drive.js";
-import { chooseKeepIndex, distToPercent, bestDist, DEFAULT_KEEP_RULE, SIMILARITY_BITS } from "./common.js";
+import { SIMILARITY_BITS, bestDist, distToPercent } from "./distance.js";
+import { DEFAULT_KEEP_RULE, chooseKeepIndex } from "./keeprule.js";
 import { pushUndoDeleteBatch, undoLastDelete } from "./undo.js";
 import { addToQueue } from "./queue.js";
 

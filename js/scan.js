@@ -26,7 +26,9 @@ import { runMatching, packEntries } from "./matcher.js";
 import { saveResumeState, clearResumeState } from "./resume.js";
 import { getRejectionStats, preloadRejections, getRejectionKeys } from "./rejection.js";
 import { updateTelemetry } from "./telemetry.js";
-import { thresholdFromEasy, isSupportedImageFile, SUPPORTED_IMAGE_MIMES, getFileExtension, DEFAULT_KEEP_RULE, canBrowserDecode, SIMILARITY_BITS } from "./common.js";
+import { SIMILARITY_BITS, thresholdFromEasy } from "./distance.js";
+import { SUPPORTED_IMAGE_MIMES, canBrowserDecode, getFileExtension, isSupportedImageFile } from "./formats.js";
+import { DEFAULT_KEEP_RULE } from "./keeprule.js";
 import { buildPathsParallel, clearMemoryPathCaches } from "./paths.js";
 
 // ============================================================================
@@ -80,7 +82,7 @@ function yieldToUI() {
 // Discover by MIME type only. The generic `image/` prefix covers
 // gif/jpg/png/webp/bmp/tiff/etc. The remaining (non-image/) MIME types Drive
 // assigns to design/legacy formats are derived from SUPPORTED_IMAGE_MIMES in
-// common.js — the single source of truth for supported formats — so adding a
+// formats.js — the single source of truth for supported formats — so adding a
 // format there automatically updates this query. `mimeType =` is exact and
 // reliable (unlike the v12.8 name-prefix match this replaces). octet-stream is
 // included because Drive often reports PSD/TGA/IFF/PCX uploads that way; the

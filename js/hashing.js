@@ -16,11 +16,11 @@
 import { makeLimiter, nowMs, CONFIG } from "./util.js";
 import { getSecurityHeadersStatus } from "./security.js";
 import { AIMDController } from "./aimd.js";
-import { isBackpressureError, isThrottleError, isMemoryPressureError } from "./common.js";
+import { isBackpressureError, isMemoryPressureError, isThrottleError } from "./errors.js";
 import { downloadFileBlob, thumbLinkSized } from "./drive.js";
 import { ensureValidToken } from "./auth.js";
 
-export { bestDist, hammingWithThreshold } from "./common.js";
+export { bestDist, hammingWithThreshold } from "./distance.js";
 
 // ============================================================================
 // Dynamic Imports for Optional Modules
@@ -554,7 +554,7 @@ export async function computeHashesForFiles(files, {
       if (signal?.aborted || e.message === "Scan stopped.") throw e;
 
       // Back off only for failures that mean the server is under pressure from
-      // us — see isBackpressureError in common.js. A decode failure is not one.
+      // us — see isBackpressureError in errors.js. A decode failure is not one.
       const throttled = isThrottleError(e);
       if (throttled) hashingStats.throttled++;
       if (isBackpressureError(e)) aimd.onError(throttled);

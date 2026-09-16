@@ -110,7 +110,7 @@ const out = await page.evaluate(async (N) => {
   // The distance functions are the hottest pure code in the app and the part
   // most likely to be "optimised" into something slower, so they get their own
   // measurement where nothing else can hide them.
-  const { bestDist } = await import('/js/common.js');
+  const { bestDist } = await import('/js/distance.js');
   const pairs = [];
   {
     const ids = [...entries.keys()];

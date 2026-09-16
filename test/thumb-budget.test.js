@@ -15,7 +15,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { thumbBudgetBytes } from "../js/hashing.js";
-import { isMemoryPressureError, isBackpressureError } from "../js/common.js";
+import { isBackpressureError, isMemoryPressureError } from "../js/errors.js";
 
 const MB = 1024 * 1024;
 

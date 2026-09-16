@@ -1,10 +1,11 @@
 /*
- * Drive Dupe Destroyer (DDD) — test/common.test.js
+ * Drive Dupe Destroyer (DDD) — test/distance.test.js
  *
  * Copyright (c) 2026 Carlos Camacho
  * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
  */
-// Tests for js/common.js — the matching and keep-selection logic.
+// Tests for the matching and keep-selection logic, split out of js/common.js
+// into js/distance.js, js/formats.js and js/keeprule.js (#121).
 //
 // These functions are pure (no DOM, no network, no Google APIs), which is why
 // they are worth testing first: they decide which files the user is shown as
@@ -13,18 +14,9 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
-import {
-  chooseKeepIndex,
-  isSupportedImageFile,
-  isImageMime,
-  isImageFileName,
-  getFileExtension,
-  canBrowserDecode,
-  hammingDistance,
-  hammingBytes32,
-  thresholdFromEasy,
-  aspectRatioCompatible,
-} from "../js/common.js";
+import { aspectRatioCompatible, hammingBytes32, hammingDistance, thresholdFromEasy } from "../js/distance.js";
+import { canBrowserDecode, getFileExtension, isImageFileName, isImageMime, isSupportedImageFile } from "../js/formats.js";
+import { chooseKeepIndex } from "../js/keeprule.js";
 
 // ---------------------------------------------------------------------------
 // Helpers

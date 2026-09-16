@@ -15,7 +15,7 @@
 
 import { authedFetch, ensureValidToken } from "./auth.js";
 import { sanitizeText } from "./security.js";
-import { isSupportedImageFile } from "./common.js";
+import { isSupportedImageFile } from "./formats.js";
 
 export function isFolderMime(m) {
   return m === "application/vnd.google-apps.folder";

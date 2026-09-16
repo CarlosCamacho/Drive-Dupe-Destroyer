@@ -14,7 +14,7 @@
 // Security-hardened: localStorage replaced with IndexedDB for all persistence
 // Main application entry point
 
-import { SIMILARITY_BITS } from "./common.js";
+import { SIMILARITY_BITS } from "./distance.js";
 import { confirmAction } from "./confirm.js";
 import { el, APP_VERSION } from "./util.js";
 import { uiInit, setSignedInUi, setStatus, showEmptyState, setScanningState, showToast, wireErrorModal, setSelectedCountProvider, setRowCountProvider, setSizeStatsProvider, lockBodyScroll } from "./ui.js";
