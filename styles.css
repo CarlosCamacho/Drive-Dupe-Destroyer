@@ -1872,6 +1872,21 @@ input[type="checkbox"] {
   color: var(--text-muted);
 }
 
+/* The two-canvas crop stack (#118). */
+.cropCanvasStack {
+  position: relative;
+  line-height: 0;   /* no inline-descender gap under the canvas */
+}
+.cropOverlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  /* The overlay sits on top of the image canvas but must not swallow the
+     drag that selects a crop area -- those listeners are on cropCanvas. */
+  pointer-events: none;
+  border-radius: var(--radius-sm);
+}
+
 .cropCanvas {
   cursor: crosshair;
   border-radius: var(--radius-sm);

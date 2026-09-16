@@ -669,7 +669,15 @@
           <span>Loading image...</span>
         </div>
         <div class="cropCanvasWrap">
-          <canvas id="cropCanvas" class="cropCanvas"></canvas>
+          <!-- Two stacked canvases (#118). The image is drawn on cropCanvas
+               once per transform; the dim mask, marching ants and size label
+               live on cropOverlay, which is the only one repainted per frame.
+               The overlay takes no pointer events, so the existing mousedown /
+               touchstart listeners on cropCanvas still receive them. -->
+          <div class="cropCanvasStack">
+            <canvas id="cropCanvas" class="cropCanvas"></canvas>
+            <canvas id="cropOverlay" class="cropOverlay" aria-hidden="true"></canvas>
+          </div>
         </div>
       </div>
       <div class="modalFooter cropFooter">

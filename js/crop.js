@@ -30,6 +30,13 @@ let currentGroupIndex = 0;
 let originalImage = null;
 let canvas = null;
 let ctx = null;
+// #118: the overlay canvas. Everything that changes per frame is drawn here;
+// the image canvas above is painted once per transform and then left alone.
+let overlay = null;
+let octx = null;
+let overlayNeedsClear = false;
+// measureText is not free, and the label only changes when the selection does.
+let labelCache = { text: null, width: 0 };
 let selection = null;
 let isSelecting = false;
 let isDragging = false;
@@ -313,6 +320,8 @@ export async function openCropModal(file, options = {}) {
   
   canvas = cropCanvas;
   ctx = canvas.getContext("2d");
+  overlay = el("cropOverlay");
+  octx = overlay ? overlay.getContext("2d") : null;
   
   if (btnCrop) btnCrop.disabled = true;
   
@@ -338,6 +347,9 @@ async function loadImageForCrop(file) {
   
   if (cropLoading) cropLoading.style.display = "flex";
   if (cropCanvas) cropCanvas.style.display = "none";
+  // The overlay is absolutely positioned, so hiding only the image canvas
+  // would leave it floating over an empty loading panel.
+  { const o = el("cropOverlay"); if (o) o.style.display = "none"; }
   
   try {
     // Release the previous image before loading the next. closeCropModal only
@@ -370,6 +382,7 @@ async function loadImageForCrop(file) {
 
     if (cropLoading) cropLoading.style.display = "none";
     if (cropCanvas) cropCanvas.style.display = "block";
+    { const o = el("cropOverlay"); if (o) o.style.display = "block"; }
     
   } catch (err) {
     console.error("Failed to load image for crop:", err);
@@ -472,6 +485,16 @@ function redrawCanvas() {
   
   canvas.width = Math.round(dims.width * displayScale);
   canvas.height = Math.round(dims.height * displayScale);
+  // The overlay must track the image canvas exactly, or the selection
+  // rectangle drifts from the pixels it is selecting. Setting width/height
+  // also clears it, which is what we want on a transform.
+  if (overlay) {
+    overlay.width = canvas.width;
+    overlay.height = canvas.height;
+    overlay.style.width = canvas.width + "px";
+    overlay.style.height = canvas.height + "px";
+  }
+  labelCache = { text: null, width: 0 };
   
   ctx.save();
   ctx.translate(canvas.width / 2, canvas.height / 2);
@@ -800,97 +823,152 @@ function cleanupDragListeners() {
   }
 }
 
+/**
+ * Paint the selection overlay: dim mask, marching ants, size label.
+ *
+ * Everything here lives on the OVERLAY canvas (#118). It used to live in the
+ * animation loop alongside a full `drawImage` of the source, so a 24 MP
+ * photograph was rescaled to the canvas 60 times a second for as long as the
+ * crop modal was open -- whether or not anything was moving, and whether or
+ * not there was a selection to animate, because the drawImage sat OUTSIDE the
+ * `if (selection)` guard. redrawCanvas() already did that same work correctly,
+ * once per transform.
+ */
+function drawOverlay() {
+  if (!overlay || !octx || !canvas) return;
+
+  octx.clearRect(0, 0, overlay.width, overlay.height);
+
+  if (!selection || selection.width <= 0 || selection.height <= 0) {
+    if (canvas.dataset.selection) delete canvas.dataset.selection;
+    return;
+  }
+
+  // Dim everything outside the selection.
+  octx.fillStyle = "rgba(0, 0, 0, 0.5)";
+  octx.fillRect(0, 0, overlay.width, selection.y);
+  octx.fillRect(0, selection.y + selection.height, overlay.width, overlay.height - selection.y - selection.height);
+  octx.fillRect(0, selection.y, selection.x, selection.height);
+  octx.fillRect(selection.x + selection.width, selection.y, overlay.width - selection.x - selection.width, selection.height);
+
+  // Marching ants: white dashes with black in the gaps, so the border reads
+  // against both a light and a dark photograph.
+  octx.save();
+  octx.lineWidth = 1;
+  octx.setLineDash([6, 6]);
+  octx.strokeStyle = "#fff";
+  octx.lineDashOffset = -marchingAntsOffset;
+  octx.strokeRect(selection.x + 0.5, selection.y + 0.5, selection.width - 1, selection.height - 1);
+  octx.strokeStyle = "#000";
+  octx.lineDashOffset = -marchingAntsOffset + 6;
+  octx.strokeRect(selection.x + 0.5, selection.y + 0.5, selection.width - 1, selection.height - 1);
+  octx.restore();
+
+  // The selection size, in the SOURCE image's pixels rather than the canvas's.
+  const dims = getTransformedDimensions();
+  const scaleX = dims.width / canvas.width;
+  const scaleY = dims.height / canvas.height;
+  const actualWidth = Math.round(selection.width * scaleX);
+  const actualHeight = Math.round(selection.height * scaleY);
+  const fullLabel = `${actualWidth} × ${actualHeight}` + (isLocked ? " 🔒" : "");
+
+  // Mirror the selection onto the element, changed-only. Canvas pixels are not
+  // inspectable, so this is what makes the current rectangle readable for
+  // tools/crop-area.mjs and for anyone debugging -- the same way the sliders
+  // expose actualValue. It lives here rather than in the animation loop so it
+  // is written when the selection CHANGES, not only while an animation runs.
+  const selKey = `${Math.round(selection.x)},${Math.round(selection.y)},` +
+                 `${Math.round(selection.width)},${Math.round(selection.height)}`;
+  if (canvas.dataset.selection !== selKey) canvas.dataset.selection = selKey;
+
+  octx.font = "bold 13px system-ui, sans-serif";
+  // measureText is the one genuinely costly call left in the frame, and the
+  // label only changes when the selection does.
+  if (labelCache.text !== fullLabel) {
+    labelCache = { text: fullLabel, width: octx.measureText(fullLabel).width };
+  }
+
+  const labelPadding = 6;
+  const labelHeight = 20;
+  let labelX = selection.x + 4;
+  let labelY = selection.y + 4;
+  if (selection.height < 30) {
+    labelY = selection.y - labelHeight - 4;
+    if (labelY < 0) labelY = selection.y + selection.height + 4;
+  }
+
+  octx.fillStyle = "rgba(0, 0, 0, 0.75)";
+  octx.fillRect(labelX, labelY, labelCache.width + labelPadding * 2, labelHeight);
+  octx.fillStyle = "#fff";
+  octx.fillText(fullLabel, labelX + labelPadding, labelY + 15);
+}
+
+/**
+ * Advance the ants.
+ *
+ * The frame is now the overlay only. When there is no selection there is
+ * nothing to animate, so the frame clears the overlay once and then does no
+ * work at all until a selection appears -- rather than stopping the loop,
+ * which would need every one of the twenty-odd places that assign `selection`
+ * to remember to restart it, and a missed one leaves a stale rectangle painted
+ * over the image.
+ */
 function startMarchingAnts() {
   stopMarchingAnts();
-  
-  function animate() {
-    if (!canvas || !ctx || !originalImage) return;
-    
-    // Redraw canvas
-    ctx.save();
-    ctx.translate(canvas.width / 2, canvas.height / 2);
-    ctx.rotate((rotation * Math.PI) / 180);
-    
-    const isRotated90 = rotation === 90 || rotation === 270;
-    const drawWidth = isRotated90 ? canvas.height : canvas.width;
-    const drawHeight = isRotated90 ? canvas.width : canvas.height;
-    
-    ctx.drawImage(originalImage, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
-    ctx.restore();
-    
-    if (selection && selection.width > 0 && selection.height > 0) {
-      // Dim area outside selection
-      ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
-      ctx.fillRect(0, 0, canvas.width, selection.y);
-      ctx.fillRect(0, selection.y + selection.height, canvas.width, canvas.height - selection.y - selection.height);
-      ctx.fillRect(0, selection.y, selection.x, selection.height);
-      ctx.fillRect(selection.x + selection.width, selection.y, canvas.width - selection.x - selection.width, selection.height);
-      
-      // Marching ants border
-      ctx.save();
-      ctx.strokeStyle = "#fff";
-      ctx.lineWidth = 1;
-      ctx.setLineDash([6, 6]);
-      ctx.lineDashOffset = -marchingAntsOffset;
-      ctx.strokeRect(selection.x + 0.5, selection.y + 0.5, selection.width - 1, selection.height - 1);
-      
-      ctx.strokeStyle = "#000";
-      ctx.lineDashOffset = -marchingAntsOffset + 6;
-      ctx.strokeRect(selection.x + 0.5, selection.y + 0.5, selection.width - 1, selection.height - 1);
-      ctx.restore();
-      
-      // Show selection dimensions
-      const dims = getTransformedDimensions();
-      const scaleX = dims.width / canvas.width;
-      const scaleY = dims.height / canvas.height;
-      const actualWidth = Math.round(selection.width * scaleX);
-      const actualHeight = Math.round(selection.height * scaleY);
-      
-      const labelText = `${actualWidth} × ${actualHeight}`;
 
-      // Mirror the selection onto the element, changed-only. The size is drawn
-      // on the canvas where the user can see it, but canvas pixels are not
-      // inspectable — this makes the current rectangle readable for tests and
-      // for anyone debugging, the same way the sliders expose actualValue.
-      const selKey = `${Math.round(selection.x)},${Math.round(selection.y)},` +
-                     `${Math.round(selection.width)},${Math.round(selection.height)}`;
-      if (canvas.dataset.selection !== selKey) canvas.dataset.selection = selKey;
-      ctx.font = "bold 13px system-ui, sans-serif";
-      const textWidth = ctx.measureText(labelText).width;
-      const labelPadding = 6;
-      const labelHeight = 20;
-      
-      let labelX = selection.x + 4;
-      let labelY = selection.y + 4;
-      
-      if (selection.height < 30) {
-        labelY = selection.y - labelHeight - 4;
-        if (labelY < 0) labelY = selection.y + selection.height + 4;
-      }
-      
-      // Show lock indicator if locked
-      const lockIndicator = isLocked ? " 🔒" : "";
-      const fullLabel = labelText + lockIndicator;
-      const fullTextWidth = ctx.measureText(fullLabel).width;
-      
-      ctx.fillStyle = "rgba(0, 0, 0, 0.75)";
-      ctx.fillRect(labelX, labelY, fullTextWidth + labelPadding * 2, labelHeight);
-      ctx.fillStyle = "#fff";
-      ctx.fillText(fullLabel, labelX + labelPadding, labelY + 15);
+  function animate() {
+    if (!canvas || !ctx || !originalImage) { animationId = null; return; }
+
+    if (selection && selection.width > 0 && selection.height > 0) {
+      marchingAntsOffset = (marchingAntsOffset + 0.3) % 12;
+      drawOverlay();
+      overlayNeedsClear = true;
+    } else if (overlayNeedsClear) {
+      drawOverlay();            // clears, and drops the dataset mirror
+      overlayNeedsClear = false;
     }
-    
-    marchingAntsOffset = (marchingAntsOffset + 0.3) % 12;
+
     animationId = requestAnimationFrame(animate);
   }
-  
+
   animate();
 }
+
+/**
+ * A seam for tools/crop-frame-cost.mjs.
+ *
+ * openCropModal() downloads the file from Drive, so the canvas code cannot be
+ * reached in a harness without a signed-in account -- which is why the
+ * expensive animation loop went unmeasured for as long as it did. One grouped
+ * export rather than six, to keep the surface honest about being a test hook.
+ */
+export const __test = {
+  /** Mount an arbitrary drawable (an <img>, or a canvas standing in for a big photo). */
+  mount(image) {
+    canvas = el("cropCanvas");
+    ctx = canvas.getContext("2d");
+    overlay = el("cropOverlay");
+    octx = overlay ? overlay.getContext("2d") : null;
+    originalImage = image;
+    rotation = 0;
+    zoomLevel = 1;
+    selection = null;
+    redrawCanvas();
+  },
+  setSelection(s) { selection = s; },
+  get selection() { return selection; },
+  drawOverlay,
+  redrawCanvas,
+  startAnts: startMarchingAnts,
+  stopAnts: stopMarchingAnts,
+};
 
 function stopMarchingAnts() {
   if (animationId) {
     cancelAnimationFrame(animationId);
     animationId = null;
   }
+  overlayNeedsClear = false;
 }
 
 async function handleCropDelete() {
