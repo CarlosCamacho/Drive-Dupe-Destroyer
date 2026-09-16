@@ -74,6 +74,7 @@ const PRECACHE = [
   "./js/settings.js",
   "./js/telemetry.js",
   "./js/ui.js",
+  "./js/uiText.js",
   "./js/undo.js",
   "./js/unionfind.js",
   "./js/util.js",
