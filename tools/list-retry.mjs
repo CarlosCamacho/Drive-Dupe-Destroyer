@@ -77,6 +77,12 @@ const run = ({ folders, failAt = 0, failTimes = 1, failStatus = 503, retryAfter 
     // Real backoff would make this harness minutes long for no extra signal.
     drive.setDriveRetryBaseMs(1);
 
+    // Toasts outlive a run: the stack is one DOM node for the whole page, and
+    // this harness runs a dozen scans in it. Reading it without clearing first
+    // returned an EARLIER scan's toast, which is how the first version of the
+    // toast check "failed" against correct code.
+    document.getElementById('toastStack')?.replaceChildren();
+
     const rec = scan.makeRecordingReporter();
     scan.setScanReporter(rec.reporter);
 
@@ -143,11 +149,13 @@ const run = ({ folders, failAt = 0, failTimes = 1, failStatus = 503, retryAfter 
     window.fetch = realFetch;
     scan.setScanReporter(null);
     const statuses = rec.statuses();
+    const toastTexts = [...document.querySelectorAll('#toastStack .toastText')].map(t => t.textContent);
     const resumeMod = await import('/js/resume.js');
     const saved = await resumeMod.loadResumeState().catch(() => null);
     return {
       error, counts, stats: rec.lastStats(), statuses,
       lastStatus: statuses[statuses.length - 1] || '',
+      toasts: toastTexts,
       resume: saved ? {
         visited: saved.visitedFolderIds || [],
         pending: saved.pendingFolderIds || [],
@@ -321,6 +329,17 @@ const rate403 = await run({ folders: flat, failFolder: DENIED, failStatus: 403,
                             failBody: '{"error":{"message":"userRateLimitExceeded"}}' });
 ck(/could not be read/.test(rate403.lastStatus) && /scanning again/i.test(rate403.lastStatus),
    `#135 a rate-limit 403 is transient, not a permission problem: ${JSON.stringify(rate403.lastStatus)}`);
+
+// --- the toast must not contradict the status line beside it --------------
+// #135 split the wording into transient and permanent and MISSED the toasts,
+// which kept saying "could not be read ... try scanning again" while the
+// status line for the same scan said "could not be opened -- check its
+// sharing permissions". Two answers to one question, on screen at once.
+const deniedToast = await run({ folders: flat, failFolder: DENIED, failStatus: 403, failBody: PERM_403 });
+const permToast = (deniedToast.toasts || []).find(t => /incomplete/i.test(t)) || '';
+ck(!!permToast, `#135 (fixture) a permanent gap really does raise a toast (${JSON.stringify(permToast)})`);
+ck(/sharing permissions/.test(permToast) && !/scanning again/i.test(permToast),
+   `#135 and the toast agrees with the status line rather than contradicting it`);
 
 console.log(fails === 0 ? '\nALL CHECKS PASSED' : `\n${fails} CHECK(S) FAILED`);
 await b.close();
