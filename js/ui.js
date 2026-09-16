@@ -31,6 +31,21 @@ let rafId = 0;
 
 // Store a reference to the getSelectedCount function from render.js
 let getSelectedCountFn = null;
+let getRowCountFn = null;
+
+/**
+ * How many rows the result set HAS, which is not how many are painted.
+ *
+ * The table is virtualised, so `#resultsTbody tr` counts the visible window and
+ * two spacers. renderGroups() clears the tbody, then calls refreshActionButtons
+ * BEFORE the rAF that paints the first window -- so the DOM count was 0 exactly
+ * when the toolbar was being enabled, and nothing called it again afterwards.
+ * The selected count was moved off the DOM for this same reason; the row count
+ * was left behind (#113).
+ */
+export function setRowCountProvider(fn) {
+  getRowCountFn = fn;
+}
 
 export function setSelectedCountProvider(fn) {
   getSelectedCountFn = fn;
@@ -261,17 +276,26 @@ export function refreshActionButtons() {
     checkedCount = document.querySelectorAll('#resultsTbody input[type=checkbox]:checked').length;
   }
   
-  const rowCount = document.querySelectorAll('#resultsTbody tr:not(.virtualSpacer)').length;
+  const rowCount = getRowCountFn
+    ? getRowCountFn()
+    : document.querySelectorAll('#resultsTbody tr:not(.virtualSpacer)').length;
   
   const btnSelectAll = el("btnSelectAll");
   const btnSelectNone = el("btnSelectNone");
   const btnTrashNow = el("btnTrashNow");
+  const btnQueueSelected = el("btnQueueSelected");
   
   if (btnSelectAll) btnSelectAll.disabled = rowCount === 0;
   if (btnSelectNone) btnSelectNone.disabled = rowCount === 0;
   if (btnTrashNow) {
     btnTrashNow.disabled = checkedCount === 0;
     btnTrashNow.textContent = checkedCount > 0 ? `🗑️ Trash Selected (${checkedCount})` : '🗑️ Trash Selected';
+  }
+  // #113: the queue's bulk entry point. Tracks the same selection as Trash
+  // Selected, because the two are the same decision -- now versus later.
+  if (btnQueueSelected) {
+    btnQueueSelected.disabled = checkedCount === 0;
+    btnQueueSelected.textContent = checkedCount > 0 ? `📋 Queue Selected (${checkedCount})` : '📋 Queue Selected';
   }
 }
 

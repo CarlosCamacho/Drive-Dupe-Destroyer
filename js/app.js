@@ -17,10 +17,10 @@
 import { SIMILARITY_BITS } from "./common.js";
 import { confirmAction } from "./confirm.js";
 import { el, APP_VERSION } from "./util.js";
-import { uiInit, setSignedInUi, setStatus, showEmptyState, setScanningState, showToast, wireErrorModal, setSelectedCountProvider, lockBodyScroll } from "./ui.js";
+import { uiInit, setSignedInUi, setStatus, showEmptyState, setScanningState, showToast, wireErrorModal, setSelectedCountProvider, setRowCountProvider, lockBodyScroll } from "./ui.js";
 import { wireAuth } from "./auth.js";
 import { runScan, setupBackgroundDetection } from "./scan.js";
-import { renderGroups, wireRenderControls, getSelectedCount, beginProgressive, pushProgressiveMatch, endProgressive, mergeProgressivePaths } from "./render.js";
+import { renderGroups, wireRenderControls, getSelectedCount, getRowCount, beginProgressive, pushProgressiveMatch, endProgressive, mergeProgressivePaths } from "./render.js";
 import { wireCompare } from "./compare.js";
 import { wireCrop } from "./crop.js";
 import { wireFolderPicker, getIncludedFolderIds, getIncludedFolders, getExclusions } from "./folderPicker.js";
@@ -33,7 +33,7 @@ import { initPersistentSettings } from "./settings.js";
 import { toggleTelemetry } from "./telemetry.js";
 import { undoLastDelete, loadUndoStack } from "./undo.js";
 import { loadResumeState, clearResumeState, formatResumeDescription } from "./resume.js";
-import { wireQueue } from "./queue.js";
+import { wireQueue, renderQueue } from "./queue.js";
 import { dbClearImages, dbCountImages, dbExportImages, dbImportImages } from "./db.js";
 import { releaseAllThumbBlobs } from "./hashing.js";
 import { clearPathCaches } from "./paths.js";
@@ -638,6 +638,7 @@ async function init() {
   
   // Wire up the selected count provider so UI can get accurate count
   setSelectedCountProvider(getSelectedCount);
+  setRowCountProvider(getRowCount);
   
   wireAuth({ onSignedIn: async () => {} });
   wireFolderPicker();
@@ -649,6 +650,11 @@ async function init() {
   wireActions();
   wireExport();
   wireQueue();
+  // The queue survives a reload in IndexedDB, but the badge is markup that says
+  // 0 until something renders it -- and until #113 nothing could put anything in
+  // the queue, so nobody noticed. Render once at startup so the count is true
+  // before the modal is ever opened.
+  renderQueue().catch(() => {});
   
   wireSliders();
   wireMatchMode();

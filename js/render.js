@@ -24,6 +24,7 @@ import { setCropCallbacks } from "./crop.js";
 import { batchTrash, driveFilePreviewLink, driveFolderLink, downloadFileBlob, thumbLinkSized } from "./drive.js";
 import { chooseKeepIndex, distToPercent, bestDist, DEFAULT_KEEP_RULE, SIMILARITY_BITS } from "./common.js";
 import { pushUndoDeleteBatch, undoLastDelete } from "./undo.js";
+import { addToQueue } from "./queue.js";
 
 const ROW_HEIGHT = 58;
 const BUFFER_ROWS = 10;
@@ -88,6 +89,8 @@ const GROUP_COLORS = [
 
 export function selectedIds() { return Array.from(selected); }
 export function getSelectedCount() { return selected.size; }
+/** Rows in the current (filtered) result set — see setRowCountProvider in ui.js. */
+export function getRowCount() { return allRows.length; }
 export function getIdToFile() { return idToFile; }
 export function getCurrentGroups() { return currentState?.groups || []; }
 export function getPathMap() { return currentState?.pathMap || new Map(); }
@@ -244,6 +247,11 @@ function createRowElement(rowData, rowIndex) {
         : '')
     : '<button class="btnMiniIcon" data-action="pin-keep" title="Keep this one instead"><i class="fa-solid fa-thumbtack"></i></button>';
   const downloadBtn = '<button class="btnMiniIcon" data-action="download" title="Download this image"><i class="fa-solid fa-download"></i></button>';
+  // #113: the queue had no entry point at all -- addToQueue() was exported and
+  // called from nowhere, so the badge could never read anything but 0. Offered
+  // on every row for the same reason delete is: the KEEP file can be deleted
+  // too, and deferring that decision is exactly what the queue is for.
+  const queueBtn = '<button class="btnMiniIcon" data-action="queue" title="Add to the trash queue, to run later"><i class="fa-solid fa-list-check"></i></button>';
 
   tr.innerHTML = `
     <td class="cellCb">${isKeep
@@ -258,7 +266,7 @@ function createRowElement(rowData, rowIndex) {
     <td>${bytesToHuman(Number(file.size || 0))}</td>
     <td><span class="pill">${formatSimilarity(pctValue)}</span></td>
     <td class="cellGrp"><span class="groupBadge">${groupId}</span>${isFirstInGroup(rowData, rowIndex) ? makeSimilarityBadge(groupPct) : ""}</td>
-    <td class="cellActions">${keepBtn}${downloadBtn}${deleteBtn}</td>
+    <td class="cellActions">${keepBtn}${downloadBtn}${queueBtn}${deleteBtn}</td>
   `;
 
   return tr;
@@ -454,6 +462,12 @@ async function handleTableClick(e) {
       handleFilterChange();
       showToast(`Keeping "${file.name}" in this group`, "success", 1800);
     }
+    return;
+  }
+
+  if (target.matches('[data-action="queue"]') || target.closest('[data-action="queue"]')) {
+    e.stopPropagation();
+    await addToQueue(file);
     return;
   }
 
