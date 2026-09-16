@@ -97,6 +97,28 @@ function showClientIdModal() {
     
     input.value = currentClientId || '';
     if (errorEl) errorEl.textContent = '';
+
+    // The origin is the step that fails most, and the app is the only thing
+    // that knows the right value — so show it rather than describing it (#111).
+    const originEl = el("authOrigin");
+    if (originEl) originEl.textContent = location.origin;
+    const copyBtn = el("btnCopyOrigin");
+    if (copyBtn) {
+      copyBtn.onclick = async () => {
+        try {
+          await navigator.clipboard.writeText(location.origin);
+          copyBtn.textContent = "Copied";
+          setTimeout(() => { copyBtn.textContent = "Copy"; }, 1500);
+        } catch {
+          // Clipboard can be blocked; select it so the user can copy by hand.
+          const r = document.createRange();
+          r.selectNodeContents(originEl);
+          const sel = getSelection();
+          sel.removeAllRanges();
+          sel.addRange(r);
+        }
+      };
+    }
     
     modal.style.display = "flex";
     lockBodyScroll(true);

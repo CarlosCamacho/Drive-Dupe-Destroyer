@@ -23,7 +23,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <!-- Version shown here is a static fallback; ui.js rewrites the title and the
        #appVersion badge from APP_VERSION (js/util.js) on boot. -->
-  <title>Drive Dupe Destroyer (DDD) v14.7.11</title>
+  <title>Drive Dupe Destroyer (DDD) v14.7.12</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="noopener noreferrer" integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA==" crossorigin="anonymous" referrerpolicy="no-referrer" />
   <!-- Lineicons for the sidebar section headers (#60). No integrity hash: the
        CDN serves a rolling 5.0 build, so a pinned hash would break on their
@@ -64,7 +64,7 @@
     <!-- Header -->
     <header class="header">
       <div class="headerLeft">
-        <h1>Drive Dupe Destroyer <span class="muted" id="appVersion">v14.7.11</span></h1>
+        <h1>Drive Dupe Destroyer <span class="muted" id="appVersion">v14.7.12</span></h1>
         <p class="subtitle">Google Drive Similar Image Finder</p>
       </div>
       <div class="headerRight">
@@ -134,20 +134,20 @@
               <span id="pageSizeVal" class="sliderVal">500</span>
             </div>
             <div class="formRow">
-              <label>Min image size <span class="helpIcon" data-help="imgMinSize">?</span></label>
+              <label for="imgMinSize">Min image size <span class="helpIcon" data-help="imgMinSize">?</span></label>
               <div class="sizeInputGroup">
-                <input type="number" id="imgMinSize" value="50" min="0" step="1">
-                <select id="imgMinUnit">
+                <input type="number" id="imgMinSize" value="50" min="0" step="1" aria-label="Minimum image size, value">
+                <select id="imgMinUnit" aria-label="Minimum image size, unit">
                   <option value="KB" selected>KB</option>
                   <option value="MB">MB</option>
                 </select>
               </div>
             </div>
             <div class="formRow">
-              <label>Max image size <span class="helpIcon" data-help="imgMaxSize">?</span></label>
+              <label for="imgMaxSize">Max image size <span class="helpIcon" data-help="imgMaxSize">?</span></label>
               <div class="sizeInputGroup">
-                <input type="number" id="imgMaxSize" value="999" min="0" step="1">
-                <select id="imgMaxUnit">
+                <input type="number" id="imgMaxSize" value="999" min="0" step="1" aria-label="Maximum image size, value">
+                <select id="imgMaxUnit" aria-label="Maximum image size, unit">
                   <option value="KB">KB</option>
                   <option value="MB" selected>MB</option>
                 </select>
@@ -323,7 +323,7 @@
               <button type="button" id="btnDbClear" class="btnDanger btnSmall">🔄 Clear & Reload</button>
               <button type="button" id="btnDbExport" class="btnGhost btnSmall">Export</button>
               <button type="button" id="btnDbImport" class="btnGhost btnSmall">Import</button>
-              <input type="file" id="dbImportFile" accept=".json" style="display:none;">
+              <input type="file" id="dbImportFile" accept=".json" style="display:none;" aria-label="Choose a cache file to import">
             </div>
             <div class="hint cacheHint">
               <b>Tip:</b> Export cache after scanning large folders. Import on future sessions to avoid re-hashing.
@@ -338,7 +338,8 @@
         <div class="stickyTop">
           <!-- Scan Controls - Now at top -->
           <div class="scanControlsTop">
-            <button type="button" id="btnTelemetry" class="btn btn-sm" title="Show scan telemetry">⚡</button>
+            <button type="button" id="btnTelemetry" class="btn btn-sm" title="Show scan telemetry" aria-label="Show scan telemetry">⚡</button>
+            <button type="button" id="btnShortcuts" class="btn btn-sm" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">⌨</button>
           <button type="button" id="btnUndo" class="btn btn-sm" disabled title="Undo last delete">↩ Undo</button>
           <button type="button" id="btnScan" class="btnBlue btnScanMain" disabled>🔍 Start Scan</button>
             <button type="button" id="btnStop" class="btnDanger btnScanMain" style="display:none;">⏹ Stop Scan</button>
@@ -346,9 +347,9 @@
 
           <!-- Progress -->
           <div class="progressBar">
-            <progress id="progress" value="0" max="100"></progress>
+            <progress id="progress" value="0" max="100" aria-label="Scan progress" aria-valuetext="Not started"></progress>
             <div class="progressInfo">
-              <span id="phaseLine">Phase: —</span>
+              <span id="phaseLine" aria-hidden="true">Phase: —</span>
               <span id="etaLine" class="etaInfo" style="display:none;"></span>
             </div>
           </div>
@@ -361,7 +362,7 @@
               <span class="collecting-dot"></span>
               <span class="collecting-dot"></span>
             </span>
-            <span id="status">Ready. Sign in to start.</span>
+            <span id="status" role="status" aria-live="polite" aria-atomic="true">Ready. Sign in to start.</span>
             <span id="searchSummary" class="muted"></span>
             <button type="button" id="btnViewErrors" class="btnGhost btnSmall btnErrors" style="display:none;">View Errors</button>
           </div>
@@ -382,7 +383,7 @@
               <button type="button" id="btnSelectNone" class="btnGhost" disabled title="Clear the current selection">Clear selection</button>
             </div>
             <div class="toolbarRight">
-              <input type="search" id="resultSearch" class="resultSearch"
+              <input type="search" id="resultSearch" class="resultSearch" aria-label="Search results by file name or folder"
                      placeholder="Search name or folder…"
                      aria-label="Filter results by file name or folder path">
               <select id="filterMode" aria-label="Filter results by similarity">
@@ -419,9 +420,14 @@
           
           <!-- Empty State -->
           <div id="emptyState" class="emptyState">
-            <div class="emptyIcon">🖼️</div>
-            <h3>No duplicates found</h3>
-            <p>Select folders and start a scan to find similar images.</p>
+            <div class="emptyIcon" id="emptyIcon" aria-hidden="true">🖼️</div>
+            <h3 id="emptyTitle">Find duplicate photos in Google Drive</h3>
+            <p id="emptyBody">Sign in to get started.</p>
+            <ol id="emptySteps" class="emptySteps">
+              <li>Sign in with Google</li>
+              <li>Choose the folders to search</li>
+              <li>Start the scan</li>
+            </ol>
           </div>
         </div>
 
@@ -430,11 +436,9 @@
           <div class="bottomBarItem">
             <button type="button" id="btnExportCsv" class="btn btn-sm" title="Export as CSV spreadsheet">CSV</button>
                   <button type="button" id="btnExportJson" class="btnGhost">📥 Export Results</button><span class="helpIcon" data-help="exportResults">?</span>
-            <span class="helpIcon" data-help="exportResults">?</span>
           </div>
           <div class="bottomBarItem">
             <button type="button" id="btnQueueOpen" class="btnGhost">📋 Queue (<span id="queueCount">0</span>)</button><span class="helpIcon" data-help="queue">?</span>
-            <span class="helpIcon" data-help="queue">?</span>
           </div>
         </div>
         
@@ -446,10 +450,10 @@
 
   <!-- Auth Modal -->
   <!-- About Modal -->
-  <div id="aboutModal" class="modal" style="display:none;">
+  <div id="aboutModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="aboutModalTitle" style="display:none;">
     <div class="modalContent modalSmall">
       <div class="modalHeader">
-        <h2>About</h2>
+        <h2 id="aboutModalTitle">About</h2>
         <button type="button" id="aboutModalClose" class="btnClose" aria-label="Close">&#10005;</button>
       </div>
       <div class="modalBody aboutBody">
@@ -489,18 +493,45 @@
     </div>
   </div>
 
-  <div id="authModal" class="modal" style="display:none;">
+  <div id="authModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="authModalTitle" style="display:none;">
     <div class="modalContent modalSmall">
       <div class="modalHeader">
-        <h2>Sign In with Google</h2>
+        <h2 id="authModalTitle">Sign In with Google</h2>
         <button type="button" id="authModalCancel" class="btnClose" aria-label="Close">✕</button>
       </div>
       <div class="modalBody">
-        <p>Enter your Google OAuth Client ID to connect to Google Drive.</p>
-        <p class="hint">Create one at <a href="https://console.cloud.google.com/apis/credentials" rel="noopener noreferrer" target="_blank" rel="noopener">Google Cloud Console</a></p>
+        <p>
+          This app runs entirely in your browser, so it needs your own Google
+          OAuth Client ID to reach Drive. One-time setup — the ID stays on this
+          device and grants access to Drive only. You can revoke it at any time.
+        </p>
+
+        <ol class="setupSteps">
+          <li>
+            Open the
+            <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer">Google Cloud Console</a>
+            and create a project if you do not have one.
+          </li>
+          <li>Enable the <b>Google Drive API</b> for that project.</li>
+          <li>Configure the OAuth consent screen, and add your own Google account as a test user.</li>
+          <li>Create credentials → <b>OAuth client ID</b> → application type <b>Web application</b>.</li>
+          <li>
+            Under <b>Authorized JavaScript origins</b>, add this exact address:
+            <span class="originRow">
+              <code id="authOrigin">…</code>
+              <button type="button" id="btnCopyOrigin" class="btnGhost btnSmall">Copy</button>
+            </span>
+            <span class="muted">This is the step that most often goes wrong.</span>
+          </li>
+          <li>Copy the client ID it gives you and paste it below.</li>
+        </ol>
+
         <div class="formRow">
           <label for="authClientIdInput">OAuth Client ID</label>
-          <input type="text" id="authClientIdInput" autocomplete="off" spellcheck="false" placeholder="123456789.apps.googleusercontent.com" autocomplete="off">
+          <input type="text" id="authClientIdInput" autocomplete="off" spellcheck="false"
+                 placeholder="123456789-abc.apps.googleusercontent.com"
+                 aria-describedby="authClientIdHelp">
+          <span id="authClientIdHelp" class="muted">Ends with <code>.apps.googleusercontent.com</code></span>
         </div>
         <div id="authModalError" class="errorText"></div>
       </div>
@@ -511,20 +542,20 @@
   </div>
 
   <!-- Folder Picker Modal -->
-  <div id="folderModal" class="modal" style="display:none;">
+  <div id="folderModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="folderModalTitle" style="display:none;">
     <div class="modalContent modalLarge">
       <div class="modalHeader">
-        <h2>Select Folders</h2>
+        <h2 id="folderModalTitle">Select Folders</h2>
         <button type="button" id="btnFolderClose" class="btnClose" aria-label="Close">✕</button>
       </div>
       <div class="modalBody folderModalBody">
         <div class="folderNav">
           <button type="button" id="btnFolderUp" class="btnGhost">⬆️ Up</button>
-          <input type="text" id="folderCurrentName" readonly class="folderPath">
+          <input type="text" id="folderCurrentName" readonly class="folderPath" aria-label="Current folder">
         </div>
         <div class="folderCrumbs" id="folderCrumbs">My Drive</div>
         <div class="folderSearch">
-          <input type="text" id="folderSearch" placeholder="Search folders…" autocomplete="off">
+          <input type="text" id="folderSearch" placeholder="Search folders…" autocomplete="off" aria-label="Search folders">
         </div>
         <div id="folderList" class="folderList"></div>
         <div class="folderIncluded">
@@ -543,7 +574,7 @@
   </div>
 
   <!-- Compare Modal -->
-  <div id="compareModal" class="modal" style="display:none;">
+  <div id="compareModal" class="modal" role="dialog" aria-modal="true" aria-label="Compare duplicates" style="display:none;">
     <div class="modalContent modalCompare">
       <div class="modalHeader compareModalHeader">
         <button type="button" id="btnComparePrev" class="btnGhost btnCompareNav" style="display:none;">← Prev</button>
@@ -595,7 +626,7 @@
   </div>
 
   <!-- Crop Modal -->
-  <div id="cropModal" class="modal" style="display:none;">
+  <div id="cropModal" class="modal" role="dialog" aria-modal="true" aria-label="Crop image" style="display:none;">
     <div class="modalContent modalCrop">
       <div class="modalHeader cropModalHeader">
         <button type="button" id="btnCropPrev" class="btnGhost btnCompareNav" style="display:none;">← Prev</button>
@@ -620,9 +651,9 @@
         </div>
         <div class="fixedSizeGroup">
           <button type="button" id="btnCropLock" class="btnLock" title="Lock selection size (L)"><i class="fa-solid fa-lock-open"></i></button>
-          <input type="number" id="cropFixedWidth" class="fixedSizeInput" placeholder="W" min="10" max="10000" value="800" title="Fixed width (px)">
+          <input type="number" id="cropFixedWidth" class="fixedSizeInput" placeholder="W" min="10" max="10000" value="800" title="Fixed width (px)" aria-label="Fixed crop width in pixels">
           <span class="fixedSizeSeparator">×</span>
-          <input type="number" id="cropFixedHeight" class="fixedSizeInput" placeholder="H" min="10" max="10000" value="600" title="Fixed height (px)">
+          <input type="number" id="cropFixedHeight" class="fixedSizeInput" placeholder="H" min="10" max="10000" value="600" title="Fixed height (px)" aria-label="Fixed crop height in pixels">
           <span class="fixedSizeLabel">px</span>
         </div>
         <label class="cropReuseGroup" title="Keep the selected area and apply it to the next image you crop">
@@ -655,10 +686,10 @@
   </div>
 
   <!-- Error Viewer Modal -->
-  <div id="errorModal" class="modal" style="display:none;">
+  <div id="errorModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="errorModalTitle" style="display:none;">
     <div class="modalContent modalErrors">
       <div class="modalHeader">
-        <h2>Hashing Errors</h2>
+        <h2 id="errorModalTitle">Hashing Errors</h2>
         <button type="button" id="btnErrorClose" class="btnClose" aria-label="Close">✕</button>
       </div>
       <div class="modalBody">
@@ -671,11 +702,52 @@
     </div>
   </div>
 
+  <!-- Keyboard Shortcuts -->
+  <div id="shortcutsModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="shortcutsModalTitle" style="display:none;">
+    <div class="modalContent modalSmall">
+      <div class="modalHeader">
+        <h2 id="shortcutsModalTitle">Keyboard shortcuts</h2>
+        <button type="button" id="btnShortcutsClose" class="btnClose" aria-label="Close">✕</button>
+      </div>
+      <div class="modalBody">
+        <h3 class="shortcutGroup">Results</h3>
+        <dl class="shortcutList">
+          <dt><kbd>Space</kbd></dt><dd>Select or deselect the focused row</dd>
+          <dt><kbd>D</kbd></dt><dd>Move the focused file to Trash</dd>
+          <dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Move between rows</dd>
+          <dt><kbd>Home</kbd> <kbd>End</kbd></dt><dd>First or last row</dd>
+          <dt><kbd>Ctrl</kbd>+<kbd>A</kbd></dt><dd>Select every duplicate</dd>
+          <dt><kbd>Ctrl</kbd>+<kbd>Z</kbd></dt><dd>Undo the last delete</dd>
+          <dt><kbd>Esc</kbd></dt><dd>Clear the selection</dd>
+        </dl>
+        <h3 class="shortcutGroup">Compare</h3>
+        <dl class="shortcutList">
+          <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Previous or next pair</dd>
+          <dt><kbd>1</kbd></dt><dd>Delete the left image</dd>
+          <dt><kbd>2</kbd></dt><dd>Delete the right image</dd>
+          <dt><kbd>3</kbd></dt><dd>Delete both</dd>
+          <dt><kbd>4</kbd></dt><dd>Not a duplicate — stop offering this pair</dd>
+          <dt><kbd>Esc</kbd></dt><dd>Close compare</dd>
+        </dl>
+        <h3 class="shortcutGroup">Crop</h3>
+        <dl class="shortcutList">
+          <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Previous or next image</dd>
+          <dt><kbd>Enter</kbd></dt><dd>Apply the crop</dd>
+          <dt><kbd>R</kbd></dt><dd>Rotate</dd>
+          <dt><kbd>L</kbd></dt><dd>Lock the selection size</dd>
+          <dt><kbd>D</kbd></dt><dd>Move this file to Trash</dd>
+          <dt><kbd>Esc</kbd></dt><dd>Close crop</dd>
+        </dl>
+        <p class="muted">Press <kbd>?</kbd> at any time to open this panel.</p>
+      </div>
+    </div>
+  </div>
+
   <!-- Queue Modal -->
-  <div id="queueModal" class="modal" style="display:none;">
+  <div id="queueModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="queueModalTitle" style="display:none;">
     <div class="modalContent">
       <div class="modalHeader">
-        <h2>Trash Queue</h2>
+        <h2 id="queueModalTitle">Trash Queue</h2>
         <button type="button" id="btnQueueClose" class="btnClose" aria-label="Close">✕</button>
       </div>
       <div class="modalBody">

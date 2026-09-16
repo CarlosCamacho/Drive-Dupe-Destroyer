@@ -16,7 +16,7 @@
 
 import { el, nowMs, humanDuration, CONFIG } from "./util.js";
 import { validateFolderId, sanitizeText } from "./security.js";
-import { setStatus, setPhase, setProgress, showSpinner, updateStats, setSearchSummary, showEmptyState, setScanningState, showToast, setHashingErrors, updateEta, resetEta, showCollectingSpinner } from "./ui.js";
+import { setStatus, setPhase, setProgress, showSpinner, updateStats, setSearchSummary, showEmptyState, setScanningState, showToast, setHashingErrors, updateEta, resetEta, showCollectingSpinner, setEmptyState } from "./ui.js";
 import { driveFetch, fetchChangesSince, getChangesStartToken, isFolderMime } from "./drive.js";
 
 import { ensureValidToken } from "./auth.js";
@@ -1005,6 +1005,7 @@ export async function runScan({
     }
 
     if (images.length === 0) {
+      setEmptyState("none-found", "No images matched your folder and file-type settings.");
       showEmptyState(true);
       setStatus("No images found.");
       setPhase("Complete");
