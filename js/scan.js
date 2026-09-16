@@ -84,6 +84,8 @@ export function makeRecordingReporter() {
   };
 }
 import { driveFetch, fetchChangesSince, getChangesStartToken, isFolderMime } from "./drive.js";
+import { coverageWarning } from "./uiText.js";
+import { isRetryableError } from "./errors.js";
 
 import { ensureValidToken } from "./auth.js";
 import { dbGetImagesBatch, dbPutImagesBatch, recordFoldersScan, dbCountImages, getChangesToken, setChangesToken, isQuotaError, onQuotaExceeded, pathCachePrune } from "./db.js";
@@ -91,7 +93,7 @@ import { computeHashesForFiles, getHashingStats, HASH_VERSION, HASH_CONCURRENCY 
 import { runMatching, packEntries } from "./matcher.js";
 import { saveResumeState, clearResumeState } from "./resume.js";
 import {
-  enumerationScopeKey, loadFileList, saveFileList, applyChangesToList,
+  enumerationScopeKey, loadFileList, saveFileList, clearFileList, applyChangesToList,
 } from "./fileListCache.js";
 import { getRejectionStats, preloadRejections, getRejectionKeys } from "./rejection.js";
 import { updateTelemetry } from "./telemetry.js";
@@ -270,6 +272,15 @@ async function listFolderLevel(folderId, pageSize, signal) {
  * API calls, against 60 MB of writes avoided -- and the marginal value of a
  * checkpoint falls as the list grows while its cost rises linearly.
  */
+/** Split the unreadable folders into the two kinds the user is told apart. */
+function coverageCounts(unreadable) {
+  const list = unreadable || [];
+  return {
+    transient: list.filter((u) => !u.permanent).length,
+    permanent: list.filter((u) => u.permanent).length,
+  };
+}
+
 export function checkpointInterval(filesSoFar) {
   return 25 * Math.max(1, Math.ceil((filesSoFar || 0) / 5000));
 }
@@ -294,6 +305,10 @@ async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSi
   const queue = resume?.pendingFolderIds?.length ? [...resume.pendingFolderIds] : [...folderIds];
   let foldersScanned = 0;
   let totalSubfoldersFound = 0;
+  // Folders that could not be listed even after driveFetch's retries (#132).
+  // These used to go to console.warn and nowhere else, so a scan missing an
+  // entire subtree still reported "Done".
+  const unreadable = [];
   let lastTokenCheck = Date.now();
   let lastStatusUpdate = Date.now();
   const TOKEN_CHECK_INTERVAL = 5 * 60 * 1000;
@@ -305,7 +320,6 @@ async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSi
     const folderId = queue.shift();
     if (visited.has(folderId)) continue;
     visited.add(folderId);
-    walked.add(folderId);
     foldersScanned++;
 
     if (Date.now() - lastTokenCheck > TOKEN_CHECK_INTERVAL) {
@@ -325,6 +339,11 @@ async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSi
 
     try {
       const { images, subfolders } = await listFolderContents(folderId, pageSize, signal);
+      // Only now. `walked` means "folders we actually listed" -- the delta scan
+      // reads it to decide whether a changed file is inside the selection, and
+      // marking a folder before the request meant a folder we could NOT read
+      // counted as covered (#134).
+      walked.add(folderId);
 
       for (const img of images) {
         if (maxItems > 0 && allFiles.length >= maxItems) break;
@@ -340,10 +359,26 @@ async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSi
       // of collection (as before) was useless: a crash during the long phase
       // had nothing to resume from.
       if (onCheckpoint && foldersScanned % checkpointInterval(allFiles.length) === 0) {
-        onCheckpoint({ files: allFiles, visitedFolderIds: Array.from(walked), pendingFolderIds: [...queue] });
+        onCheckpoint({
+          files: allFiles,
+          visitedFolderIds: Array.from(walked),
+          // A folder we could not read belongs on the frontier, not behind it.
+          // Resuming exists to retry what was interrupted, and these are
+          // precisely the folders that need retrying (#134).
+          pendingFolderIds: [...queue, ...unreadable.map((u) => u.folderId)],
+        });
       }
     } catch (e) {
       if (signal?.aborted || e.message === "Scan stopped.") throw e;
+      // A folder we cannot read is missing coverage, not a folder with no
+      // images, and the difference is invisible in the results. Record it so
+      // the scan can say what it did not see.
+      // Permanent vs transient decides both the wording and whether the
+      // enumeration may be cached (#135). A failure driveFetch would have
+      // retried and still lost is transient; anything it refused to retry --
+      // a 403 on permissions, a 404 -- will fail identically forever.
+      unreadable.push({ folderId, message: e?.message || String(e), status: e?.status ?? null,
+                        permanent: !isRetryableError(e) });
       console.warn(`Error scanning folder ${folderId}:`, e.message);
     }
   }
@@ -353,11 +388,12 @@ async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSi
   // `walked`, not `visited`: only folders we actually listed. The delta scan
   // uses this to decide whether a changed file lies inside the user's selection,
   // and the resume state uses it to describe what was covered.
-  return { files: allFiles, visitedFolderIds: walked };
+  return { files: allFiles, visitedFolderIds: walked, unreadable };
 }
 
 async function fetchAllImagesFlat({ folderIds, exclusions, maxItems, pageSize, signal, onStatus }) {
   const allFiles = [];
+  const unreadable = [];
   let foldersDone = 0;
 
   // exclusions may arrive as a Set (from getExclusions) or an array. Normalize
@@ -381,11 +417,23 @@ async function fetchAllImagesFlat({ folderIds, exclusions, maxItems, pageSize, s
       }
     } catch (e) {
       if (signal?.aborted || e.message === "Scan stopped.") throw e;
+      unreadable.push({ folderId: fid, message: e?.message || String(e), status: e?.status ?? null,
+                        permanent: !isRetryableError(e) });
       console.warn(`Error scanning folder ${fid}:`, e.message);
     }
   }
 
-  return { files: allFiles, visitedFolderIds: new Set(folderIds.filter(id => !excludedSet.has(id))) };
+  // Only the folders actually listed (#134). This used to return every selected
+  // folder whether or not it could be read, which is the same defect as the
+  // recursive walk's early walked.add in a different shape.
+  const unreadableIds = new Set(unreadable.map((u) => u.folderId));
+  return {
+    files: allFiles,
+    visitedFolderIds: new Set(
+      folderIds.filter(id => !excludedSet.has(id) && !unreadableIds.has(id))
+    ),
+    unreadable,
+  };
 }
 
 // ============================================================================
@@ -917,7 +965,7 @@ export async function runScan({
       ? await loadFileList(scopeKey)
       : null;
 
-    let allItems, visitedFolderIds, reusedCache = false;
+    let allItems, visitedFolderIds, reusedCache = false, unreadableFolders = [];
 
     if (cached) {
       allItems = cached.files;
@@ -954,6 +1002,7 @@ export async function runScan({
     });
     allItems = collected.files;
     visitedFolderIds = collected.visitedFolderIds;
+    unreadableFolders = collected.unreadable || [];
     }
     
     if (signal?.aborted) throw new Error("Scan stopped.");
@@ -1124,14 +1173,36 @@ export async function runScan({
     // learn what moved since, and a cached list with no way to update it is
     // just a stale list. Fire-and-forget -- a failed write costs one repeated
     // enumeration, which is exactly what happened before this existed.
-    if (useChangesApi && !quickScan && allItems.length > 0) {
+    // Never cache an enumeration we know is incomplete (#134). A short list
+    // here is reused for MAX_AGE_MS -- seven days -- with the enumeration
+    // skipped entirely, which turns one loud failed scan into a silent week of
+    // them: the warning appears once and the missing files never come back,
+    // however many times the user re-scans.
+    // Only a TRANSIENT gap blocks the cache (#135). A folder this account
+    // cannot open will fail identically on every future scan, so refusing to
+    // cache over it disables the incremental scan permanently and re-warns
+    // forever about something the user has already been told and cannot fix
+    // from here. That enumeration is as complete as it can ever be.
+    const transientGap = unreadableFolders.some((u) => !u.permanent);
+    if (useChangesApi && !quickScan && allItems.length > 0 && !transientGap) {
       saveFileList({ scope: scopeKey, files: allItems, visitedFolderIds }).catch(() => {});
+    } else if (transientGap) {
+      // And drop any cache from an earlier run, so the next scan re-enumerates
+      // instead of reusing a list this one has just shown to be unreliable.
+      clearFileList().catch(() => {});
     }
 
     if (images.length === 0) {
-      report.emptyState("none-found", "No images matched your folder and file-type settings.");
+      // "No images" and "we could not look" are different answers, and before
+      // #132 they were reported identically -- a 503 on one branch folder made
+      // the app state, flatly, that the Drive contained no images.
+      const gap = coverageWarning(coverageCounts(unreadableFolders));
+      report.emptyState("none-found", gap
+        ? `No images were found, but${gap.replace(/^ /, " ")}`
+        : "No images matched your folder and file-type settings.");
       report.showEmpty(true);
-      report.status("No images found.");
+      report.status("No images found." + gap);
+      if (gap) showToast(`Scan incomplete: ${unreadableFolders.length} folder(s) could not be read.`, "error");
       report.phase("Complete");
       report.spinner(false);
       report.scanning(false);
@@ -1169,7 +1240,14 @@ export async function runScan({
       
       report.spinner(false);
       report.scanning(false);
-      report.status(`Done. ${groups.length} exact duplicate group(s) found.`);
+      report.status(`Done. ${groups.length} exact duplicate group(s) found.`
+        + coverageWarning(coverageCounts(unreadableFolders)));
+      if (unreadableFolders.length > 0) {
+        showToast(
+          `${unreadableFolders.length} folder(s) could not be read. Results may be incomplete — try scanning again.`,
+          "error",
+        );
+      }
       report.phase("Complete");
       report.progress(100);
       return;
@@ -1375,6 +1453,17 @@ export async function runScan({
     if (hashingFailed > 0) {
       statusMsg += ` (${hashingFailed} file(s) could not be hashed)`;
       showToast(`Scan complete with ${hashingFailed} errors.`, "info", 5000);
+    }
+    // Missing coverage is not a footnote to a completed scan; it means the
+    // results were computed over less than the user selected, and a keeper may
+    // have been chosen from an incomplete group (#132).
+    const coverageGap = coverageWarning(coverageCounts(unreadableFolders));
+    if (coverageGap) {
+      statusMsg += coverageGap;
+      showToast(
+        `${unreadableFolders.length} folder(s) could not be read. Results may be incomplete — try scanning again.`,
+        "error",
+      );
     }
     report.status(statusMsg);
 

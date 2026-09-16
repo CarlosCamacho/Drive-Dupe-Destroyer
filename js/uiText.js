@@ -220,6 +220,39 @@ export function trashedToastMessage(count) {
 }
 
 /**
+ * What to append when a scan could not read every folder (#132, #135).
+ *
+ * A scan that skipped part of the Drive is not a complete scan, and the
+ * difference is invisible in the results: a folder we could not list looks
+ * exactly like a folder with no images in it.
+ *
+ * Two kinds, because they ask the user for different things:
+ *
+ *   transient  retries were exhausted on a 429/5xx/network failure. Scanning
+ *              again will probably work, so say so.
+ *   permanent  a 403 or 404 -- the folder is not readable by this account and
+ *              never will be. Telling someone to try again is advice that
+ *              cannot work, and repeating it on every scan is noise they can
+ *              do nothing about.
+ */
+export function coverageWarning({ transient = 0, permanent = 0 } = {}) {
+  const t = Math.max(0, Number(transient) || 0);
+  const p = Math.max(0, Number(permanent) || 0);
+  const parts = [];
+  if (t > 0) {
+    parts.push(t === 1
+      ? "1 folder could not be read, so this scan does not cover everything — scanning again should pick it up."
+      : `${t.toLocaleString()} folders could not be read, so this scan does not cover everything — scanning again should pick them up.`);
+  }
+  if (p > 0) {
+    parts.push(p === 1
+      ? "1 folder could not be opened, so it was not included — check its sharing permissions."
+      : `${p.toLocaleString()} folders could not be opened, so they were not included — check their sharing permissions.`);
+  }
+  return parts.length ? " " + parts.join(" ") : "";
+}
+
+/**
  * The ETA, and whether there is one worth showing.
  *
  * Three ways there is not: too early to extrapolate from, too little elapsed
