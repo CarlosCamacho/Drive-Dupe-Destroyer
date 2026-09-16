@@ -16,6 +16,22 @@
 import { authedFetch, ensureValidToken } from "./auth.js";
 import { sanitizeText } from "./security.js";
 import { isSupportedImageFile } from "./formats.js";
+import { isRetryableError, retryDelayMs, parseRetryAfter } from "./errors.js";
+import { sleep } from "./util.js";
+
+/**
+ * How many times driveFetch tries a request that failed transiently (#132).
+ *
+ * Exported so tests can shorten it; three attempts is the same budget
+ * hashing.js gives a download, and the two paths had no business differing.
+ */
+export const DRIVE_MAX_ATTEMPTS = 3;
+let driveRetryBaseMs = 500;
+
+/** Test seam: the harness cannot wait out real backoff on every injected 503. */
+export function setDriveRetryBaseMs(ms) {
+  driveRetryBaseMs = Math.max(0, Number(ms) || 0);
+}
 
 export function isFolderMime(m) {
   return m === "application/vnd.google-apps.folder";
@@ -79,25 +95,63 @@ export async function driveFetch(path, { method = "GET", params = {}, body = nul
     }
   }
 
-  const res = await authedFetch(url.toString(), {
-    method,
-    headers: body ? { "Content-Type": "application/json" } : {},
-    body: body ? JSON.stringify(body) : null,
-    signal
-  });
+  // Retry the transient failures (#132). Enumeration is one request per folder
+  // per page -- hundreds of them on a real library -- and before this a single
+  // 503 among them dropped that folder's whole subtree from the scan while the
+  // UI still reported "Done". Downloads have retried since v12; only the
+  // metadata path never did.
+  //
+  // Every request routed through here is a GET or a PATCH {trashed:true}, both
+  // idempotent, so a replay cannot apply anything twice.
+  let lastError = null;
+  for (let attempt = 1; attempt <= DRIVE_MAX_ATTEMPTS; attempt++) {
+    let res;
+    try {
+      res = await authedFetch(url.toString(), {
+        method,
+        headers: body ? { "Content-Type": "application/json" } : {},
+        body: body ? JSON.stringify(body) : null,
+        signal
+      });
+    } catch (e) {
+      // authedFetch THROWS on a transport failure rather than returning a
+      // response, so a dropped connection never reached the status branch
+      // below. That is the single most likely failure on a long enumeration
+      // over a flaky link, and the first version of this loop missed it.
+      if (e?.name === "AbortError") throw e;
+      lastError = e;
+      if (attempt >= DRIVE_MAX_ATTEMPTS || !isRetryableError(e) || signal?.aborted) throw e;
+      await sleep(retryDelayMs(attempt, { baseMs: driveRetryBaseMs }));
+      continue;
+    }
 
-  if (!res.ok) {
+    if (res.ok) return res.status === 204 ? null : res.json();
+
     const text = await res.text().catch(() => "");
     // Attach the real status rather than leaving callers to regex the message.
     // scan.js used to classify failures with e.message.includes("403") etc.,
     // which matches any 403 appearing anywhere in a Drive error body.
-    throw Object.assign(
+    lastError = Object.assign(
       new Error(`Drive API error ${res.status}: ${sanitizeText(text.slice(0, 200))}`),
-      { status: res.status, code: "DRIVE_API" }
+      {
+        status: res.status,
+        code: "DRIVE_API",
+        retryAfterSeconds: parseRetryAfter(res.headers?.get?.("Retry-After")),
+      }
     );
+
+    if (attempt >= DRIVE_MAX_ATTEMPTS || !isRetryableError(lastError)) break;
+    if (signal?.aborted) break;
+
+    const wait = retryDelayMs(attempt, {
+      baseMs: driveRetryBaseMs,
+      retryAfterSeconds: lastError.retryAfterSeconds,
+    });
+    console.warn(`[Drive] ${res.status} on ${path}; retrying in ${wait}ms (attempt ${attempt}/${DRIVE_MAX_ATTEMPTS})`);
+    await sleep(wait);
   }
 
-  return res.status === 204 ? null : res.json();
+  throw lastError;
 }
 
 // Whether Google's thumbnail CDN will serve us a readable blob.
