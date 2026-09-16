@@ -220,6 +220,23 @@ export function trashedToastMessage(count) {
 }
 
 /**
+ * What to append when a scan could not read every folder (#132).
+ *
+ * A scan that skipped part of the Drive is not a complete scan, and the
+ * difference is invisible in the results: a folder we could not list looks
+ * exactly like a folder with no images in it. Saying so is the whole point --
+ * "Done." over a subtree that was never read is the defect this exists to
+ * prevent.
+ */
+export function unreadableFoldersText(count) {
+  const n = Number(count) || 0;
+  if (n <= 0) return "";
+  return n === 1
+    ? " 1 folder could not be read, so this scan does not cover everything."
+    : ` ${n.toLocaleString()} folders could not be read, so this scan does not cover everything.`;
+}
+
+/**
  * The ETA, and whether there is one worth showing.
  *
  * Three ways there is not: too early to extrapolate from, too little elapsed

@@ -84,6 +84,7 @@ export function makeRecordingReporter() {
   };
 }
 import { driveFetch, fetchChangesSince, getChangesStartToken, isFolderMime } from "./drive.js";
+import { unreadableFoldersText } from "./uiText.js";
 
 import { ensureValidToken } from "./auth.js";
 import { dbGetImagesBatch, dbPutImagesBatch, recordFoldersScan, dbCountImages, getChangesToken, setChangesToken, isQuotaError, onQuotaExceeded, pathCachePrune } from "./db.js";
@@ -294,6 +295,10 @@ async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSi
   const queue = resume?.pendingFolderIds?.length ? [...resume.pendingFolderIds] : [...folderIds];
   let foldersScanned = 0;
   let totalSubfoldersFound = 0;
+  // Folders that could not be listed even after driveFetch's retries (#132).
+  // These used to go to console.warn and nowhere else, so a scan missing an
+  // entire subtree still reported "Done".
+  const unreadable = [];
   let lastTokenCheck = Date.now();
   let lastStatusUpdate = Date.now();
   const TOKEN_CHECK_INTERVAL = 5 * 60 * 1000;
@@ -344,6 +349,10 @@ async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSi
       }
     } catch (e) {
       if (signal?.aborted || e.message === "Scan stopped.") throw e;
+      // A folder we cannot read is missing coverage, not a folder with no
+      // images, and the difference is invisible in the results. Record it so
+      // the scan can say what it did not see.
+      unreadable.push({ folderId, message: e?.message || String(e), status: e?.status ?? null });
       console.warn(`Error scanning folder ${folderId}:`, e.message);
     }
   }
@@ -353,11 +362,12 @@ async function fetchAllImagesRecursive({ folderIds, exclusions, maxItems, pageSi
   // `walked`, not `visited`: only folders we actually listed. The delta scan
   // uses this to decide whether a changed file lies inside the user's selection,
   // and the resume state uses it to describe what was covered.
-  return { files: allFiles, visitedFolderIds: walked };
+  return { files: allFiles, visitedFolderIds: walked, unreadable };
 }
 
 async function fetchAllImagesFlat({ folderIds, exclusions, maxItems, pageSize, signal, onStatus }) {
   const allFiles = [];
+  const unreadable = [];
   let foldersDone = 0;
 
   // exclusions may arrive as a Set (from getExclusions) or an array. Normalize
@@ -381,11 +391,16 @@ async function fetchAllImagesFlat({ folderIds, exclusions, maxItems, pageSize, s
       }
     } catch (e) {
       if (signal?.aborted || e.message === "Scan stopped.") throw e;
+      unreadable.push({ folderId: fid, message: e?.message || String(e), status: e?.status ?? null });
       console.warn(`Error scanning folder ${fid}:`, e.message);
     }
   }
 
-  return { files: allFiles, visitedFolderIds: new Set(folderIds.filter(id => !excludedSet.has(id))) };
+  return {
+    files: allFiles,
+    visitedFolderIds: new Set(folderIds.filter(id => !excludedSet.has(id))),
+    unreadable,
+  };
 }
 
 // ============================================================================
@@ -917,7 +932,7 @@ export async function runScan({
       ? await loadFileList(scopeKey)
       : null;
 
-    let allItems, visitedFolderIds, reusedCache = false;
+    let allItems, visitedFolderIds, reusedCache = false, unreadableFolders = [];
 
     if (cached) {
       allItems = cached.files;
@@ -954,6 +969,7 @@ export async function runScan({
     });
     allItems = collected.files;
     visitedFolderIds = collected.visitedFolderIds;
+    unreadableFolders = collected.unreadable || [];
     }
     
     if (signal?.aborted) throw new Error("Scan stopped.");
@@ -1129,9 +1145,16 @@ export async function runScan({
     }
 
     if (images.length === 0) {
-      report.emptyState("none-found", "No images matched your folder and file-type settings.");
+      // "No images" and "we could not look" are different answers, and before
+      // #132 they were reported identically -- a 503 on one branch folder made
+      // the app state, flatly, that the Drive contained no images.
+      const gap = unreadableFoldersText(unreadableFolders.length);
+      report.emptyState("none-found", gap
+        ? `No images were found, but${gap.replace(/^ /, " ")}`
+        : "No images matched your folder and file-type settings.");
       report.showEmpty(true);
-      report.status("No images found.");
+      report.status("No images found." + gap);
+      if (gap) showToast(`Scan incomplete: ${unreadableFolders.length} folder(s) could not be read.`, "error");
       report.phase("Complete");
       report.spinner(false);
       report.scanning(false);
@@ -1169,7 +1192,14 @@ export async function runScan({
       
       report.spinner(false);
       report.scanning(false);
-      report.status(`Done. ${groups.length} exact duplicate group(s) found.`);
+      report.status(`Done. ${groups.length} exact duplicate group(s) found.`
+        + unreadableFoldersText(unreadableFolders.length));
+      if (unreadableFolders.length > 0) {
+        showToast(
+          `${unreadableFolders.length} folder(s) could not be read. Results may be incomplete — try scanning again.`,
+          "error",
+        );
+      }
       report.phase("Complete");
       report.progress(100);
       return;
@@ -1375,6 +1405,17 @@ export async function runScan({
     if (hashingFailed > 0) {
       statusMsg += ` (${hashingFailed} file(s) could not be hashed)`;
       showToast(`Scan complete with ${hashingFailed} errors.`, "info", 5000);
+    }
+    // Missing coverage is not a footnote to a completed scan; it means the
+    // results were computed over less than the user selected, and a keeper may
+    // have been chosen from an incomplete group (#132).
+    const coverageGap = unreadableFoldersText(unreadableFolders.length);
+    if (coverageGap) {
+      statusMsg += coverageGap;
+      showToast(
+        `${unreadableFolders.length} folder(s) could not be read. Results may be incomplete — try scanning again.`,
+        "error",
+      );
     }
     report.status(statusMsg);
 
