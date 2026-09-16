@@ -45,6 +45,7 @@ const PRECACHE = [
   "./js/app.js",
   "./js/auth.js",
   "./js/compare.js",
+  "./js/compareNav.js",
   "./js/confirm.js",
   "./js/crop.js",
   "./js/cropGeometry.js",
