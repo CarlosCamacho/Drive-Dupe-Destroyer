@@ -1173,12 +1173,13 @@ export async function runScan({
     // learn what moved since, and a cached list with no way to update it is
     // just a stale list. Fire-and-forget -- a failed write costs one repeated
     // enumeration, which is exactly what happened before this existed.
-    // Never cache an enumeration we know is incomplete (#134). A short list
-    // here is reused for MAX_AGE_MS -- seven days -- with the enumeration
+    // Never cache an enumeration that is RECOVERABLY short (#134, #135). Such
+    // a list is reused for MAX_AGE_MS -- seven days -- with the enumeration
     // skipped entirely, which turns one loud failed scan into a silent week of
     // them: the warning appears once and the missing files never come back,
     // however many times the user re-scans.
-    // Only a TRANSIENT gap blocks the cache (#135). A folder this account
+    //
+    // Only a TRANSIENT gap counts. A folder this account
     // cannot open will fail identically on every future scan, so refusing to
     // cache over it disables the incremental scan permanently and re-warns
     // forever about something the user has already been told and cannot fix
@@ -1196,13 +1197,21 @@ export async function runScan({
       // "No images" and "we could not look" are different answers, and before
       // #132 they were reported identically -- a 503 on one branch folder made
       // the app state, flatly, that the Drive contained no images.
+      // coverageWarning already returns its text with a leading space, which
+      // is what "but" needs after it. An earlier version stripped that space
+      // with .replace(/^ /, " ") -- replacing a space WITH a space, a no-op
+      // that CodeQL was right to flag even though the output was correct.
       const gap = coverageWarning(coverageCounts(unreadableFolders));
       report.emptyState("none-found", gap
-        ? `No images were found, but${gap.replace(/^ /, " ")}`
+        ? `No images were found, but${gap}`
         : "No images matched your folder and file-type settings.");
       report.showEmpty(true);
       report.status("No images found." + gap);
-      if (gap) showToast(`Scan incomplete: ${unreadableFolders.length} folder(s) could not be read.`, "error");
+      // One wording, not two. This toast used to say "could not be read" and
+      // "Scan incomplete" for every gap, including a permission failure the
+      // status line beside it was calling "could not be opened -- check its
+      // sharing permissions". #135 split the wording and missed the toast.
+      if (gap) showToast("Scan incomplete." + gap, "error");
       report.phase("Complete");
       report.spinner(false);
       report.scanning(false);
@@ -1242,12 +1251,8 @@ export async function runScan({
       report.scanning(false);
       report.status(`Done. ${groups.length} exact duplicate group(s) found.`
         + coverageWarning(coverageCounts(unreadableFolders)));
-      if (unreadableFolders.length > 0) {
-        showToast(
-          `${unreadableFolders.length} folder(s) could not be read. Results may be incomplete — try scanning again.`,
-          "error",
-        );
-      }
+      const exactGap = coverageWarning(coverageCounts(unreadableFolders));
+      if (exactGap) showToast("Results may be incomplete." + exactGap, "error");
       report.phase("Complete");
       report.progress(100);
       return;
@@ -1460,10 +1465,7 @@ export async function runScan({
     const coverageGap = coverageWarning(coverageCounts(unreadableFolders));
     if (coverageGap) {
       statusMsg += coverageGap;
-      showToast(
-        `${unreadableFolders.length} folder(s) could not be read. Results may be incomplete — try scanning again.`,
-        "error",
-      );
+      showToast("Results may be incomplete." + coverageGap, "error");
     }
     report.status(statusMsg);
 
