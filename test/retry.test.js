@@ -15,7 +15,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
 import { isRetryableError, retryDelayMs, parseRetryAfter, isBackpressureError } from "../js/errors.js";
-import { unreadableFoldersText } from "../js/uiText.js";
+import { coverageWarning } from "../js/uiText.js";
 
 const driveError = (status, message = "Drive API error") =>
   Object.assign(new Error(`${message} ${status}`), { status, code: "DRIVE_API" });
@@ -139,17 +139,35 @@ describe("reading Retry-After", () => {
 
 describe("saying a scan did not cover everything", () => {
   test("says nothing when it did", () => {
-    assert.equal(unreadableFoldersText(0), "");
-    assert.equal(unreadableFoldersText(null), "");
+    assert.equal(coverageWarning(), "");
+    assert.equal(coverageWarning({ transient: 0, permanent: 0 }), "");
   });
 
-  test("names the count and, more importantly, the consequence", () => {
-    const one = unreadableFoldersText(1);
+  test("a transient gap says scanning again should help, because it should", () => {
+    const one = coverageWarning({ transient: 1 });
     assert.match(one, /1 folder could not be read/);
     assert.match(one, /does not cover everything/);
+    assert.match(one, /scanning again/i);
 
-    const many = unreadableFoldersText(1234);
-    assert.match(many, /1,234 folders could not be read/);
-    assert.match(many, /does not cover everything/);
+    assert.match(coverageWarning({ transient: 1234 }), /1,234 folders could not be read/);
+  });
+
+  test("a permanent gap does NOT, because trying again cannot work", () => {
+    // A folder this account cannot open fails identically forever. Telling
+    // someone to retry is advice that cannot succeed (#135).
+    const one = coverageWarning({ permanent: 1 });
+    assert.match(one, /could not be opened/);
+    assert.match(one, /sharing permissions/);
+    assert.doesNotMatch(one, /scanning again/i);
+  });
+
+  test("both kinds at once are both reported", () => {
+    const both = coverageWarning({ transient: 2, permanent: 3 });
+    assert.match(both, /2 folders could not be read/);
+    assert.match(both, /3 folders could not be opened/);
+  });
+
+  test("negative or nonsense counts say nothing rather than something absurd", () => {
+    assert.equal(coverageWarning({ transient: -5, permanent: NaN }), "");
   });
 });

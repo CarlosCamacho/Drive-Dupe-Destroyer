@@ -64,8 +64,9 @@ await page.waitForTimeout(1200);
  *               a scan does. Every other run starts from a cleared cache.
  */
 const run = ({ folders, failAt = 0, failTimes = 1, failStatus = 503, retryAfter = null,
-               keepCache = false, failFolder = null, abortAfter = 0 }) =>
-  page.evaluate(async ({ folders, failAt, failTimes, failStatus, retryAfter, keepCache, failFolder, abortAfter }) => {
+               keepCache = false, failFolder = null, abortAfter = 0,
+               failBody = '{"error":{"message":"Backend Error"}}' }) =>
+  page.evaluate(async ({ folders, failAt, failTimes, failStatus, retryAfter, keepCache, failFolder, abortAfter, failBody }) => {
     const scan = await import('/js/scan.js');
     const auth = await import('/js/auth.js');
     const drive = await import('/js/drive.js');
@@ -97,7 +98,7 @@ const run = ({ folders, failAt = 0, failTimes = 1, failStatus = 503, retryAfter 
         // folder.
         if (failFolder && qq.includes(`'${failFolder}' in parents`)) {
           counts.injected++;
-          return new Response('{"error":{"message":"Backend Error"}}', { status: failStatus, headers: { 'Content-Type': 'application/json' } });
+          return new Response(failBody, { status: failStatus, headers: { 'Content-Type': 'application/json' } });
         }
         if (abortAfter > 0 && counts.list >= abortAfter) ctrl.abort();
         if (failAt > 0 && counts.list >= failAt && counts.list < failAt + failTimes) {
@@ -152,7 +153,7 @@ const run = ({ folders, failAt = 0, failTimes = 1, failStatus = 503, retryAfter 
         pending: saved.pendingFolderIds || [],
       } : null,
     };
-  }, { folders, failAt, failTimes, failStatus, retryAfter, keepCache, failFolder, abortAfter });
+  }, { folders, failAt, failTimes, failStatus, retryAfter, keepCache, failFolder, abortAfter, failBody });
 
 // --- fixtures -------------------------------------------------------------
 // Drive folder IDs are 33 characters and quoteFolderId rejects anything else.
@@ -291,6 +292,35 @@ ck(interrupted.resume && !interrupted.resume.visited.includes(doomed),
    `#134 an unreadable folder is NOT recorded as covered`);
 ck(interrupted.resume && interrupted.resume.pending.includes(doomed),
    `#134 it is put back on the frontier, so resuming retries it`);
+
+// --- #135: a folder that can NEVER be read is a different answer ----------
+// A shared folder this account cannot open is ordinary, not exceptional. The
+// first cut of #134 treated it like a transient failure, which meant the
+// incremental scan was disabled for good -- every scan re-enumerated and
+// repeated the same warning, about something re-scanning cannot fix and the
+// wording told the user to fix by re-scanning.
+const DENIED = mkId(FLAT_PREFIX, 1);
+const PERM_403 = '{"error":{"message":"insufficientFilePermissions"}}';
+
+const denied1 = await run({ folders: flat, failFolder: DENIED, failStatus: 403, failBody: PERM_403 });
+ck(denied1.stats?.files === 38,
+   `#135 (fixture) a denied folder really costs its images (${denied1.stats?.files} of 40)`);
+ck(/could not be opened/.test(denied1.lastStatus) && /sharing permissions/.test(denied1.lastStatus),
+   `#135 and is reported as a permission problem: ${JSON.stringify(denied1.lastStatus)}`);
+ck(!/scanning again/i.test(denied1.lastStatus),
+   `#135 without telling the user to retry, which cannot work`);
+
+const denied2 = await run({ folders: flat, failFolder: DENIED, failStatus: 403, failBody: PERM_403, keepCache: true });
+ck(denied2.counts.list === 0,
+   `#135 a permanent gap does NOT disable the incremental scan (${denied2.counts.list} list calls)`);
+ck(!/could not be/.test(denied2.lastStatus),
+   `#135 nor repeat the warning on every scan forever: ${JSON.stringify(denied2.lastStatus)}`);
+
+// --- but a 403 Drive says is about RATE is transient, not permanent -------
+const rate403 = await run({ folders: flat, failFolder: DENIED, failStatus: 403,
+                            failBody: '{"error":{"message":"userRateLimitExceeded"}}' });
+ck(/could not be read/.test(rate403.lastStatus) && /scanning again/i.test(rate403.lastStatus),
+   `#135 a rate-limit 403 is transient, not a permission problem: ${JSON.stringify(rate403.lastStatus)}`);
 
 console.log(fails === 0 ? '\nALL CHECKS PASSED' : `\n${fails} CHECK(S) FAILED`);
 await b.close();
