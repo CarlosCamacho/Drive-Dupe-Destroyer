@@ -1066,6 +1066,28 @@ export async function runScan({
           // `images` is then re-derived from it using today's filters.
           const beforeIds = new Set(images.map(f => f.id));
           const applied = applyChangesToList(allItems, changed, { visitedFolderIds, exclusions });
+
+          // A change under a folder this scope never walked, on a run that
+          // SKIPPED the enumeration, is the one case where trusting the cache
+          // can silently lose files: the folder may be new inside the scanned
+          // tree, and nothing else this run would find it. Re-enumerate rather
+          // than guess. Costs the optimisation, never correctness -- and the
+          // full walk then teaches the cache the new folder, so it self-heals.
+          if (reusedCache && applied.unknownParent > 0) {
+            console.log(`[DDD] Incremental scan: ${applied.unknownParent} change(s) under folder(s) `
+              + `this scan has not walked; re-enumerating rather than risk missing them.`);
+            report.status("A folder has changed since the last scan; re-checking Drive…");
+            const refetch = recursive ? fetchAllImagesRecursive : fetchAllImagesFlat;
+            const recollected = await refetch({
+              folderIds, exclusions, maxItems, pageSize, signal, onStatus: report.status,
+            });
+            allItems = recollected.files;
+            visitedFolderIds = recollected.visitedFolderIds;
+            images = allItems.filter(passesFilters);
+            if (nextToken) await setChangesToken(nextToken);
+            throw { __handled: true };
+          }
+
           allItems = applied.files;
           const outOfScope = applied.outOfScope;
 
@@ -1090,7 +1112,9 @@ export async function runScan({
           if (startToken) await setChangesToken(startToken);
         }
       } catch (e) {
-        console.warn("[DDD] Delta scan failed, doing full scan:", e.message);
+        // The re-enumeration path above signals completion by throwing, so it
+        // does not also run the reconcile accounting it has just made moot.
+        if (!e?.__handled) console.warn("[DDD] Delta scan failed, doing full scan:", e.message);
       }
     }
 

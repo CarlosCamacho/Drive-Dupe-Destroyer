@@ -107,6 +107,50 @@ ck(otherScope.untouched === otherScope.total && otherDetail.marks === 0 && other
    `#117 a different folder selection does NOT inherit the review `
    + `(${otherScope.untouched}/${otherScope.total} untouched, ${otherDetail.marks} marks)`);
 
+// --- a LIVE SCAN must not destroy the review it is meant to resume --------
+//
+// The nastiest bug in this feature, and it was mine. reviewProgress() pruned
+// marks for groups that "no longer exist" -- but beginProgressive() empties
+// currentState.groups and refills it one streamed match at a time, calling
+// that on every one. So a few hundred milliseconds into a rescan, the review
+// had been pruned down to whatever had arrived, and the next mark persisted
+// the loss. Silent, permanent, and precisely the opposite of what #117 is for.
+// Back to the scope that HAS marks -- the check above deliberately left the
+// review scoped to a different folder set, where zero marks is correct.
+await seed(['folderA']);
+
+const duringLiveScan = await page.evaluate(async () => {
+  const render = await import('/js/render.js');
+  const before = render.getReviewState().marks.size;
+
+  // Start a live scan: groups stream in one at a time.
+  render.beginProgressive({ idToEntry: new Map() });
+  render.pushProgressiveMatch({
+    root: 'r0',
+    // `group`, not `files` -- pushProgressiveMatch returns early on anything
+    // else, which made the first version of this check pass on a render that
+    // never happened.
+    group: [
+      { id: 'new1', name: 'new1.jpg', size: '1000', parents: ['p0'], imageMediaMetadata: { width: 800, height: 600 } },
+      { id: 'new2', name: 'new2.jpg', size: '2000', parents: ['p0'], imageMediaMetadata: { width: 801, height: 601 } },
+    ],
+  });
+  await new Promise(r => setTimeout(r, 300));
+  const during = render.getReviewState().marks.size;
+  // Proof the live render actually happened, so this cannot pass on a no-op.
+  const liveRows = render.getRowCount();
+  render.endProgressive();
+  return { before, during, liveRows };
+});
+
+ck(duringLiveScan.before > 0,
+   `#117 (fixture) there were marks to lose (${duringLiveScan.before})`);
+ck(duringLiveScan.liveRows === 2,
+   `#117 (fixture) the live scan really rendered its streamed group (${duringLiveScan.liveRows} rows)`);
+ck(duringLiveScan.during === duringLiveScan.before,
+   `#117 a live scan streaming its first groups does NOT prune the existing review `
+   + `(${duringLiveScan.before} marks before, ${duringLiveScan.during} during)`);
+
 // --- the Unreviewed only filter ------------------------------------------
 await seed(['folderA']);
 const filtered = await page.evaluate(async () => {

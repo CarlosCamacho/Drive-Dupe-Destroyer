@@ -173,6 +173,39 @@ const excluded = await runScan({ files: LIBRARY, exclusions: ['sub'] });
 ck(excluded.counts.list > 0,
    `#116 and so does changing the exclusions (${excluded.counts.list} call(s))`);
 
+// --- A NEW FOLDER MUST NOT BE INVISIBLE -----------------------------------
+//
+// The correctness hole that skipping the enumeration opens, and it is subtle:
+// when the listing is skipped, visitedFolderIds is the set from the CACHED
+// walk. A folder created inside the scanned tree since then is not in it, so
+// images added to it are rejected as out of scope by the in-scope check -- and
+// the listing that would otherwise have found them did not run. They would
+// stay invisible until something else invalidated the cache. A duplicate
+// finder that silently stops seeing new photographs is worse than a slow one.
+//
+// The app re-enumerates instead of guessing. This checks it does.
+await page.evaluate(async () => {
+  const c = await import('/js/fileListCache.js');
+  const db = await import('/js/db.js');
+  await c.clearFileList();
+  await db.clearChangesToken();
+});
+
+await runScan({ files: LIBRARY });                       // prime the cache
+const primed = await runScan({ files: LIBRARY });
+ck(primed.counts.list === 0, `#116 (fixture) the cache is primed (${primed.counts.list} list calls)`);
+
+// A photo appears in a folder this scan has never walked.
+const newFolder = await runScan({
+  files: [...LIBRARY, img('fresh', 'M9', 'BRAND_NEW_FOLDER')],
+  changes: [img('fresh', 'M9', 'BRAND_NEW_FOLDER')],
+});
+ck(newFolder.counts.list > 0,
+   `#116 a change under an unwalked folder re-enumerates rather than dropping it `
+   + `(${newFolder.counts.list} list call(s))`);
+ck(newFolder.stats?.files === 5,
+   `#116 so the new folder's image is actually found (${newFolder.stats?.files} of 5)`);
+
 // --- THE CACHE MUST HOLD THE UNFILTERED ENUMERATION -----------------------
 //
 // The obvious mistake, and the one that cannot be recovered from without a

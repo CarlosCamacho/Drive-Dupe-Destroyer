@@ -72,16 +72,24 @@ export async function restoreReviewState({ folderIds = [], exclusions = [] } = {
 export function getReviewState() { return review; }
 
 /**
- * How much of this result set has been dealt with, and drop marks for groups
- * that no longer exist.
+ * How much of this result set has been dealt with.
  *
- * Pruning here rather than on a timer because this is the only moment we know
- * the full live set of signatures. Without it the store grows forever: every
- * rescan that reshapes a group leaves its old signature behind.
+ * READ-ONLY by default, and that default is not cosmetic.
+ *
+ * The first version pruned here, reasoning that this is where the live set of
+ * signatures is known. It is not. beginProgressive() sets currentState.groups
+ * to [], and rebuildProgressiveRows() refills it ONE STREAMED MATCH AT A TIME,
+ * calling this on every one. So the first progressive render of a new scan
+ * pruned the review down to the handful of groups that had arrived so far, and
+ * the next mark persisted that loss -- destroying an entire previous review a
+ * few hundred milliseconds into the rescan that was meant to resume it.
+ *
+ * Pruning happens once, from renderGroups, where the list is complete.
  */
-export function reviewProgress() {
+export function reviewProgress({ prune = false } = {}) {
   const sigs = (currentState?.groups || []).map(groupSignature);
-  pruneToSignatures(review, sigs);
+  // Belt and braces: never prune against a partial list, whoever asks.
+  if (prune && !progressiveActive) pruneToSignatures(review, sigs);
   const c = reviewCounts(review, sigs);
   return { untouched: c[UNTOUCHED], decided: c.decided, skipped: c.skipped, total: sigs.length };
 }
@@ -1238,7 +1246,7 @@ export async function renderGroups({ groups, idToEntry, pathMap, keepRule = DEFA
   applyFilter();
   
   const totalGroups = new Set(allRows.map(r => r.groupId)).size;
-  updateFilterStats(totalGroups, allRows.length, "all", reviewProgress());
+  updateFilterStats(totalGroups, allRows.length, "all", reviewProgress({ prune: true }));
   setStatus(`Showing ${groups.length} group(s), ${allRows.length} file(s). (Virtual scroll enabled)`);
   refreshActionButtons();
 

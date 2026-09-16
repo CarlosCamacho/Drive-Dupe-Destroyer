@@ -116,6 +116,26 @@ guards; each new check verified the same way.
   with comments disagreeing about what it grants ("minimal" vs "RESTRICTED
   full-access"). One constant now.
 
+### Fixed, from a self-review of the above
+
+Two defects in the work in this release, both found by auditing it rather than
+by a failing test, and both silent.
+
+- **A rescan destroyed the review it was meant to resume** (#117).
+  `reviewProgress()` pruned marks for groups that "no longer exist" — but
+  `beginProgressive()` empties the group list and refills it one streamed match
+  at a time, calling that on every one. A few hundred milliseconds into a
+  rescan the review had been pruned to whatever had arrived, and the next mark
+  persisted the loss. Pruning now happens once, from the final render.
+
+- **A folder created since the last scan was invisible** (#116). With the
+  enumeration skipped, the in-scope check tests against the CACHED set of
+  walked folders, so images added to a new subfolder were rejected as out of
+  scope — and the listing that would have found them did not run. The scan now
+  re-enumerates when a change appears under a folder it has not walked: it
+  costs the optimization, never correctness, and the full walk teaches the
+  cache the new folder so it self-heals.
+
 ### Testing
 
 - **An export nothing can reach fails the build** (#120). The first run deleted

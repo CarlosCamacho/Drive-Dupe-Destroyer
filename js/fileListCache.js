@@ -105,23 +105,33 @@ export async function clearFileList() {
 export function applyChangesToList(files, changes, { visitedFolderIds, exclusions }) {
   const excluded = exclusions instanceof Set ? exclusions : new Set(exclusions || []);
   const visited = visitedFolderIds instanceof Set ? visitedFolderIds : new Set(visitedFolderIds || []);
-  const inScope = (f) => {
-    const parent = f.parents?.[0];
-    if (!parent) return false;
-    if (excluded.has(parent)) return false;
-    return visited.has(parent);
-  };
-
   const removedIds = new Set(changes.filter(c => c._removed).map(c => c.id));
   const existing = new Set(files.map(f => f.id));
 
-  let added = 0, outOfScope = 0;
+  let added = 0, outOfScope = 0, unknownParent = 0;
   const out = files.filter(f => !removedIds.has(f.id));
   for (const cf of changes.filter(c => c._changed)) {
     if (existing.has(cf.id) || removedIds.has(cf.id)) continue;
-    if (!inScope(cf)) { outOfScope++; continue; }
+    const parent = cf.parents?.[0];
+    if (!parent || excluded.has(parent)) { outOfScope++; continue; }
+    if (!visited.has(parent)) {
+      // A parent this scope has never walked. It is EITHER a folder somewhere
+      // else in the Drive (genuinely none of our business) OR a folder created
+      // inside the scanned tree since the cached enumeration -- and from here
+      // the two are indistinguishable without walking the parent chain.
+      //
+      // That ambiguity is why it is reported rather than decided here. Treating
+      // it as out of scope would mean images added to a NEW subfolder are
+      // rejected by this check and never found by the listing either, because
+      // the listing was skipped -- so they would stay invisible until something
+      // else invalidated the cache. A duplicate finder that silently stops
+      // seeing new photographs is worse than a slow one.
+      unknownParent++;
+      outOfScope++;
+      continue;
+    }
     out.push(cf);
     added++;
   }
-  return { files: out, added, removed: removedIds.size, outOfScope, removedIds };
+  return { files: out, added, removed: removedIds.size, outOfScope, unknownParent, removedIds };
 }
