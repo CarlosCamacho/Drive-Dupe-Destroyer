@@ -16,6 +16,10 @@
 
 import { recordRejection } from "./rejection.js";
 import { DEFAULT_KEEP_RULE, chooseKeepIndex } from "./keeprule.js";
+import {
+  candidatesIn as candidatesInGroup, pairCount as pairCountOf,
+  nextReviewable as nextReviewableFrom, anyReviewable, resolvePair, progressLabel,
+} from "./compareNav.js";
 import { pushUndoDeleteBatch, undoLastDelete } from "./undo.js";
 import { el, bytesToHuman, formatDate, IMAGE_PLACEHOLDER } from "./util.js";
 import { getThumbUrlForFile } from "./hashing.js";
@@ -234,38 +238,25 @@ function handleEdit(side) {
 }
 
 // Every member of a group except the keeper. Each one is a pair to review.
+// Thin wrappers over js/compareNav.js, which holds the arithmetic so it can be
+// tested without a DOM (#129). keepFileForGroup is passed in because it reads
+// the keep-rule dropdown and the folder-priority field.
 function candidatesIn(group) {
-  const keepFile = keepFileForGroup(group);
-  return { keepFile, others: (group || []).filter(f => f.id !== keepFile?.id) };
+  return candidatesInGroup(group, keepFileForGroup);
 }
 
 function pairCount(index) {
-  const g = allGroups[index];
-  return g && g.length >= 2 ? candidatesIn(g).others.length : 0;
+  return pairCountOf(allGroups, index, keepFileForGroup);
 }
 
-// The first group at or after `from` that still has something to compare.
-// Groups shrink as files are trashed, so a group can drop below two members
-// while the view is open.
 function nextReviewable(from, step) {
-  for (let i = from; i >= 0 && i < allGroups.length; i += step) {
-    if (pairCount(i) > 0) return i;
-  }
-  return -1;
+  return nextReviewableFrom(allGroups, from, step, keepFileForGroup);
 }
 
 function updateProgress() {
   const label = el("compareProgress");
   if (!label) return;
-  const pairs = pairCount(currentGroupIndex);
-  const reviewable = allGroups.reduce((n, _, i) => n + (pairCount(i) > 0 ? 1 : 0), 0);
-  // Count this group's position among reviewable ones, not its raw index, or
-  // the numbers jump as groups are emptied.
-  let ordinal = 0;
-  for (let i = 0; i <= currentGroupIndex && i < allGroups.length; i++) if (pairCount(i) > 0) ordinal++;
-  label.textContent = pairs > 1
-    ? `Group ${ordinal} of ${reviewable} · pair ${currentPairIndex + 1} of ${pairs}`
-    : `Group ${ordinal} of ${reviewable}`;
+  label.textContent = progressLabel(allGroups, currentGroupIndex, currentPairIndex, keepFileForGroup);
 }
 
 // The one entry point. Shows the keeper against the pairIndex-th other member,
@@ -273,42 +264,22 @@ function updateProgress() {
 function showPair(groupIndex, pairIndex) {
   refreshGroups();
 
-  if (allGroups.length === 0 || nextReviewable(0, 1) < 0) {
+  const r = resolvePair(allGroups, groupIndex, pairIndex, keepFileForGroup);
+
+  if (r.status === "empty") {
     showToast("All groups processed!", "success");
     closeCompare();
     return;
   }
+  if (r.status === "at-end")   { showToast("No more groups to review", "info"); return; }
+  if (r.status === "at-start") { showToast("Already at first group", "info"); return; }
 
-  let gi = groupIndex;
-  let pi = pairIndex;
-
-  // Ran off the end of this group -> the start of the next reviewable one.
-  while (gi < allGroups.length && pi >= pairCount(gi)) {
-    const next = nextReviewable(gi + 1, 1);
-    if (next < 0) { showToast("No more groups to review", "info"); return; }
-    pi -= Math.max(pairCount(gi), 1);
-    gi = next;
-    if (pi < 0) pi = 0;
-  }
-  // Ran off the start -> the LAST pair of the previous reviewable group, so
-  // stepping back never skips the members it just walked forward through.
-  while (gi >= 0 && pi < 0) {
-    const prev = nextReviewable(gi - 1, -1);
-    if (prev < 0) { showToast("Already at first group", "info"); return; }
-    gi = prev;
-    pi += pairCount(gi);
-  }
-
-  if (gi < 0 || gi >= allGroups.length) return;
-  const { keepFile, others } = candidatesIn(allGroups[gi]);
-  if (!keepFile || others.length === 0) return;
-
-  currentGroupIndex = gi;
-  currentPairIndex = Math.min(Math.max(pi, 0), others.length - 1);
+  currentGroupIndex = r.groupIndex;
+  currentPairIndex = r.pairIndex;
 
   // No leftIsKeep/rightIsKeep here: openCompare derives them from the group,
   // so no caller can label the wrong pane.
-  openCompare(keepFile, others[currentPairIndex], { groupIndex: gi, allGroups: allGroups });
+  openCompare(r.keepFile, r.other, { groupIndex: r.groupIndex, allGroups: allGroups });
   updateProgress();
 }
 
@@ -324,7 +295,7 @@ function navigateToGroup(newIndex) {
   if (newIndex < 0) { showToast("Already at first group", "info"); return; }
   const target = nextReviewable(newIndex, newIndex >= currentGroupIndex ? 1 : -1);
   if (target < 0) {
-    if (nextReviewable(0, 1) < 0) { showToast("All groups processed!", "success"); closeCompare(); }
+    if (!anyReviewable(allGroups, keepFileForGroup)) { showToast("All groups processed!", "success"); closeCompare(); }
     else showToast("No more groups to review", "info");
     return;
   }
