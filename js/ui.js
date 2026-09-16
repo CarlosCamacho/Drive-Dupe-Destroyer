@@ -298,15 +298,18 @@ export function updateSizeStats() {
   }
 }
 
-export function updateFilterStats(groups, files, filter) {
+export function updateFilterStats(groups, files, filter, review = null) {
   const filterStatsEl = el("filterStats");
-  if (filterStatsEl) {
-    if (filter === "all") {
-      filterStatsEl.textContent = "";
-    } else {
-      filterStatsEl.textContent = `(${groups} groups, ${files} files)`;
-    }
+  if (!filterStatsEl) return;
+
+  const parts = [];
+  if (filter !== "all") parts.push(`${groups} groups, ${files} files`);
+  // How much is left to do -- the number that tells someone coming back
+  // whether this is a five-minute job or an evening (#117).
+  if (review && review.total > 0 && review.untouched < review.total) {
+    parts.push(`${(review.total - review.untouched).toLocaleString()} of ${review.total.toLocaleString()} reviewed`);
   }
+  filterStatsEl.textContent = parts.length ? `(${parts.join(" · ")})` : "";
 }
 
 export function refreshActionButtons() {

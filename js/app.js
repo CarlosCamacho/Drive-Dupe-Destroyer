@@ -20,7 +20,8 @@ import { el, APP_VERSION } from "./util.js";
 import { uiInit, setSignedInUi, setStatus, showEmptyState, setScanningState, showToast, wireErrorModal, setSelectedCountProvider, setRowCountProvider, setSizeStatsProvider, lockBodyScroll } from "./ui.js";
 import { wireAuth } from "./auth.js";
 import { runScan, setupBackgroundDetection } from "./scan.js";
-import { renderGroups, wireRenderControls, getSelectedCount, getRowCount, getSizeStats, beginProgressive, pushProgressiveMatch, endProgressive, mergeProgressivePaths } from "./render.js";
+import { clearReviewState } from "./reviewState.js";
+import { renderGroups, wireRenderControls, restoreReviewState, getSelectedCount, getRowCount, getSizeStats, beginProgressive, pushProgressiveMatch, endProgressive, mergeProgressivePaths } from "./render.js";
 import { wireCompare } from "./compare.js";
 import { wireCrop } from "./crop.js";
 import { wireFolderPicker, getIncludedFolderIds, getIncludedFolders, getExclusions } from "./folderPicker.js";
@@ -190,6 +191,11 @@ function wireScanControls() {
       
       abortCtrl = new AbortController();
       
+      // Restore how far through the review we got last time, for THIS folder
+      // selection (#117). Done before the scan rather than after, so the
+      // keeper pins are in place by the time the first groups render.
+      await restoreReviewState({ folderIds, exclusions: getExclusions() });
+      
       try {
         // Consume the resume offer on the first scan after boot; a later scan in
         // the same session starts clean.
@@ -315,6 +321,9 @@ function wireDbControls() {
         
         // Clear IndexedDB hash cache
         await dbClearImages();
+        // A full reset clears the review too: the marks describe groups that
+        // came from the hashes being thrown away (#117).
+        await clearReviewState();
         releaseAllThumbBlobs();
         // And the resolved folder paths. This is now the only thing that empties
         // them: a scan ending used to wipe the store, which meant the cache never

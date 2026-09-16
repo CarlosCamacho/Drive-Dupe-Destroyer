@@ -28,6 +28,11 @@ import {
   groupSignature, keeperFor as keeperForGroup, sizeStatsFor,
   sortGroups as sortGroupsBy, filterBySearch, dropLoneKeepers,
 } from "./resultsModel.js";
+import {
+  loadReviewState, saveReviewState, makeReviewState, reviewScopeKey,
+  markDecided, markSkipped, setKeeper, isReviewed, reviewCounts,
+  pruneToSignatures, UNTOUCHED,
+} from "./reviewState.js";
 import { pushUndoDeleteBatch, undoLastDelete } from "./undo.js";
 import { addToQueue } from "./queue.js";
 
@@ -46,6 +51,54 @@ let allRows = [];
 // user pinned. Deriving the keeper in one place (#50) is what makes this a
 // single consultation rather than four call sites to keep in step.
 const keepOverrides = new Map();
+
+/**
+ * How far through the review we are, restored from the last session (#117).
+ *
+ * keepOverrides is populated FROM this on load and written back to it on every
+ * change, so a pinned keeper survives a reload the same way a decision does.
+ */
+let review = makeReviewState("");
+
+/** Called by app.js once the folder selection for this result set is known. */
+export async function restoreReviewState({ folderIds = [], exclusions = [] } = {}) {
+  review = await loadReviewState(reviewScopeKey({ folderIds, exclusions }));
+  keepOverrides.clear();
+  for (const [sig, fileId] of review.keepers) keepOverrides.set(sig, fileId);
+  return review;
+}
+
+/** For the harness and for app.js's "start a fresh review" path. */
+export function getReviewState() { return review; }
+
+/**
+ * How much of this result set has been dealt with, and drop marks for groups
+ * that no longer exist.
+ *
+ * Pruning here rather than on a timer because this is the only moment we know
+ * the full live set of signatures. Without it the store grows forever: every
+ * rescan that reshapes a group leaves its old signature behind.
+ */
+export function reviewProgress() {
+  const sigs = (currentState?.groups || []).map(groupSignature);
+  pruneToSignatures(review, sigs);
+  const c = reviewCounts(review, sigs);
+  return { untouched: c[UNTOUCHED], decided: c.decided, skipped: c.skipped, total: sigs.length };
+}
+
+function persistReview() {
+  saveReviewState(review);
+  // Refresh the "N of M reviewed" figure. Marking happens AFTER the render
+  // that last wrote it, so without this the toolbar keeps reporting the count
+  // from before the user did anything.
+  refreshReviewStats();
+}
+
+function refreshReviewStats() {
+  if (!currentState) return;
+  const totalGroups = new Set(allRows.map(r => r.groupId)).size;
+  updateFilterStats(totalGroups, allRows.length, el("filterMode")?.value || "all", reviewProgress());
+}
 
 
 function keeperFor(group, rule, folderPriority) {
@@ -468,6 +521,8 @@ async function handleTableClick(e) {
     const group = (currentState?.groups || []).find(g => g.some(f => f.id === file.id));
     if (group) {
       keepOverrides.set(groupSignature(group), file.id);
+      setKeeper(review, groupSignature(group), file.id);
+      persistReview();
       selected.delete(file.id);        // it is the keeper now; it cannot be a delete candidate
       handleFilterChange();
       showToast(`Keeping "${file.name}" in this group`, "success", 1800);
@@ -486,6 +541,8 @@ async function handleTableClick(e) {
     const group = (currentState?.groups || []).find(g => g.some(f => f.id === file.id));
     if (group) {
       keepOverrides.delete(groupSignature(group));
+      setKeeper(review, groupSignature(group), null);
+      persistReview();
       handleFilterChange();
       showToast("Back to the Keep rule for this group", "info", 1800);
     }
@@ -624,6 +681,10 @@ function removeFileFromGroups(fileId) {
     const group = currentState.groups[i];
     const fileIndex = group.findIndex(f => f.id === fileId);
     if (fileIndex !== -1) {
+      // Mark BEFORE the splice: the signature is the ids the group has now,
+      // and removing a member changes it (#117).
+      markDecided(review, groupSignature(group));
+      persistReview();
       group.splice(fileIndex, 1);
       if (group.length < 2) currentState.groups.splice(i, 1);
       break;
@@ -635,6 +696,9 @@ function removeGroupByIndex(groupIndex) {
   if (!currentState?.groups || groupIndex < 0 || groupIndex >= currentState.groups.length) return;
   
   const group = currentState.groups[groupIndex];
+  // "Ignore this group" is the user explicitly passing it over (#117).
+  markSkipped(review, groupSignature(group));
+  persistReview();
   const fileIds = new Set(group.map(f => f.id));
   currentState.groups.splice(groupIndex, 1);
   
@@ -888,7 +952,7 @@ function handleFilterChange() {
   
   renderVisibleRows();
   refreshActionButtons();
-  updateFilterStats(totalGroupsAfter, allRows.length, el("filterMode")?.value || "all");
+  updateFilterStats(totalGroupsAfter, allRows.length, el("filterMode")?.value || "all", reviewProgress());
   setStatus(`Filtered: ${totalGroupsAfter} group(s), ${allRows.length} file(s).`);
 }
 
@@ -921,7 +985,22 @@ function applyFilter() {
   // group survives if any member matches, and survives whole.
   allRows = filterBySearch(allRows, searchText);
 
-  if (filter !== "all") {
+  // "Unreviewed only" is the filter that makes a long review resumable in
+  // practice: 800 groups is an evening, and coming back to an undifferentiated
+  // list with no marker for where you were is what makes people not come back
+  // (#117).
+  if (filter === "unreviewed") {
+    const byGroup = new Map();
+    for (const row of allRows) {
+      if (!byGroup.has(row.groupId)) byGroup.set(row.groupId, []);
+      byGroup.get(row.groupId).push(row.file);
+    }
+    const unreviewed = new Set();
+    for (const [gid, files] of byGroup) {
+      if (!isReviewed(review, groupSignature(files))) unreviewed.add(gid);
+    }
+    allRows = allRows.filter(row => unreviewed.has(row.groupId));
+  } else if (filter !== "all") {
     const minPct = filter === "pct90" ? 90 : filter === "pct75" ? 75 : filter === "pct50" ? 50 : 0;
 
     allRows = allRows.filter(row => {
@@ -1096,7 +1175,7 @@ function rebuildProgressiveRows() {
   refreshActionButtons();
 
   const totalGroups = new Set(allRows.map(r => r.groupId)).size;
-  updateFilterStats(totalGroups, allRows.length, el("filterMode")?.value || "all");
+  updateFilterStats(totalGroups, allRows.length, el("filterMode")?.value || "all", reviewProgress());
 }
 
 /**
@@ -1159,7 +1238,7 @@ export async function renderGroups({ groups, idToEntry, pathMap, keepRule = DEFA
   applyFilter();
   
   const totalGroups = new Set(allRows.map(r => r.groupId)).size;
-  updateFilterStats(totalGroups, allRows.length, "all");
+  updateFilterStats(totalGroups, allRows.length, "all", reviewProgress());
   setStatus(`Showing ${groups.length} group(s), ${allRows.length} file(s). (Virtual scroll enabled)`);
   refreshActionButtons();
 
