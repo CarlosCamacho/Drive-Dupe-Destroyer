@@ -37,6 +37,104 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   `getPooledCtx`, which had nothing testing it. No app code changed in this
   entry.
 
+## [14.7.13] - 2026-09-16
+
+Fourteen issues from the product and developer reviews (#113–#127), plus the
+implementable part of #115. Each fix verified by reintroducing the bug it
+guards; each new check verified the same way.
+
+### Added
+
+- **The trash queue has an entry point** (#113). `addToQueue()` was exported
+  and called from nowhere — the definition was the only hit in the entire
+  repository — so the Queue button, the modal, the count badge, `processQueue`'s
+  chunking, the undo integration and all of #81's part-way session recovery sat
+  behind a door with no handle. Third time: #79, #101, this. There is now a
+  per-row action and a bulk **Queue Selected**, batched through
+  `queueAddBatch` (#125) rather than one IndexedDB transaction, one queue
+  re-render and one toast *per file*.
+
+- **Reclaimable bytes** (#114). "Size" summed every image the scan looked at —
+  40 GB on a library with 3 GB of duplicates. It now reports what you could
+  actually free, moves with the selection and with pinned keepers, and shows
+  "≥" when Drive reported no size for some files rather than over-promising.
+
+- **The review survives a reload** (#117). `resume.js` protected the scan in
+  detail; nothing protected the review, which is the part the person does and
+  the part that takes an evening. Per-group untouched/decided/skipped marks and
+  keeper pins now persist, scoped to the folder selection, with an
+  **Unreviewed only** filter and a "120 of 800 reviewed" figure.
+
+- **A real incremental scan** (#116). #67 corrected the comment calling the
+  Changes reconcile a "delta scan" — it ran *after* `files.list` had been
+  paginated across every folder — and deferred the saving. A second scan of an
+  unchanged Drive now makes **zero** `files.list` calls.
+
+### Fixed
+
+- **The crop modal rescaled the source image 60 times a second** (#118). The
+  `drawImage` sat outside the `if (selection)` guard, so a 24 MP photograph was
+  resampled every frame for as long as the modal was open, whether or not
+  anything was moving. Split into an image canvas and an overlay: **1.082 ms →
+  0.007 ms per frame, 162×**, measured against the old frame as a control.
+
+- **Two thumbnail loaders** (#119), an IntersectionObserver and a throttled
+  scroll handler with its own hand-rolled visibility maths. The observer stays.
+
+- **The device-blind thumbnail budget** (#126). A flat 192 MB regardless of
+  machine, in an app that already sizes its worker pool and its concurrency to
+  the hardware. Scales down from `deviceMemory`, never up, and unreported
+  browsers are unchanged.
+
+- **The toolbar was disabled after every render**, because `refreshActionButtons`
+  read the row count from a DOM the virtual scroller had not painted yet.
+
+- **The bulk-trash confirmation said "Untitled"** for every file — id strings
+  were passed where file objects were expected, on the most destructive path in
+  the app. Introduced by #109 itself.
+
+- **Two unescaped interpolations** (#115): a raw folder id in text and a raw
+  file id in an `href`. Not exploitable — Drive ids are `[A-Za-z0-9_-]` — but
+  the verification guide claimed *all* `innerHTML` was escaped, and it was not.
+
+### Changed
+
+- **`js/common.js` split four ways** (#121) — `formats.js`, `distance.js`,
+  `keeprule.js`, `errors.js`. 420 code lines moved with none lost or
+  duplicated, verified rather than trusted.
+
+- **The scan reports through a seam** (#122), so the phase order, progress
+  monotonicity, empty-state choice and stats arithmetic are assertions about
+  recorded values rather than about the screen.
+
+- **The crop rectangle and the results table are plain functions** (#123) —
+  `cropGeometry.js` and `resultsModel.js`. `test/crop-area.test.js` used to
+  reproduce the arithmetic and regex the source to check the copy still
+  matched; it now calls the real code.
+
+- **`auth.js` and `security.js` had separate copies of the OAuth scope string**,
+  with comments disagreeing about what it grants ("minimal" vs "RESTRICTED
+  full-access"). One constant now.
+
+### Testing
+
+- **An export nothing can reach fails the build** (#120). The first run deleted
+  25 dead exports and 269 lines; five more are allowlisted with reasons because
+  their missing caller is a real gap, not dead code. It has since caught seven
+  unwired exports of my own while writing #117 and #116.
+
+- **`tools/matcher-bench.mjs` is a regression guard** (#127), scored against a
+  calibration loop so the baseline is portable. It needed a second benchmark:
+  an 8× slowdown injected into `hammingBytes32` moved the end-to-end score by
+  only 1.13×, so `bestDist` is timed separately over 150,000 pairs, where the
+  same injection shows as 2.37× and fails.
+
+- **`js/folderPicker.js` has coverage** (#124) — 443 lines gating the entire
+  app, previously zero. Also found: the folder selection does not survive a
+  reload. Pinned as-is rather than quietly fixed.
+
+- Unit tests 256 → 363. Six new browser harnesses.
+
 ## [14.7.12] - 2026-09-15
 
 Nine usability findings from an audit of the running app (#103–#111), taken

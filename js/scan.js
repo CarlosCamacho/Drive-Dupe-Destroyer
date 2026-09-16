@@ -90,6 +90,9 @@ import { dbGetImagesBatch, dbPutImagesBatch, recordFoldersScan, dbCountImages, g
 import { computeHashesForFiles, getHashingStats, HASH_VERSION, HASH_CONCURRENCY } from "./hashing.js";
 import { runMatching, packEntries } from "./matcher.js";
 import { saveResumeState, clearResumeState } from "./resume.js";
+import {
+  enumerationScopeKey, loadFileList, saveFileList, applyChangesToList,
+} from "./fileListCache.js";
 import { getRejectionStats, preloadRejections, getRejectionKeys } from "./rejection.js";
 import { updateTelemetry } from "./telemetry.js";
 import { SIMILARITY_BITS, thresholdFromEasy } from "./distance.js";
@@ -902,6 +905,29 @@ export async function runScan({
       console.log(`[DDD] Resuming collection from ${resume.pendingFolderIds?.length || 0} pending folder(s)`);
     }
 
+    // #116: the enumeration itself, reused when nothing about the scope has
+    // changed. #67 corrected the comment that called the Changes reconcile a
+    // "delta scan" -- it runs AFTER files.list has been paginated across every
+    // folder, so it saves nothing. This is the pass it can actually skip.
+    //
+    // Deliberately not attempted while RESUMING: a resume is mid-enumeration by
+    // definition, and its frontier is what tells us where to carry on.
+    const scopeKey = enumerationScopeKey({ folderIds, exclusions, recursive, maxItems });
+    const cached = (useChangesApi && !quickScan && !resume && await getChangesToken())
+      ? await loadFileList(scopeKey)
+      : null;
+
+    let allItems, visitedFolderIds, reusedCache = false;
+
+    if (cached) {
+      allItems = cached.files;
+      visitedFolderIds = cached.visitedFolderIds;
+      reusedCache = true;
+      const when = new Date(cached.savedAt).toLocaleDateString();
+      report.status(`Reusing ${allItems.length.toLocaleString()} file(s) enumerated on ${when}; fetching changes…`);
+      console.log(`[DDD] Incremental scan: skipped enumeration, reusing ${allItems.length} file(s) from ${when}`);
+    } else {
+
     const fetcher = recursive ? fetchAllImagesRecursive : fetchAllImagesFlat;
     const collected = await fetcher({
       folderIds,
@@ -926,8 +952,9 @@ export async function runScan({
         }).catch(() => {});
       }
     });
-    let allItems = collected.files;
-    const visitedFolderIds = collected.visitedFolderIds;
+    allItems = collected.files;
+    visitedFolderIds = collected.visitedFolderIds;
+    }
     
     if (signal?.aborted) throw new Error("Scan stopped.");
 
@@ -1016,10 +1043,11 @@ export async function runScan({
     // A real incremental scan -- skipping the enumeration entirely when a stored
     // token and an unchanged folder selection say nothing relevant moved --
     // needs the previous file list persisted alongside the token, and
-    // invalidated whenever the selection, recursion setting or filters change.
-    // That is tracked separately; see #67. Nothing here should be read as
-    // saving a round trip today.
-    let deltaRemovedIds = new Set();
+    // invalidated whenever the selection or recursion setting changes. That is
+    // now js/fileListCache.js, and the block above will have skipped the
+    // enumeration entirely when the scope matched (#116) -- so on a repeat scan
+    // of an unchanged Drive this IS the whole collection pass, not a round trip
+    // on top of one.
     if (useChangesApi && !quickScan) {
       try {
         const savedToken = await getChangesToken();
@@ -1027,30 +1055,26 @@ export async function runScan({
           report.status("Fetching changes since last scan…");
           const { files: changed, nextToken } = await fetchChangesSince(savedToken, { signal });
           const removedIds = changed.filter(f => f._removed).map(f => f.id);
-          deltaRemovedIds = new Set(removedIds);
           // The Changes API reports changes across the ENTIRE Drive, not just
           // the selected folders. Without a containment check this pulled in
           // images from anywhere -- including folders the user had explicitly
           // excluded -- and presented them as delete candidates.
-          const excludedSet = exclusions instanceof Set ? exclusions : new Set(exclusions || []);
-          const inScope = (f) => {
-            const parent = f.parents?.[0];
-            if (!parent) return false;
-            if (excludedSet.has(parent)) return false;
-            return visitedFolderIds.has(parent);
-          };
+          // Apply the changes to the UNFILTERED list, because that is what gets
+          // cached: caching the FILTERED set would permanently narrow every
+          // future scan to whatever the size limits and type toggles happened
+          // to be today, with no way back but a manual rescan (#116).
+          // `images` is then re-derived from it using today's filters.
+          const beforeIds = new Set(images.map(f => f.id));
+          const applied = applyChangesToList(allItems, changed, { visitedFolderIds, exclusions });
+          allItems = applied.files;
+          const outOfScope = applied.outOfScope;
 
-          const existingIds = new Set(images.map(f => f.id));
-          let added = 0, outOfScope = 0, filteredOut = 0;
-
-          for (const cf of changed.filter(f => f._changed)) {
-            if (existingIds.has(cf.id)) continue;
-            if (!inScope(cf)) { outOfScope++; continue; }
-            // Same size/format rules as the main collection path.
-            if (!passesFilters(cf)) { filteredOut++; continue; }
-            images.push(cf);
-            added++;
-          }
+          images = allItems.filter(passesFilters);
+          const afterIds = new Set(images.map(f => f.id));
+          let added = 0;
+          for (const id of afterIds) if (!beforeIds.has(id)) added++;
+          // Changes that were in scope but did not survive today's filters.
+          const filteredOut = Math.max(0, applied.added - added);
 
           if (outOfScope || filteredOut) {
             console.log(
@@ -1058,8 +1082,6 @@ export async function runScan({
               `and ${filteredOut} that did not pass the size/type filters.`
             );
           }
-          // Remove deleted files
-          images = images.filter(f => !deltaRemovedIds.has(f.id));
           if (nextToken) await setChangesToken(nextToken);
           report.status(`Delta scan: ${changed.length} change(s), ${added} added, ${removedIds.length} removed, ${images.length} image(s) to process`);
         } else {
@@ -1070,6 +1092,16 @@ export async function runScan({
       } catch (e) {
         console.warn("[DDD] Delta scan failed, doing full scan:", e.message);
       }
+    }
+
+    // Remember this enumeration for the next scan (#116).
+    //
+    // Only when the Changes feed is in play: without a token there is no way to
+    // learn what moved since, and a cached list with no way to update it is
+    // just a stale list. Fire-and-forget -- a failed write costs one repeated
+    // enumeration, which is exactly what happened before this existed.
+    if (useChangesApi && !quickScan && allItems.length > 0) {
+      saveFileList({ scope: scopeKey, files: allItems, visitedFolderIds }).catch(() => {});
     }
 
     if (images.length === 0) {

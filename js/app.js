@@ -21,6 +21,7 @@ import { uiInit, setSignedInUi, setStatus, showEmptyState, setScanningState, sho
 import { wireAuth } from "./auth.js";
 import { runScan, setupBackgroundDetection } from "./scan.js";
 import { clearReviewState } from "./reviewState.js";
+import { clearFileList } from "./fileListCache.js";
 import { renderGroups, wireRenderControls, restoreReviewState, getSelectedCount, getRowCount, getSizeStats, beginProgressive, pushProgressiveMatch, endProgressive, mergeProgressivePaths } from "./render.js";
 import { wireCompare } from "./compare.js";
 import { wireCrop } from "./crop.js";
@@ -35,7 +36,7 @@ import { toggleTelemetry } from "./telemetry.js";
 import { undoLastDelete, loadUndoStack } from "./undo.js";
 import { loadResumeState, clearResumeState, formatResumeDescription } from "./resume.js";
 import { wireQueue, renderQueue } from "./queue.js";
-import { dbClearImages, dbCountImages, dbExportImages, dbImportImages } from "./db.js";
+import { dbClearImages, dbCountImages, dbExportImages, dbImportImages, clearChangesToken } from "./db.js";
 import { releaseAllThumbBlobs } from "./hashing.js";
 import { clearPathCaches } from "./paths.js";
 
@@ -324,6 +325,12 @@ function wireDbControls() {
         // A full reset clears the review too: the marks describe groups that
         // came from the hashes being thrown away (#117).
         await clearReviewState();
+        // And the incremental-scan state. Keeping a cached enumeration and a
+        // changes token past a reset would mean the next scan reported changes
+        // "since last scan" against a library the user has just told us to
+        // forget (#116).
+        await clearFileList();
+        await clearChangesToken();
         releaseAllThumbBlobs();
         // And the resolved folder paths. This is now the only thing that empties
         // them: a scan ending used to wipe the store, which meant the cache never

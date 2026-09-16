@@ -66,9 +66,6 @@ const ALLOWED = new Map([
    "The notifier is wired; the recovery is not."],
   ["js/db.js:reconnectDb",
    "Same as isDbReady: #76 can detect a blocked database but nothing reconnects after one."],
-  ["js/db.js:clearChangesToken",
-   "The delta-scan token is set and read (scan.js:957,995,1000) but never cleared, so a " +
-   "changed folder selection cannot invalidate it. #116 is where that matters."],
   ["js/drive.js:setDriveConfig",
    "Shared Drives are fully plumbed -- supportsAllDrives, includeItemsFromAllDrives, " +
    "corpora, driveId -- and defaulted off with no UI to turn them on."],
