@@ -146,9 +146,11 @@ export async function processQueue() {
     return;
   }
   
+  const queuedBytes = items.reduce((n, i) => n + (Number(i.size) || 0), 0);
   if (!await confirmAction({
     title: "Process the trash queue?",
-    message: `${items.length.toLocaleString()} queued file(s) will be moved to Google Drive Trash.`,
+    message: `${items.length.toLocaleString()} queued file(s) will be moved to Google Drive Trash`
+      + (queuedBytes > 0 ? `, freeing ${bytesToHuman(queuedBytes)}.` : "."),
     confirmLabel: `Move ${items.length} to Trash`,
     note: UNDO_NOTE,
     files: items,

@@ -13,7 +13,7 @@
  */
 // Bulk actions for selected files
 
-import { el } from "./util.js";
+import { el, bytesToHuman } from "./util.js";
 import { confirmAction, UNDO_NOTE } from "./confirm.js";
 import { batchTrash } from "./drive.js";
 import { selectedIds, getIdToFile } from "./render.js";
@@ -94,7 +94,11 @@ export async function trashSelectedNow() {
   }
 
   const filtered = files.map(f => f.id);
-  let message = `${files.length.toLocaleString()} selected file(s) will be moved to Google Drive Trash.`;
+  // Say what is at stake in bytes as well as in files (#114). "Move 1,204 to
+  // Trash" is a count; "frees 6.1 GB" is the reason the user is here.
+  const bytes = files.reduce((n, f) => n + (Number(f.size) || 0), 0);
+  let message = `${files.length.toLocaleString()} selected file(s) will be moved to Google Drive Trash`;
+  message += bytes > 0 ? `, freeing ${bytesToHuman(bytes)}.` : ".";
   if (skipped > 0) {
     message += ` ${skipped} file(s) in excluded folders will be skipped.`;
   }

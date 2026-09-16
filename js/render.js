@@ -91,6 +91,34 @@ export function selectedIds() { return Array.from(selected); }
 export function getSelectedCount() { return selected.size; }
 /** Rows in the current (filtered) result set — see setRowCountProvider in ui.js. */
 export function getRowCount() { return allRows.length; }
+
+/**
+ * What this scan could actually free, and how much of it is selected (#114).
+ *
+ * The "Size" stat summed every image the scan LOOKED AT, which on a 40 GB
+ * library with 3 GB of duplicates read 40 GB -- it answered "how much did I
+ * scan", which nobody asked. The number people came for is the sum of the
+ * non-keepers, and it has to move as they pin a different keeper, narrow the
+ * filter, select rows or trash a batch.
+ *
+ * Scoped to the FILTERED rows, the same scope updateFilterStats already
+ * reports, so the figure never disagrees with the table it sits above.
+ *
+ * `unknown` is not decoration: Drive returns no size for some items, so a sum
+ * that silently skipped them would promise space the user does not get back.
+ */
+export function getSizeStats() {
+  let reclaimable = 0, selectedBytes = 0, unknown = 0;
+  for (const row of allRows) {
+    const bytes = Number(row.file.size);
+    const known = Number.isFinite(bytes) && bytes > 0;
+    if (row.isKeep) continue;
+    if (!known) { unknown++; continue; }
+    reclaimable += bytes;
+    if (selected.has(row.file.id)) selectedBytes += bytes;
+  }
+  return { reclaimable, selected: selectedBytes, unknown };
+}
 export function getIdToFile() { return idToFile; }
 export function getCurrentGroups() { return currentState?.groups || []; }
 export function getPathMap() { return currentState?.pathMap || new Map(); }

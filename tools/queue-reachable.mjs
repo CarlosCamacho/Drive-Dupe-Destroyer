@@ -171,6 +171,84 @@ const again = await page.evaluate(async () => {
 ck(again.after === again.before && again.added === 0,
    `#113 re-queueing what is already queued adds nothing and reports 0 (was ${again.before}, now ${again.after})`);
 
+// --- #114 the reclaimable figure ------------------------------------------
+// Measured against a control the harness computes itself from the seeded
+// sizes, rather than against whatever the app happens to print. Each group is
+// 1 MB / 2 MB / 3 MB at 800x600 / 801x601 / 802x602, and the default keep rule
+// is "hires" -- so the LARGEST file is the keeper (it is also the highest
+// resolution), and 1 MB + 2 MB per group is what can actually be freed.
+//
+// Worth stating because the first version of this check asserted 2 MB + 3 MB,
+// having assumed the keeper was the small one. The app was right and the
+// control was wrong, which is the failure mode a control exists to expose.
+const sizes = await page.evaluate(async () => {
+  const render = await import('/js/render.js');
+  const rows = [...document.querySelectorAll('#resultsTbody tr[data-file-id]')];
+  const s = render.getSizeStats();
+  return {
+    ...s,
+    scannedText: document.getElementById('statSize')?.textContent,
+    reclaimText: document.getElementById('statReclaimable')?.textContent,
+    selectedText: document.getElementById('statSelectedBytes')?.textContent,
+    keeperRows: rows.filter(r => r.classList.contains('keepRow')).length,
+  };
+});
+// 2 groups x (1 MB + 2 MB), with the 3 MB / 802x602 file the keeper in each.
+const expectReclaim = 2 * (1_000_000 + 2_000_000);
+ck(sizes.reclaimable === expectReclaim,
+   `#114 reclaimable counts the non-keepers only (${sizes.reclaimable} vs expected ${expectReclaim})`);
+ck(sizes.reclaimable !== 2 * (1_000_000 + 2_000_000 + 3_000_000),
+   '#114 and is not the old "every image scanned" total');
+ck(sizes.selected === expectReclaim,
+   `#114 the selected figure follows the selection (${sizes.selected})`);
+ck(/MB|GB/.test(sizes.reclaimText || ''), `#114 the stat renders it ("${sizes.reclaimText}")`);
+ck(/selected/.test(sizes.selectedText || ''), `#114 alongside what is selected ("${sizes.selectedText}")`);
+
+// Pinning a different keeper changes what is reclaimable, because the keeper
+// is the file that stays.
+const afterPin = await page.evaluate(async () => {
+  const render = await import('/js/render.js');
+  const row = [...document.querySelectorAll('#resultsTbody tr[data-file-id]')]
+    .find(r => r.querySelector('[data-action="pin-keep"]'));
+  row?.querySelector('[data-action="pin-keep"]')?.click();
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+  return render.getSizeStats().reclaimable;
+});
+ck(afterPin !== sizes.reclaimable,
+   `#114 pinning a different keeper moves the figure (${sizes.reclaimable} -> ${afterPin})`);
+
+// A file Drive reported no size for is excluded and counted, so the total is a
+// floor rather than a promise.
+const unknown = await page.evaluate(async () => {
+  const render = await import('/js/render.js');
+  const idToFile = render.getIdToFile();
+  const victim = [...idToFile.values()].find(f => f.id === 'g0f2');
+  delete victim.size;
+  const ui = await import('/js/ui.js');
+  ui.refreshActionButtons();
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+  return {
+    stats: render.getSizeStats(),
+    text: document.getElementById('statReclaimable')?.textContent,
+    title: document.getElementById('statReclaimable')?.title,
+  };
+});
+ck(unknown.stats.unknown === 1, `#114 a file with no size is counted as unknown (${unknown.stats.unknown})`);
+ck((unknown.text || '').startsWith('≥'), `#114 and the total is shown as a floor ("${unknown.text}")`);
+ck(/no size/.test(unknown.title || ''), '#114 with a title that says why');
+
+// Put the fixture back for the trash-confirmation check below.
+await page.evaluate(async () => {
+  const render = await import('/js/render.js');
+  render.getIdToFile().get('g0f2').size = '3000000';
+  const row = [...document.querySelectorAll('#resultsTbody tr[data-file-id]')]
+    .find(r => r.querySelector('[data-action="unpin-keep"]'));
+  row?.querySelector('[data-action="unpin-keep"]')?.click();
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+  document.getElementById('btnSelectAll')?.click();
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+});
+
 // --- the bulk TRASH confirmation names the files ---------------------------
 // Not a queue check, but this fixture is the only place in the harness suite
 // with a real selection over a real result set. trashSelectedNow() handed

@@ -17,10 +17,10 @@
 import { SIMILARITY_BITS } from "./common.js";
 import { confirmAction } from "./confirm.js";
 import { el, APP_VERSION } from "./util.js";
-import { uiInit, setSignedInUi, setStatus, showEmptyState, setScanningState, showToast, wireErrorModal, setSelectedCountProvider, setRowCountProvider, lockBodyScroll } from "./ui.js";
+import { uiInit, setSignedInUi, setStatus, showEmptyState, setScanningState, showToast, wireErrorModal, setSelectedCountProvider, setRowCountProvider, setSizeStatsProvider, lockBodyScroll } from "./ui.js";
 import { wireAuth } from "./auth.js";
 import { runScan, setupBackgroundDetection } from "./scan.js";
-import { renderGroups, wireRenderControls, getSelectedCount, getRowCount, beginProgressive, pushProgressiveMatch, endProgressive, mergeProgressivePaths } from "./render.js";
+import { renderGroups, wireRenderControls, getSelectedCount, getRowCount, getSizeStats, beginProgressive, pushProgressiveMatch, endProgressive, mergeProgressivePaths } from "./render.js";
 import { wireCompare } from "./compare.js";
 import { wireCrop } from "./crop.js";
 import { wireFolderPicker, getIncludedFolderIds, getIncludedFolders, getExclusions } from "./folderPicker.js";
@@ -639,6 +639,7 @@ async function init() {
   // Wire up the selected count provider so UI can get accurate count
   setSelectedCountProvider(getSelectedCount);
   setRowCountProvider(getRowCount);
+  setSizeStatsProvider(getSizeStats);
   
   wireAuth({ onSignedIn: async () => {} });
   wireFolderPicker();

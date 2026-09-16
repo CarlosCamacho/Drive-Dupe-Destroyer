@@ -47,6 +47,19 @@ export function setRowCountProvider(fn) {
   getRowCountFn = fn;
 }
 
+let getSizeStatsFn = null;
+
+/**
+ * Where the reclaimable figure comes from (#114). Read from inside
+ * refreshActionButtons rather than called separately, because the events that
+ * change it -- selection, pinning a keeper, filtering, deleting -- are exactly
+ * the events that already refresh the toolbar. One wiring point, no call site
+ * left behind.
+ */
+export function setSizeStatsProvider(fn) {
+  getSizeStatsFn = fn;
+}
+
 export function setSelectedCountProvider(fn) {
   getSelectedCountFn = fn;
 }
@@ -253,6 +266,38 @@ export function updateStats({ groups = 0, files = 0, totalBytes = 0, cacheHit = 
   if (statDuration) statDuration.textContent = durationMs == null ? "—" : humanDuration(durationMs);
 }
 
+/**
+ * "Reclaimable: 8.3 GB — 1.2 GB selected" (#114).
+ *
+ * A floor, not a promise, when Drive reported no size for some files: saying
+ * "at least" is the difference between a number the user can trust and one
+ * that quietly over-promises.
+ */
+export function updateSizeStats() {
+  const reclaimEl = el("statReclaimable");
+  const selEl = el("statSelectedBytes");
+  if (!reclaimEl && !selEl) return;
+
+  const s = getSizeStatsFn ? getSizeStatsFn() : null;
+  if (!s) {
+    if (reclaimEl) reclaimEl.textContent = "—";
+    if (selEl) { selEl.textContent = ""; selEl.title = ""; }
+    return;
+  }
+
+  if (reclaimEl) {
+    reclaimEl.title = s.unknown > 0
+      ? `At least this much: Google Drive reported no size for ${s.unknown} duplicate(s), so they are not counted.`
+      : "The total size of every duplicate that is not its group's keeper.";
+    reclaimEl.textContent = s.reclaimable <= 0
+      ? "—"
+      : s.unknown > 0 ? `≥ ${bytesToHuman(s.reclaimable)}` : bytesToHuman(s.reclaimable);
+  }
+  if (selEl) {
+    selEl.textContent = s.selected > 0 ? ` — ${bytesToHuman(s.selected)} selected` : "";
+  }
+}
+
 export function updateFilterStats(groups, files, filter) {
   const filterStatsEl = el("filterStats");
   if (filterStatsEl) {
@@ -297,6 +342,8 @@ export function refreshActionButtons() {
     btnQueueSelected.disabled = checkedCount === 0;
     btnQueueSelected.textContent = checkedCount > 0 ? `📋 Queue Selected (${checkedCount})` : '📋 Queue Selected';
   }
+
+  updateSizeStats();
 }
 
 export function clearResults() {
