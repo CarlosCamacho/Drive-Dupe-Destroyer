@@ -663,10 +663,6 @@ export function setHashingErrors(errors) {
   }
 }
 
-export function getHashingErrors() {
-  return currentErrors;
-}
-
 export function showErrorModal() {
   const modal = el("errorModal");
   const errorList = el("errorList");

@@ -205,30 +205,6 @@ export function isImageMime(mime) {
 }
 
 /**
- * Get format category for UI display
- */
-export function getFormatCategory(mime) {
-  if (!mime) return 'unknown';
-  const lower = mime.toLowerCase();
-  
-  if (['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp'].includes(lower)) {
-    return 'standard';
-  }
-  if (['image/heic', 'image/heif', 'image/avif', 'image/jxl'].includes(lower)) {
-    return 'modern';
-  }
-  if (lower.includes('raw') || lower.includes('cr2') || lower.includes('nef') || 
-      lower.includes('arw') || lower.includes('dng')) {
-    return 'raw';
-  }
-  if (lower.includes('photoshop') || lower.includes('psd')) return 'photoshop';
-  if (lower.includes('tga') || lower.includes('targa')) return 'targa';
-  if (lower.includes('iff') || lower.includes('ilbm')) return 'amiga';
-  if (lower.includes('pcx')) return 'pcx';
-  return 'other';
-}
-
-/**
  * Precomputed popcount lookup table for bytes (0-255)
  * This is the fastest method for small operands
  */
@@ -557,40 +533,6 @@ export function bestDistExtended(entryA, entryB, withVariants, use12, withCropDe
 }
 
 /**
- * Batch distance calculation for multiple candidates
- * More efficient when checking many pairs
- */
-export function batchBestDist(entry, candidates, idToEntry, withVariants, use12, threshold) {
-  const results = [];
-  const A = use12 ? entry.base12 : entry.base8;
-  if (!A) return results;
-  
-  for (const candId of candidates) {
-    const candEntry = idToEntry.get(candId);
-    if (!candEntry) continue;
-    
-    const B = use12 ? candEntry.base12 : candEntry.base8;
-    if (!B) continue;
-    
-    // Quick check with threshold
-    let dist = hammingWithThreshold(A, B, threshold);
-    
-    if (dist <= threshold) {
-      // If within threshold, get exact best distance including variants
-      if (withVariants && dist > 0) {
-        dist = bestDist(entry, candEntry, true, use12);
-      }
-      
-      if (dist <= threshold) {
-        results.push({ id: candId, dist });
-      }
-    }
-  }
-  
-  return results;
-}
-
-/**
  * Choose which file to keep in a duplicate group
  * Fixed: Uses file size as fallback when imageMediaMetadata is missing
  */
@@ -723,18 +665,6 @@ export function thresholdFromEasy(level) {
     5: 3    // Very strict - nearly identical only
   };
   return map[level] ?? 10;
-}
-
-/**
- * Estimate similarity category from distance
- */
-export function similarityCategory(dist, bits = 144) {
-  const pct = distToPercent(dist, bits);
-  if (pct === 100) return 'identical';
-  if (pct >= 95) return 'near-identical';
-  if (pct >= 85) return 'very-similar';
-  if (pct >= 70) return 'similar';
-  return 'different';
 }
 
 // ============================================================================

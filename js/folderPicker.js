@@ -420,22 +420,8 @@ export function getIncludedFolderIds() {
   return Array.from(included.keys());
 }
 
-export function getExcludedFolderIds() {
-  return Array.from(excluded.keys());
-}
-
 export function getIncludedFolders() {
   return Array.from(included.values());
-}
-
-export function getExcludedFolders() {
-  return Array.from(excluded.values());
-}
-
-export function clearAllFolders() {
-  included.clear();
-  excluded.clear();
-  renderIncluded();
 }
 
 export function getExclusions() {

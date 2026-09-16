@@ -1302,7 +1302,3 @@ function closeCropModal() {
   zoomLevel = 1;
   // Note: isLocked, rememberedWidth, rememberedHeight persist across sessions
 }
-
-export function closeCrop() {
-  closeCropModal();
-}

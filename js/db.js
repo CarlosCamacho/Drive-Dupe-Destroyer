@@ -265,21 +265,6 @@ export function onQuotaExceeded(notify) {
 // Images Store - Optimized
 // ============================================================================
 
-export async function dbPutImage(rec) {
-  const store = await getStore("images", "readwrite");
-  return promisifyRequest(store.put({ ...rec, ts: toIso() }));
-}
-
-export async function dbGetImage(id) {
-  const store = await getStore("images");
-  return promisifyRequest(store.get(id)) || null;
-}
-
-export async function dbDelImage(id) {
-  const store = await getStore("images", "readwrite");
-  return promisifyRequest(store.delete(id));
-}
-
 export async function dbClearImages() {
   const store = await getStore("images", "readwrite");
   return promisifyRequest(store.clear());
@@ -381,33 +366,6 @@ export async function dbPutImagesBatch(records) {
     if (isQuotaError(e)) throw Object.assign(e, { code: "QUOTA" });
     throw e;
   }
-}
-
-/**
- * Find images by MD5 hash (for exact duplicate detection)
- */
-export async function dbGetImagesByMd5(md5) {
-  if (!md5) return [];
-  
-  const store = await getStore("images");
-  const index = store.index("md5");
-  const results = [];
-  
-  return new Promise((resolve, reject) => {
-    const cursor = index.openCursor(IDBKeyRange.only(md5));
-    
-    cursor.onsuccess = () => {
-      const c = cursor.result;
-      if (!c) {
-        resolve(results);
-        return;
-      }
-      results.push(c.value);
-      c.continue();
-    };
-    
-    cursor.onerror = () => reject(cursor.error);
-  });
 }
 
 /**
@@ -521,11 +479,6 @@ export async function stateGet(key) {
   const store = await getStore("scanState");
   const result = await promisifyRequest(store.get(key));
   return result?.value ?? null;
-}
-
-export async function stateDel(key) {
-  const store = await getStore("scanState", "readwrite");
-  return promisifyRequest(store.delete(key));
 }
 
 // ============================================================================
@@ -720,15 +673,6 @@ export async function getFolderScanHistory() {
   return (await settingGet(SCAN_HISTORY_KEY, {})) || {};
 }
 
-export async function recordFolderScan(folderId, folderName) {
-  const history = await getFolderScanHistory();
-  history[folderId] = {
-    name: folderName,
-    lastScanned: new Date().toISOString()
-  };
-  await settingSet(SCAN_HISTORY_KEY, history);
-}
-
 export async function recordFoldersScan(folders) {
   const history = await getFolderScanHistory();
   const now = new Date().toISOString();
@@ -746,25 +690,6 @@ export async function recordFoldersScan(folders) {
 // ============================================================================
 // Database Utilities
 // ============================================================================
-
-/**
- * Get database statistics
- */
-export async function getDbStats() {
-  const [imageCount, queueCount, pathCount] = await Promise.all([
-    dbCountImages(),
-    queueList().then(q => q.length),
-    getStore("pathCache").then(s => promisifyRequest(s.count()))
-  ]);
-  
-  return {
-    images: imageCount,
-    queue: queueCount,
-    paths: pathCount,
-    dbName: DB_NAME,
-    dbVersion: DB_VERSION
-  };
-}
 
 /**
  * Check if database is ready

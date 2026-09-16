@@ -216,60 +216,6 @@ export function lshCandidates(index, id, entry) {
 }
 
 /**
- * Multi-probe LSH - also check nearby buckets for better recall
- * This catches near-matches that differ by 1 bit in a band
- */
-export function lshCandidatesMultiProbe(index, id, entry, probeCount = 2) {
-  const h = index.use12 ? entry.base12 : entry.base8;
-  if (!h || h.length === 0) return new Set();
-  
-  const keys = getBandKeys(h, index.config.bandIndices);
-  const candidates = new Set();
-  
-  // Standard lookup
-  for (let b = 0; b < index.tables.length; b++) {
-    const bucket = index.tables[b].get(keys[b]);
-    if (bucket) {
-      for (const otherId of bucket) {
-        if (otherId !== id) candidates.add(otherId);
-      }
-    }
-  }
-  
-  // Multi-probe: check buckets with 1-bit differences
-  if (probeCount > 0) {
-    for (let b = 0; b < index.config.bandIndices.length; b++) {
-      const indices = index.config.bandIndices[b];
-      
-      // Try flipping bits in the band
-      for (let byteIdx = 0; byteIdx < indices.length && probeCount > 0; byteIdx++) {
-        const hashIdx = indices[byteIdx] % h.length;
-        
-        for (let bit = 0; bit < 8 && probeCount > 0; bit++) {
-          // Create modified band bytes
-          const modifiedBytes = new Uint8Array(indices.length);
-          for (let i = 0; i < indices.length; i++) {
-            modifiedBytes[i] = h[indices[i] % h.length];
-          }
-          modifiedBytes[byteIdx] ^= (1 << bit);
-          
-          const probeKey = bytesToHex(modifiedBytes);
-          const probeBucket = index.tables[b].get(probeKey);
-          
-          if (probeBucket) {
-            for (const otherId of probeBucket) {
-              if (otherId !== id) candidates.add(otherId);
-            }
-          }
-        }
-      }
-    }
-  }
-  
-  return candidates;
-}
-
-/**
  * Get statistics about the LSH index
  */
 export function lshStats(index) {
@@ -307,13 +253,6 @@ export function lshStats(index) {
     singletons,
     estimatedReduction: `${reductionFactor.toFixed(1)}%`
   };
-}
-
-/**
- * Clear hex cache (call periodically for long-running operations)
- */
-export function clearLshCache() {
-  hexCache.clear();
 }
 
 /**

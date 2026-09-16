@@ -423,10 +423,6 @@ async function computeHashForFileWithRetry(file, {
   throw lastError;
 }
 
-export async function computeHashesForFile(file, opts = {}) {
-  return computeHashForFileWithRetry(file, { ...opts, maxRetries: 1 });
-}
-
 export async function computeHashesForFiles(files, {
   withVariants = false,
   withCropDetect = false,
@@ -510,22 +506,4 @@ export async function computeHashesForFiles(files, {
   hashingStats.endTime = nowMs();
   
   return { out, failed: hashingStats.failed, failedFiles, stats: getHashingStats() };
-}
-
-export function terminateWorkers() {
-  for (const worker of workers) {
-    try { worker.terminate(); } catch {}
-  }
-  workers.length = 0;
-  workerIndex = 0;
-  pending.clear();
-  poolInitialized = false;
-}
-
-export function getWorkerPoolStatus() {
-  return {
-    poolSize: workers.length,
-    pendingJobs: pending.size,
-    initialized: poolInitialized,
-  };
 }

@@ -123,7 +123,3 @@ export function updateTelemetry(stats) {
     body.appendChild(btn);
   }
 }
-
-export function isTelemetryVisible() {
-  return visible;
-}

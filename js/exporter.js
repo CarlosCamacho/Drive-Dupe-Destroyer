@@ -203,7 +203,3 @@ export function wireExport() {
     };
   }
 }
-
-export function getExportState() {
-  return exportState;
-}
