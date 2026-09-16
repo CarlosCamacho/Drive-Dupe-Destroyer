@@ -16,7 +16,13 @@
 // UI utilities and state management
 // Fixed selection count bug - now uses render module's selected Set
 
-import { el, clamp, bytesToHuman, humanDuration, getCurrentYear, HELP_TEXT, APP_VERSION } from "./util.js";
+import { el, clamp, getCurrentYear, HELP_TEXT, APP_VERSION } from "./util.js";
+import {
+  TOAST_MAX, DEFAULT_EMPTY_STATE,
+  sizeStatsText, scanStatsText, filterStatsText, actionButtonState,
+  progressValueText, emptyStateFor, toastDurationMs, toastRole,
+  toastsToEvict, toastCountText, trashedToastMessage, etaState,
+} from "./uiText.js";
 
 // Re-exported so existing importers (exporter.js) keep working; the value
 // itself is defined once in util.js.
@@ -170,13 +176,7 @@ function flush() {
   }
   if (progressPending !== null && progressEl) {
     progressEl.value = progressPending;
-    // A bare number tells a screen-reader user nothing about what is happening.
-    // The phase is the useful half, and #status is a live region that announces
-    // it -- this is for anyone who navigates to the bar itself (#104).
-    progressEl.setAttribute(
-      "aria-valuetext",
-      `${Math.round(progressPending)}%${lastPhase ? " — " + lastPhase : ""}`
-    );
+    progressEl.setAttribute("aria-valuetext", progressValueText(progressPending, lastPhase));
     progressPending = null;
   }
 }
@@ -202,31 +202,12 @@ export function updateEta(pct) {
   const etaEl = document.getElementById("etaLine");
   if (!etaEl) return;
 
-  if (pct <= 2) {
-    // Not enough data yet
-    _etaStartTime = Date.now();
-    _etaLastPct = pct;
-    etaEl.style.display = "none";
-    return;
-  }
+  const eta = etaState(pct, (Date.now() - _etaStartTime) / 1000, _etaLastPct);
+  if (eta.restart) _etaStartTime = Date.now();
+  _etaLastPct = eta.lastPct;
 
-  const elapsed = (Date.now() - _etaStartTime) / 1000;
-  if (elapsed < 3 || pct <= _etaLastPct) {
-    etaEl.style.display = "none";
-    return;
-  }
-
-  _etaLastPct = pct;
-  const rate = pct / elapsed; // % per second
-  const remaining = (100 - pct) / rate;
-
-  let label;
-  if (remaining < 10)       label = "< 10s";
-  else if (remaining < 60)  label = `~${Math.round(remaining)}s`;
-  else if (remaining < 3600) label = `~${Math.round(remaining / 60)}m`;
-  else                       label = `~${Math.round(remaining / 3600)}h`;
-
-  etaEl.textContent = `ETA: ${label}`;
+  if (!eta.show) { etaEl.style.display = "none"; return; }
+  etaEl.textContent = eta.label;
   etaEl.style.display = "inline";
 }
 
@@ -259,11 +240,12 @@ export function updateStats({ groups = 0, files = 0, totalBytes = 0, cacheHit = 
   const statCacheHit = el("statCacheHit");
   const statDuration = el("statDuration");
   
-  if (statGroups) statGroups.textContent = String(groups);
-  if (statFiles) statFiles.textContent = String(files);
-  if (statSize) statSize.textContent = bytesToHuman(totalBytes);
-  if (statCacheHit) statCacheHit.textContent = cacheHit == null ? "—" : `${Math.round(cacheHit * 100)}%`;
-  if (statDuration) statDuration.textContent = durationMs == null ? "—" : humanDuration(durationMs);
+  const t = scanStatsText({ groups, files, totalBytes, cacheHit, durationMs });
+  if (statGroups) statGroups.textContent = t.groups;
+  if (statFiles) statFiles.textContent = t.files;
+  if (statSize) statSize.textContent = t.size;
+  if (statCacheHit) statCacheHit.textContent = t.cacheHit;
+  if (statDuration) statDuration.textContent = t.duration;
 }
 
 /**
@@ -278,23 +260,14 @@ export function updateSizeStats() {
   const selEl = el("statSelectedBytes");
   if (!reclaimEl && !selEl) return;
 
-  const s = getSizeStatsFn ? getSizeStatsFn() : null;
-  if (!s) {
-    if (reclaimEl) reclaimEl.textContent = "—";
-    if (selEl) { selEl.textContent = ""; selEl.title = ""; }
-    return;
-  }
-
+  const t = sizeStatsText(getSizeStatsFn ? getSizeStatsFn() : null);
   if (reclaimEl) {
-    reclaimEl.title = s.unknown > 0
-      ? `At least this much: Google Drive reported no size for ${s.unknown} duplicate(s), so they are not counted.`
-      : "The total size of every duplicate that is not its group's keeper.";
-    reclaimEl.textContent = s.reclaimable <= 0
-      ? "—"
-      : s.unknown > 0 ? `≥ ${bytesToHuman(s.reclaimable)}` : bytesToHuman(s.reclaimable);
+    reclaimEl.textContent = t.reclaimable;
+    reclaimEl.title = t.reclaimableTitle;
   }
   if (selEl) {
-    selEl.textContent = s.selected > 0 ? ` — ${bytesToHuman(s.selected)} selected` : "";
+    selEl.textContent = t.selected;
+    selEl.title = t.selectedTitle;
   }
 }
 
@@ -302,14 +275,9 @@ export function updateFilterStats(groups, files, filter, review = null) {
   const filterStatsEl = el("filterStats");
   if (!filterStatsEl) return;
 
-  const parts = [];
-  if (filter !== "all") parts.push(`${groups} groups, ${files} files`);
   // How much is left to do -- the number that tells someone coming back
   // whether this is a five-minute job or an evening (#117).
-  if (review && review.total > 0 && review.untouched < review.total) {
-    parts.push(`${(review.total - review.untouched).toLocaleString()} of ${review.total.toLocaleString()} reviewed`);
-  }
-  filterStatsEl.textContent = parts.length ? `(${parts.join(" · ")})` : "";
+  filterStatsEl.textContent = filterStatsText(groups, files, filter, review);
 }
 
 export function refreshActionButtons() {
@@ -328,22 +296,24 @@ export function refreshActionButtons() {
     ? getRowCountFn()
     : document.querySelectorAll('#resultsTbody tr:not(.virtualSpacer)').length;
   
+  const state = actionButtonState(rowCount, checkedCount);
+
   const btnSelectAll = el("btnSelectAll");
   const btnSelectNone = el("btnSelectNone");
   const btnTrashNow = el("btnTrashNow");
   const btnQueueSelected = el("btnQueueSelected");
-  
-  if (btnSelectAll) btnSelectAll.disabled = rowCount === 0;
-  if (btnSelectNone) btnSelectNone.disabled = rowCount === 0;
+
+  if (btnSelectAll) btnSelectAll.disabled = state.selectAllDisabled;
+  if (btnSelectNone) btnSelectNone.disabled = state.selectNoneDisabled;
   if (btnTrashNow) {
-    btnTrashNow.disabled = checkedCount === 0;
-    btnTrashNow.textContent = checkedCount > 0 ? `🗑️ Trash Selected (${checkedCount})` : '🗑️ Trash Selected';
+    btnTrashNow.disabled = state.trashDisabled;
+    btnTrashNow.textContent = state.trashLabel;
   }
   // #113: the queue's bulk entry point. Tracks the same selection as Trash
   // Selected, because the two are the same decision -- now versus later.
   if (btnQueueSelected) {
-    btnQueueSelected.disabled = checkedCount === 0;
-    btnQueueSelected.textContent = checkedCount > 0 ? `📋 Queue Selected (${checkedCount})` : '📋 Queue Selected';
+    btnQueueSelected.disabled = state.queueDisabled;
+    btnQueueSelected.textContent = state.queueLabel;
   }
 
   updateSizeStats();
@@ -356,45 +326,13 @@ export function clearResults() {
   showEmptyState(true);
 }
 
-/**
- * The panel where results go, when there are none.
- *
- * It used to say "No duplicates found" from the very first paint -- a verdict
- * on a scan that had never run, above a toolbar of ten disabled controls. That
- * is the first thing a new user reads (#103). Three states, because they are
- * three different situations:
- *
- *   before-signin : nothing has been attempted, and the next step is sign-in
- *   ready         : signed in, nothing scanned yet
- *   none-found    : a scan really did run and really did find nothing -- the
- *                   only state in which the old copy was true
- */
-const EMPTY_STATES = {
-  "before-signin": {
-    icon: "🖼️",
-    title: "Find duplicate photos in Google Drive",
-    body: "Sign in to get started.",
-    steps: ["Sign in with Google", "Choose the folders to search", "Start the scan"],
-  },
-  ready: {
-    icon: "📂",
-    title: "Ready to scan",
-    body: "Choose the folders to search, then start the scan.",
-    steps: null,
-  },
-  "none-found": {
-    icon: "✅",
-    title: "No duplicates found",
-    body: "Nothing in the folders you scanned looks like a duplicate.",
-    steps: null,
-  },
-};
-
-let emptyStateKind = "before-signin";
+// The panel where results go, when there are none (#103). The copy for the
+// three states lives in uiText.js; this half puts it on screen.
+let emptyStateKind = DEFAULT_EMPTY_STATE;
 
 /** @param {'before-signin'|'ready'|'none-found'} kind */
 export function setEmptyState(kind, detail = "") {
-  const s = EMPTY_STATES[kind] || EMPTY_STATES["before-signin"];
+  const s = emptyStateFor(kind, detail);
   emptyStateKind = kind;
 
   const icon = el("emptyIcon");
@@ -404,9 +342,7 @@ export function setEmptyState(kind, detail = "") {
 
   if (icon) icon.textContent = s.icon;
   if (title) title.textContent = s.title;
-  // `detail` says what was actually searched, so "no duplicates" is a finding
-  // rather than an assertion: "No duplicates among 4,812 images in 12 folders."
-  if (body) body.textContent = detail || s.body;
+  if (body) body.textContent = s.body;
   if (steps) {
     steps.hidden = !s.steps;
     if (s.steps) steps.innerHTML = s.steps.map((t) => `<li>${t}</li>`).join("");
@@ -516,7 +452,6 @@ export function setSearchSummary(recursive, maxItems, useDb) {
 // back BY DESIGN ("Trashed 40 file(s)" then "Failed to trash 3"), so on a
 // partially failed run the user saw only the failure and never the count that
 // succeeded or the mention of Undo (#107).
-const TOAST_MAX = 3;
 
 function toastContainer() {
   let c = document.getElementById("toastStack");
@@ -556,14 +491,14 @@ export function showToast(message, type = 'info', duration = null, action = null
     const n = (Number(twin.dataset.count) || 1) + 1;
     twin.dataset.count = String(n);
     const badge = twin.querySelector(".toastCount");
-    if (badge) { badge.textContent = `×${n}`; badge.hidden = false; }
+    if (badge) { badge.textContent = toastCountText(n); badge.hidden = false; }
     return twin;
   }
 
   const toast = document.createElement('div');
   toast.className = `toast toast-${type}`;
   toast.dataset.message = message;
-  toast.setAttribute("role", type === "error" ? "alert" : "status");
+  toast.setAttribute("role", toastRole(type));
 
   const text = document.createElement("span");
   text.className = "toastText";
@@ -593,24 +528,17 @@ export function showToast(message, type = 'info', duration = null, action = null
   toast.appendChild(close);
 
   container.appendChild(toast);
-  // Evict over the cap by walking a SNAPSHOT of the live toasts, not by
-  // re-reading container.children. dismissToast only marks a toast and removes
-  // it 300ms later, so `while (children.length > MAX) dismissToast(first)` never
-  // terminates -- the first child is still a child on the next iteration, and
-  // the second dismissToast returns early because it is already leaving. That
-  // spun the renderer until Chromium killed the tab, which is how it showed up:
-  // as tools/trash-partial.mjs losing the page, not as a visible UI bug.
+  // Evict over the cap from a SNAPSHOT of the live toasts, never by looping on
+  // container.children: dismissToast only marks a toast and removes it 300ms
+  // later, so the condition `children.length > MAX` stayed true forever and
+  // spun the renderer until Chromium killed the tab (14.7.12). toastsToEvict
+  // returns the list, so there is no condition left to get wrong.
   const live = [...container.children].filter((t) => !t.dataset.leaving);
-  while (live.length > TOAST_MAX) dismissToast(live.shift());
+  for (const old of toastsToEvict(live, TOAST_MAX)) dismissToast(old);
 
   requestAnimationFrame(() => toast.classList.add('show'));
 
-  // An error stays until the user deals with it; a confirmation does not need
-  // to. A toast carrying an action gets longer, since it has to be reachable.
-  const ms = duration != null ? duration
-    : type === "error" ? 0
-    : action ? 10000
-    : 4000;
+  const ms = toastDurationMs(type, duration, action);
   if (ms > 0) setTimeout(() => dismissToast(toast), ms);
 
   return toast;
@@ -627,9 +555,8 @@ export function showToast(message, type = 'info', duration = null, action = null
  * on undo.js, which imports ui.js for showToast.
  */
 export function showTrashedToast(count, onUndo) {
-  const what = count === 1 ? "1 file" : `${count.toLocaleString()} files`;
   return showToast(
-    `Moved ${what} to Google Drive Trash`,
+    trashedToastMessage(count),
     "success",
     null,
     typeof onUndo === "function" ? { label: "Undo", onClick: onUndo } : null
