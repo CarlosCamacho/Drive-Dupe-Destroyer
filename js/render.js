@@ -31,7 +31,6 @@ const BUFFER_ROWS = 10;
 
 let thumbObserver = null;
 const loadedThumbs = new Set();
-let scrollListenersAttached = false;
 
 let currentState = null;
 let allRows = [];
@@ -344,12 +343,25 @@ function renderVisibleRows() {
   tbody.innerHTML = "";
   tbody.appendChild(fragment);
 
-  requestAnimationFrame(() => {
-    observeThumbnails();
-    throttledLoadVisibleThumbs();
-  });
+  requestAnimationFrame(() => observeThumbnails());
 }
 
+// One mechanism, not two (#119).
+//
+// There used to be an IntersectionObserver AND a throttled handler on scroll,
+// wheel and window scroll, each deciding visibility its own way: rootMargin
+// '200px' here, a hand-rolled `rect.bottom >= wrapRect.top - 200` there. Two
+// implementations of one policy, which is how the guard bug documented in
+// loadThumbnailForImg got in -- the scroll path tested
+// `img.src.startsWith('http')`, which blob: URLs fail, so it re-processed every
+// blob-backed thumbnail ten times a second forever. The observer never had that
+// bug, because it unobserves.
+//
+// The observer covers what the scroll path was reaching for, and more: it is
+// geometry-based rather than event-based, so rows that become visible from a
+// filter change, a group removal or a window resize are handled without an
+// event to hang off. Rows added after a progressive render are picked up by
+// observeThumbnails(), which was already the mechanism for that.
 function setupThumbObserver() {
   if (thumbObserver) thumbObserver.disconnect();
   
@@ -361,38 +373,8 @@ function setupThumbObserver() {
       }
     }
   }, { root: document.querySelector('.tableWrap'), rootMargin: '200px', threshold: 0 });
-  
-  if (!scrollListenersAttached) {
-    scrollListenersAttached = true;
-    const tableWrap = document.querySelector('.tableWrap');
-    if (tableWrap) {
-      tableWrap.addEventListener('scroll', throttledLoadVisibleThumbs, { passive: true });
-      tableWrap.addEventListener('wheel', throttledLoadVisibleThumbs, { passive: true });
-    }
-    window.addEventListener('scroll', throttledLoadVisibleThumbs, { passive: true });
-  }
 }
 
-const throttledLoadVisibleThumbs = throttle(() => {
-  const tableWrap = document.querySelector('.tableWrap');
-  if (!tableWrap) return;
-  const imgs = tableWrap.querySelectorAll('img.thumb[data-file-id]');
-  const wrapRect = tableWrap.getBoundingClientRect();
-
-  for (const img of imgs) {
-    if (img.dataset.failed) continue;
-    // loadedThumbs is the authority on what is already showing. The previous
-    // guard tested `img.src.startsWith('http')`, which blob: URLs fail, so every
-    // blob-backed thumbnail was re-processed on every scroll tick — an async
-    // call and a cache lookup per image, ten times a second, for images that
-    // were already painted.
-    if (loadedThumbs.has(img.dataset.fileId)) continue;
-    const rect = img.getBoundingClientRect();
-    if (rect.bottom >= wrapRect.top - 200 && rect.top <= wrapRect.bottom + 200) {
-      loadThumbnailForImg(img);
-    }
-  }
-}, 100);
 
 /**
  * Point a results-table <img> at a thumbnail.
@@ -445,6 +427,18 @@ async function loadThumbnailViaBlob(img, file, fileId) {
   }
   // Leave the inline placeholder in place and stop retrying this row.
   img.dataset.failed = "1";
+}
+
+/**
+ * Tear the observer down, for tools/thumb-loading.mjs.
+ *
+ * #119 removed a second, redundant thumbnail loader. The check that it is gone
+ * cannot be "grep for addEventListener" -- that tests the source, not the
+ * behaviour. It disconnects the observer and asserts that scrolling then loads
+ * NOTHING, which is only true if the observer is the only mechanism left.
+ */
+export function __test_disconnectThumbObserver() {
+  if (thumbObserver) { thumbObserver.disconnect(); thumbObserver = null; }
 }
 
 function observeThumbnails() {
