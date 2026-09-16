@@ -23,8 +23,66 @@ import { validateFolderId, sanitizeText } from "./security.js";
 const ROOT = "root";
 let currentId = ROOT;
 let crumbs = [];
-let included = new Map(); // id -> {id, name, include: true}
-let excluded = new Map(); // id -> {id, name, include: false}
+/**
+ * The include/exclude selection, as data (#124).
+ *
+ * This used to be two module-level Maps mutated from inside a dozen click
+ * handlers, which is why this 443-line module -- the gate in front of the
+ * entire app, since no scan can start without it -- had no test of any kind.
+ * The rules below are small but they are not obvious: including a folder must
+ * remove it from the excluded set and vice versa, or the same id ends up in
+ * both and getExclusions() silently contradicts getIncludedFolderIds().
+ *
+ * That matters beyond this module. The exclusion set is consulted twice for
+ * two different purposes -- actions.js refuses to trash a file whose parent is
+ * excluded, and scan.js:962 uses it to keep delta-scan changes in scope. A
+ * wrong exclusion set does not look like a bug; it looks like the app scanning
+ * folders you told it not to.
+ */
+export function makeSelection() {
+  return { included: new Map(), excluded: new Map() };
+}
+
+/** Include a folder, which un-excludes it. Idempotent. */
+export function includeFolder(sel, folder) {
+  if (!folder?.id) return sel;
+  sel.excluded.delete(folder.id);
+  sel.included.set(folder.id, { id: folder.id, name: folder.name || "" });
+  return sel;
+}
+
+/** Exclude a folder, which un-includes it. Idempotent. */
+export function excludeFolder(sel, folder) {
+  if (!folder?.id) return sel;
+  sel.included.delete(folder.id);
+  sel.excluded.set(folder.id, { id: folder.id, name: folder.name || "" });
+  return sel;
+}
+
+/** Forget a folder entirely -- neither included nor excluded. */
+export function forgetFolder(sel, id) {
+  sel.included.delete(id);
+  sel.excluded.delete(id);
+  return sel;
+}
+
+export function clearSelection(sel) {
+  sel.included.clear();
+  sel.excluded.clear();
+  return sel;
+}
+
+/** What the sidebar says under "Folders". */
+export function selectionSummary(sel) {
+  const parts = [];
+  if (sel.included.size) parts.push(`${sel.included.size} included`);
+  if (sel.excluded.size) parts.push(`${sel.excluded.size} excluded`);
+  return parts.length ? parts.join(", ") : "None selected";
+}
+
+const selection = makeSelection();
+const included = selection.included; // id -> {id, name}
+const excluded = selection.excluded; // id -> {id, name}
 let renderSeq = 0;
 let isLoading = false;
 let scanHistory = {}; // Cache of folder scan history
@@ -91,7 +149,7 @@ function renderIncluded() {
       chip.className = "chip chipInclude";
       chip.innerHTML = `<span>✓ ${escapeHtml(f.name)}</span> <button title="remove" aria-label="Remove ${escapeHtml(f.name)}">✕</button>`;
       chip.querySelector("button").onclick = () => {
-        included.delete(f.id);
+        forgetFolder(selection, f.id);
         renderIncluded();
       };
       chips.appendChild(chip);
@@ -103,7 +161,7 @@ function renderIncluded() {
       chip.className = "chip chipExclude";
       chip.innerHTML = `<span>✗ ${escapeHtml(f.name)}</span> <button title="remove" aria-label="Remove ${escapeHtml(f.name)}">✕</button>`;
       chip.querySelector("button").onclick = () => {
-        excluded.delete(f.id);
+        forgetFolder(selection, f.id);
         renderIncluded();
       };
       chips.appendChild(chip);
@@ -113,10 +171,7 @@ function renderIncluded() {
   if (countEl) countEl.textContent = String(included.size);
   
   if (summaryEl) {
-    const parts = [];
-    if (included.size) parts.push(`${included.size} included`);
-    if (excluded.size) parts.push(`${excluded.size} excluded`);
-    summaryEl.textContent = parts.length ? parts.join(", ") : "None selected";
+    summaryEl.textContent = selectionSummary(selection);
   }
 }
 
@@ -207,10 +262,9 @@ async function renderList(seq = 0) {
         btnInclude.title = "Add to scan";
         btnInclude.onclick = () => {
           if (isIncluded) {
-            included.delete(f.id);
+            forgetFolder(selection, f.id);
           } else {
-            excluded.delete(f.id);
-            included.set(f.id, { id: f.id, name: f.name || "" });
+            includeFolder(selection, f);
           }
           renderIncluded();
           renderList(renderSeq);
@@ -222,12 +276,8 @@ async function renderList(seq = 0) {
         btnExclude.textContent = "Exclude";
         btnExclude.title = "Skip this folder";
         btnExclude.onclick = () => {
-          if (isExcluded) {
-            excluded.delete(f.id);
-          } else {
-            included.delete(f.id);
-            excluded.set(f.id, { id: f.id, name: f.name || "" });
-          }
+          if (isExcluded) forgetFolder(selection, f.id);
+          else excludeFolder(selection, f);
           renderIncluded();
           renderList(renderSeq);
         };
@@ -348,8 +398,7 @@ export function wireFolderPicker() {
       try {
         const meta = await getFolderMeta(currentId);
         if (meta?.id && meta.id !== ROOT) {
-          excluded.delete(meta.id);
-          included.set(meta.id, { id: meta.id, name: meta.name || "" });
+          includeFolder(selection, meta);
           renderIncluded();
           showToast(`Added "${meta.name}"`, "success", 1500);
         } else if (meta.id === ROOT) {
@@ -371,8 +420,7 @@ export function wireFolderPicker() {
         return;
       }
       for (const f of visibleFolders) {
-        excluded.delete(f.id);
-        included.set(f.id, { id: f.id, name: f.name || "" });
+        includeFolder(selection, f);
       }
       renderIncluded();
       renderList(renderSeq);
@@ -387,8 +435,7 @@ export function wireFolderPicker() {
         return;
       }
       for (const f of visibleFolders) {
-        included.delete(f.id);
-        excluded.set(f.id, { id: f.id, name: f.name || "" });
+        excludeFolder(selection, f);
       }
       renderIncluded();
       renderList(renderSeq);
@@ -398,8 +445,7 @@ export function wireFolderPicker() {
 
   if (btnClearAll) {
     btnClearAll.onclick = () => {
-      included.clear();
-      excluded.clear();
+      clearSelection(selection);
       renderIncluded();
       renderList(renderSeq);
     };
