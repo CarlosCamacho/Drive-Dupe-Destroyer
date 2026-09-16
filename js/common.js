@@ -153,6 +153,27 @@ export function isBackpressureError(e) {
   return throttled || overloaded;
 }
 
+/**
+ * True for a failure that means THIS TAB is out of memory, not that the server
+ * is under pressure (#126).
+ *
+ * Deliberately separate from isBackpressureError. That one covers 429, 5xx,
+ * network and timeout -- reasons to send Drive fewer requests. Running out of
+ * memory is the opposite problem: fewer requests will not help, holding less
+ * will. AIMDController's doc comment says "call on 429, timeout, or OOM", but
+ * nothing ever detected an OOM to call it with.
+ *
+ * Matched on the message because there is no status code for this: browsers
+ * surface it as RangeError("Array buffer allocation failed"), a bare
+ * "Out of memory", or a failed createImageBitmap.
+ */
+export function isMemoryPressureError(e) {
+  const msg = e?.message || String(e || "");
+  return e instanceof RangeError
+    ? /allocation|memory/i.test(msg)
+    : /out of memory|allocation failed|insufficient resources|QuotaExceeded/i.test(msg);
+}
+
 /** True only for rate limiting specifically, for stats and log wording. */
 export function isThrottleError(e) {
   const msg = e?.message || "";

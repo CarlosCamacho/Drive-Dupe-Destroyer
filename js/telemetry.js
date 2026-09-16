@@ -17,6 +17,7 @@ import { el } from "./util.js";
 import { confirmAction } from "./confirm.js";
 import { clearRejections, getRejectionStats } from "./rejection.js";
 import { showToast } from "./ui.js";
+import { getThumbCacheStats } from "./hashing.js";
 
 let panel = null;
 let visible = false;
@@ -84,6 +85,19 @@ export function updateTelemetry(stats) {
     ["MD5 exact dupes", fmt(stats.md5Exact ?? 0)],
     ["Rejected pairs",  fmt(stats.rejectedPairs ?? 0)],
   ];
+
+  // The thumbnail budget used to be a flat 192 MB chosen by judgement, with no
+  // way to tell whether it was generous or tight. These rows are what should
+  // set it next time (#126).
+  const tc = getThumbCacheStats();
+  const mb = (n) => (n / 1048576).toFixed(1) + " MB";
+  rows.push(
+    ["Thumb cache", `${mb(tc.bytes)} / ${mb(tc.budget)}`],
+    ["Thumb entries", fmt(tc.entries)],
+    ["Thumb hit rate", pct(tc.hits / Math.max(1, tc.hits + tc.misses))],
+    ["Device memory", tc.deviceMemoryGb ? `${tc.deviceMemoryGb} GB` : "not reported"],
+  );
+  if (stats.memoryPressure) rows.push(["Memory pressure events", fmt(stats.memoryPressure)]);
 
   body.innerHTML = rows.map(([k, v]) =>
     `<div class="telemetry-row"><span class="tk">${k}</span><span class="tv">${v}</span></div>`
