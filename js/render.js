@@ -24,6 +24,10 @@ import { setCropCallbacks } from "./crop.js";
 import { batchTrash, driveFilePreviewLink, driveFolderLink, downloadFileBlob, thumbLinkSized } from "./drive.js";
 import { SIMILARITY_BITS, bestDist, distToPercent } from "./distance.js";
 import { DEFAULT_KEEP_RULE, chooseKeepIndex } from "./keeprule.js";
+import {
+  groupSignature, keeperFor as keeperForGroup, sizeStatsFor,
+  sortGroups as sortGroupsBy, filterBySearch, dropLoneKeepers,
+} from "./resultsModel.js";
 import { pushUndoDeleteBatch, undoLastDelete } from "./undo.js";
 import { addToQueue } from "./queue.js";
 
@@ -43,18 +47,9 @@ let allRows = [];
 // single consultation rather than four call sites to keep in step.
 const keepOverrides = new Map();
 
-const groupSignature = (g) => g.map(f => f.id).sort().join("|");
 
 function keeperFor(group, rule, folderPriority) {
-  const pinned = keepOverrides.get(groupSignature(group));
-  if (pinned) {
-    const match = group.find(f => f.id === pinned);
-    if (match) return match;
-    // The pin refers to a file no longer in this group -- it was deleted, or a
-    // rescan reshaped the group. Drop it rather than silently ignore it.
-    keepOverrides.delete(groupSignature(group));
-  }
-  return group[chooseKeepIndex(group, rule, folderPriority)] || group[0];
+  return keeperForGroup(group, rule, folderPriority, keepOverrides);
 }
 
 // #70: how the result set is ordered. Groups move as units -- sorting rows
@@ -108,17 +103,9 @@ export function getRowCount() { return allRows.length; }
  * that silently skipped them would promise space the user does not get back.
  */
 export function getSizeStats() {
-  let reclaimable = 0, selectedBytes = 0, unknown = 0;
-  for (const row of allRows) {
-    const bytes = Number(row.file.size);
-    const known = Number.isFinite(bytes) && bytes > 0;
-    if (row.isKeep) continue;
-    if (!known) { unknown++; continue; }
-    reclaimable += bytes;
-    if (selected.has(row.file.id)) selectedBytes += bytes;
-  }
-  return { reclaimable, selected: selectedBytes, unknown };
+  return sizeStatsFor(allRows, selected);
 }
+
 export function getIdToFile() { return idToFile; }
 export function getCurrentGroups() { return currentState?.groups || []; }
 export function getPathMap() { return currentState?.pathMap || new Map(); }
@@ -911,33 +898,9 @@ function handleFilterChange() {
 //
 // "size" is the space the group's DUPLICATES would free, not the largest file:
 // that is the number worth triaging by, and it did not exist as a column before.
-function groupSortValue(b, key) {
-  const n = (v) => Number(v || 0) || 0;
-  switch (key) {
-    case "name":   return (b.keepFile.name || "").toLowerCase();
-    case "folder": return (b.keepFile._path || "").toLowerCase();
-    case "dims": {
-      const m = b.keepFile.imageMediaMetadata;
-      return n(m?.width) * n(m?.height);
-    }
-    case "size":
-      return b.members.reduce((sum, f) => f.id === b.keepFile.id ? sum : sum + n(f.size), 0);
-    default:
-      return 0;
-  }
-}
 
 function sortGroups(built) {
-  if (!sortKey) return;                       // keep the order matching produced
-  const dir = sortDir === "asc" ? 1 : -1;
-  built.sort((x, y) => {
-    const a = groupSortValue(x, sortKey), b = groupSortValue(y, sortKey);
-    if (a === b) {
-      // Stable and reproducible: fall back to the keeper's id, which is unique.
-      return x.keepFile.id < y.keepFile.id ? -1 : x.keepFile.id > y.keepFile.id ? 1 : 0;
-    }
-    return (typeof a === "string" ? a.localeCompare(b) : a - b) * dir;
-  });
+  sortGroupsBy(built, sortKey, sortDir);
 }
 
 function updateSortIndicators() {
@@ -956,16 +919,7 @@ function applyFilter() {
   // one file of three and hiding its siblings would leave a lone row with
   // nothing to compare against, which is not a useful thing to show -- so a
   // group survives if any member matches, and survives whole.
-  if (searchText) {
-    const needle = searchText.toLowerCase();
-    const matched = new Set();
-    for (const row of allRows) {
-      const name = (row.file.name || "").toLowerCase();
-      const path = (row.file._path || "").toLowerCase();
-      if (name.includes(needle) || path.includes(needle)) matched.add(row.groupId);
-    }
-    allRows = allRows.filter(row => matched.has(row.groupId));
-  }
+  allRows = filterBySearch(allRows, searchText);
 
   if (filter !== "all") {
     const minPct = filter === "pct90" ? 90 : filter === "pct75" ? 75 : filter === "pct50" ? 50 : 0;
@@ -978,9 +932,7 @@ function applyFilter() {
   }
 
   // A group reduced to its keeper has nothing left to compare, in either path.
-  const groupCounts = new Map();
-  for (const row of allRows) groupCounts.set(row.groupId, (groupCounts.get(row.groupId) || 0) + 1);
-  allRows = allRows.filter(row => groupCounts.get(row.groupId) > 1);
+  allRows = dropLoneKeepers(allRows);
 }
 
 // ============================================================================

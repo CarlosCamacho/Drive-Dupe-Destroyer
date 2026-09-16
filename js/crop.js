@@ -16,6 +16,11 @@
 
 import { el, bytesToHuman, formatDate } from "./util.js";
 import { confirmAction, UNDO_NOTE } from "./confirm.js";
+import {
+  clamp, transformedDimensions, displayScale as computeDisplayScale, isInsideSelection as isInside,
+  selectionFromDrag, movedSelection, lockedSelection, areaToFractions, fractionsToArea,
+  isUsableSelection, selectionInSourcePixels, MIN_SELECTION_PX,
+} from "./cropGeometry.js";
 import { settingGet, settingSet } from "./db.js";
 import { lockBodyScroll, showToast, showTrashedToast } from "./ui.js";
 import { pushUndoDeleteBatch, undoLastDelete } from "./undo.js";
@@ -178,7 +183,7 @@ function handleCropKeyboard(e) {
       break;
     case "Enter":
       e.preventDefault();
-      if (selection && selection.width > 10 && selection.height > 10) performCrop();
+      if (isUsableSelection(selection)) performCrop();
       break;
     case "r":
     case "R":
@@ -236,32 +241,15 @@ function applyLockedSize() {
   rememberedWidth = targetW;
   rememberedHeight = targetH;
   
-  // Convert to display coordinates
   const dims = getTransformedDimensions();
-  const scaleX = canvas.width / dims.width;
-  const scaleY = canvas.height / dims.height;
-  
-  lockedWidth = Math.min(targetW * scaleX, canvas.width);
-  lockedHeight = Math.min(targetH * scaleY, canvas.height);
-  
-  // Center the selection if none exists
-  if (!selection) {
-    selection = {
-      x: Math.max(0, (canvas.width - lockedWidth) / 2),
-      y: Math.max(0, (canvas.height - lockedHeight) / 2),
-      width: lockedWidth,
-      height: lockedHeight
-    };
-  } else {
-    // Resize existing selection to locked size, keeping center
-    const centerX = selection.x + selection.width / 2;
-    const centerY = selection.y + selection.height / 2;
-    
-    selection.width = lockedWidth;
-    selection.height = lockedHeight;
-    selection.x = Math.max(0, Math.min(canvas.width - lockedWidth, centerX - lockedWidth / 2));
-    selection.y = Math.max(0, Math.min(canvas.height - lockedHeight, centerY - lockedHeight / 2));
-  }
+  selection = lockedSelection({
+    targetWidth: targetW, targetHeight: targetH,
+    canvasWidth: canvas.width, canvasHeight: canvas.height,
+    sourceWidth: dims.width, sourceHeight: dims.height,
+    previous: selection,
+  });
+  lockedWidth = selection.width;
+  lockedHeight = selection.height;
   
   updateCropButton();
 }
@@ -269,7 +257,7 @@ function applyLockedSize() {
 function updateCropButton() {
   const btnCrop = el("btnCropConfirm");
   if (btnCrop && selection) {
-    btnCrop.disabled = selection.width < 10 || selection.height < 10;
+    btnCrop.disabled = !isUsableSelection(selection);
   }
 }
 
@@ -394,13 +382,8 @@ async function loadImageForCrop(file) {
 // Record the current selection as fractions of the canvas.
 function rememberCurrentArea() {
   if (!rememberArea || !selection || !canvas?.width || !canvas?.height) return;
-  if (selection.width < 10 || selection.height < 10) return;
-  lastArea = {
-    x: selection.x / canvas.width,
-    y: selection.y / canvas.height,
-    w: selection.width / canvas.width,
-    h: selection.height / canvas.height,
-  };
+  if (!isUsableSelection(selection)) return;
+  lastArea = areaToFractions(selection, canvas.width, canvas.height);
   settingSet(AREA_KEY, lastArea).catch(() => {});
   updateAreaUI();
 }
@@ -414,17 +397,12 @@ function applyRememberedArea() {
   if (!rememberArea || !lastArea || !canvas?.width || !canvas?.height) return false;
   if (isLocked) return false;          // the fixed-size feature owns the selection
 
-  const w = Math.min(canvas.width, Math.max(10, lastArea.w * canvas.width));
-  const h = Math.min(canvas.height, Math.max(10, lastArea.h * canvas.height));
-  const x = Math.max(0, Math.min(canvas.width - w, lastArea.x * canvas.width));
-  const y = Math.max(0, Math.min(canvas.height - h, lastArea.y * canvas.height));
-
   // No explicit draw: the marching-ants animation loop reads `selection` every
   // frame, so assigning it is what puts it on screen.
-  selection = { x, y, width: w, height: h };
+  selection = fractionsToArea(lastArea, canvas.width, canvas.height);
 
   const btnCrop = el("btnCropConfirm");
-  if (btnCrop) btnCrop.disabled = selection.width < 10 || selection.height < 10;
+  if (btnCrop) btnCrop.disabled = !isUsableSelection(selection);
   return true;
 }
 
@@ -467,11 +445,7 @@ async function loadCropAreaSettings() {
 
 function getTransformedDimensions() {
   if (!originalImage) return { width: 0, height: 0 };
-  const isRotated90 = rotation === 90 || rotation === 270;
-  return {
-    width: isRotated90 ? originalImage.naturalHeight : originalImage.naturalWidth,
-    height: isRotated90 ? originalImage.naturalWidth : originalImage.naturalHeight
-  };
+  return transformedDimensions(originalImage.naturalWidth, originalImage.naturalHeight, rotation);
 }
 
 function redrawCanvas() {
@@ -481,7 +455,9 @@ function redrawCanvas() {
   const maxWidth = window.innerWidth * 0.80;
   const maxHeight = window.innerHeight * 0.50;
   
-  displayScale = Math.min(1, maxWidth / dims.width, maxHeight / dims.height) * zoomLevel;
+  displayScale = computeDisplayScale({
+    width: dims.width, height: dims.height, maxWidth, maxHeight, zoom: zoomLevel,
+  });
   
   canvas.width = Math.round(dims.width * displayScale);
   canvas.height = Math.round(dims.height * displayScale);
@@ -670,14 +646,8 @@ function getCanvasPosition(e) {
   return { x: clientX - rect.left, y: clientY - rect.top };
 }
 
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
 function isInsideSelection(x, y) {
-  if (!selection) return false;
-  return x >= selection.x && x <= selection.x + selection.width &&
-         y >= selection.y && y <= selection.y + selection.height;
+  return isInside(selection, x, y);
 }
 
 function handleMouseDown(e) {
@@ -764,8 +734,8 @@ function handleMouseMove(e) {
   
   if (isDragging && isLocked && selection) {
     // Move the locked selection
-    selection.x = clamp(pos.x - dragOffsetX, 0, canvas.width - selection.width);
-    selection.y = clamp(pos.y - dragOffsetY, 0, canvas.height - selection.height);
+    selection = movedSelection(selection, pos.x, pos.y, dragOffsetX, dragOffsetY,
+                               canvas.width, canvas.height);
   } else if (isSelecting) {
     updateSelection(pos.x, pos.y);
   }
@@ -778,23 +748,15 @@ function handleTouchMove(e) {
   const pos = getCanvasPosition(e);
   
   if (isDragging && isLocked && selection) {
-    selection.x = clamp(pos.x - dragOffsetX, 0, canvas.width - selection.width);
-    selection.y = clamp(pos.y - dragOffsetY, 0, canvas.height - selection.height);
+    selection = movedSelection(selection, pos.x, pos.y, dragOffsetX, dragOffsetY,
+                               canvas.width, canvas.height);
   } else if (isSelecting) {
     updateSelection(pos.x, pos.y);
   }
 }
 
 function updateSelection(currentX, currentY) {
-  currentX = clamp(currentX, 0, canvas.width);
-  currentY = clamp(currentY, 0, canvas.height);
-  
-  const x = Math.min(startX, currentX);
-  const y = Math.min(startY, currentY);
-  const width = Math.abs(currentX - startX);
-  const height = Math.abs(currentY - startY);
-  
-  selection = { x, y, width, height };
+  selection = selectionFromDrag(startX, startY, currentX, currentY, canvas.width, canvas.height);
   updateCropButton();
 }
 
@@ -1070,8 +1032,8 @@ async function performCrop() {
     return;
   }
   
-  if (selection.width < 10 || selection.height < 10) {
-    showToast("Selection too small", "error");
+  if (!isUsableSelection(selection)) {
+    showToast(`Selection too small — at least ${MIN_SELECTION_PX}px each way`, "error");
     return;
   }
   
@@ -1104,12 +1066,9 @@ async function performCrop() {
     tempCtx.restore();
     
     // Calculate crop coordinates
-    const scaleX = dims.width / canvas.width;
-    const scaleY = dims.height / canvas.height;
-    const cropX = Math.round(selection.x * scaleX);
-    const cropY = Math.round(selection.y * scaleY);
-    const cropWidth = Math.round(selection.width * scaleX);
-    const cropHeight = Math.round(selection.height * scaleY);
+    // The rectangle in the SOURCE image's pixels -- what actually gets cropped.
+    const { x: cropX, y: cropY, width: cropWidth, height: cropHeight } =
+      selectionInSourcePixels(selection, canvas.width, canvas.height, dims.width, dims.height);
     
     // Create cropped canvas
     const croppedCanvas = document.createElement("canvas");
