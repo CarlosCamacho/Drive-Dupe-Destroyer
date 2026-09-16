@@ -15,7 +15,7 @@
 
 import { authedFetch, ensureValidToken } from "./auth.js";
 import { sanitizeText } from "./security.js";
-import { isSupportedImageFile } from "./common.js";
+import { isSupportedImageFile } from "./formats.js";
 
 export function isFolderMime(m) {
   return m === "application/vnd.google-apps.folder";
@@ -113,10 +113,6 @@ export async function driveFetch(path, { method = "GET", params = {}, body = nul
 //
 // Probe once, remember the answer, and skip the attempt thereafter.
 let _thumbFetchUsable = null;
-
-export function getThumbFetchStatus() {
-  return _thumbFetchUsable;
-}
 
 export async function downloadFileBlob(fileId, { altThumbUrl = null, signal = null, preferThumb = false } = {}) {
   // Hashing only needs a ~256px image, but the Drive `alt=media` endpoint always

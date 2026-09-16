@@ -23,7 +23,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <!-- Version shown here is a static fallback; ui.js rewrites the title and the
        #appVersion badge from APP_VERSION (js/util.js) on boot. -->
-  <title>Drive Dupe Destroyer (DDD) v14.7.12</title>
+  <title>Drive Dupe Destroyer (DDD) v14.7.13</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="noopener noreferrer" integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA==" crossorigin="anonymous" referrerpolicy="no-referrer" />
   <!-- Lineicons for the sidebar section headers (#60). No integrity hash: the
        CDN serves a rolling 5.0 build, so a pinned hash would break on their
@@ -64,7 +64,7 @@
     <!-- Header -->
     <header class="header">
       <div class="headerLeft">
-        <h1>Drive Dupe Destroyer <span class="muted" id="appVersion">v14.7.12</span></h1>
+        <h1>Drive Dupe Destroyer <span class="muted" id="appVersion">v14.7.13</span></h1>
         <p class="subtitle">Google Drive Similar Image Finder</p>
       </div>
       <div class="headerRight">
@@ -371,7 +371,8 @@
           <div class="statsBar">
             <span>Groups: <b id="statGroups">0</b></span>
             <span>Files: <b id="statFiles">0</b></span>
-            <span>Size: <b id="statSize">—</b></span>
+            <span title="Every image this scan looked at, duplicates or not.">Scanned: <b id="statSize">—</b></span>
+            <span class="statReclaim">Reclaimable: <b id="statReclaimable">—</b><span id="statSelectedBytes" class="muted"></span></span>
             <span>Cache hit: <b id="statCacheHit">—</b></span>
             <span>Duration: <b id="statDuration">—</b></span>
           </div>
@@ -391,8 +392,10 @@
                 <option value="pct90">≥90% similar</option>
                 <option value="pct75">≥75% similar</option>
                 <option value="pct50">≥50% similar</option>
+                <option value="unreviewed">Unreviewed only</option>
               </select>
               <span id="filterStats" class="filterStats"></span>
+              <button type="button" id="btnQueueSelected" class="btnGhost" disabled title="Add the selected files to the trash queue, to run later">📋 Queue Selected</button>
               <button type="button" id="btnTrashNow" class="btnDanger" disabled>🗑️ Trash Selected</button>
             </div>
           </div>
@@ -512,9 +515,20 @@
             <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer">Google Cloud Console</a>
             and create a project if you do not have one.
           </li>
-          <li>Enable the <b>Google Drive API</b> for that project.</li>
-          <li>Configure the OAuth consent screen, and add your own Google account as a test user.</li>
-          <li>Create credentials → <b>OAuth client ID</b> → application type <b>Web application</b>.</li>
+          <li>
+            Enable the
+            <a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" target="_blank" rel="noopener noreferrer"><b>Google Drive API</b></a>
+            for that project.
+          </li>
+          <li>
+            Configure the
+            <a href="https://console.cloud.google.com/apis/credentials/consent" target="_blank" rel="noopener noreferrer">OAuth consent screen</a>,
+            and add your own Google account as a test user.
+          </li>
+          <li>
+            <a href="https://console.cloud.google.com/apis/credentials/oauthclient" target="_blank" rel="noopener noreferrer">Create an OAuth client ID</a>
+            → application type <b>Web application</b>.
+          </li>
           <li>
             Under <b>Authorized JavaScript origins</b>, add this exact address:
             <span class="originRow">
@@ -667,7 +681,15 @@
           <span>Loading image...</span>
         </div>
         <div class="cropCanvasWrap">
-          <canvas id="cropCanvas" class="cropCanvas"></canvas>
+          <!-- Two stacked canvases (#118). The image is drawn on cropCanvas
+               once per transform; the dim mask, marching ants and size label
+               live on cropOverlay, which is the only one repainted per frame.
+               The overlay takes no pointer events, so the existing mousedown /
+               touchstart listeners on cropCanvas still receive them. -->
+          <div class="cropCanvasStack">
+            <canvas id="cropCanvas" class="cropCanvas"></canvas>
+            <canvas id="cropOverlay" class="cropOverlay" aria-hidden="true"></canvas>
+          </div>
         </div>
       </div>
       <div class="modalFooter cropFooter">

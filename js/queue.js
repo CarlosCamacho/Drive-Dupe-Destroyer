@@ -16,7 +16,7 @@
 
 import { el, escapeHtml, bytesToHuman } from "./util.js";
 import { confirmAction, UNDO_NOTE } from "./confirm.js";
-import { queueList, queueAdd, queueDel, queueClear } from "./db.js";
+import { queueList, queueAdd, queueAddBatch, queueDel, queueClear } from "./db.js";
 import { batchTrash } from "./drive.js";
 import { setStatus, showSpinner, showToast, lockBodyScroll, showTrashedToast } from "./ui.js";
 import { pushUndoDeleteBatch, undoLastDelete } from "./undo.js";
@@ -72,24 +72,69 @@ export async function renderQueue() {
   }
 }
 
+/** The stored shape. One place, so the single and batch paths cannot diverge. */
+function queueRecord(file) {
+  return {
+    id: file.id,
+    name: file.name || "",
+    size: Number(file.size) || 0,
+    // The app stores the resolved folder path as _path (render.js); plain
+    // `path` was always undefined, so every queued row persisted "".
+    path: file._path || file.path || "",
+  };
+}
+
 export async function addToQueue(file) {
   if (!file?.id) return false;
   
   try {
-    await queueAdd({
-      id: file.id,
-      name: file.name || "",
-      size: file.size || 0,
-      // The app stores the resolved folder path as _path (render.js); plain
-      // `path` was always undefined, so every queued row persisted "".
-      path: file._path || file.path || ""
-    });
+    await queueAdd(queueRecord(file));
     await renderQueue();
     showToast(`Added "${file.name}" to queue`, "success", 1500);
     return true;
   } catch (e) {
     showToast("Failed to add to queue: " + e.message, "error");
     return false;
+  }
+}
+
+/**
+ * Queue many files at once (#125).
+ *
+ * The queue exists to accumulate deletions across many groups and run them in
+ * one batch, so the bulk path is the one that matters -- and doing it as a loop
+ * over addToQueue would be one IndexedDB transaction, one full queue re-render
+ * and one toast PER FILE. At 2,000 selected files that is 2,000 of each.
+ *
+ * Re-queuing a file already in the queue is a no-op rather than an error: the
+ * store is keyed on id, so put() overwrites. The count reported is what was
+ * actually new, because "Queued 2,000" after a second click on an unchanged
+ * selection would be a lie.
+ *
+ * @returns {Promise<number>} how many were not already queued
+ */
+export async function addToQueueBatch(files) {
+  const records = (files || []).filter(f => f?.id).map(queueRecord);
+  if (records.length === 0) return 0;
+
+  try {
+    const before = new Set((await queueList()).map(i => i.id));
+    const added = records.filter(r => !before.has(r.id)).length;
+
+    await queueAddBatch(records);
+    await renderQueue();
+
+    const already = records.length - added;
+    const what = added === 1 ? "1 file" : `${added.toLocaleString()} files`;
+    showToast(
+      already > 0
+        ? `Queued ${what} — ${already.toLocaleString()} already in the queue`
+        : `Queued ${what}`,
+      "success", 2500);
+    return added;
+  } catch (e) {
+    showToast("Failed to add to queue: " + e.message, "error");
+    return 0;
   }
 }
 
@@ -101,9 +146,11 @@ export async function processQueue() {
     return;
   }
   
+  const queuedBytes = items.reduce((n, i) => n + (Number(i.size) || 0), 0);
   if (!await confirmAction({
     title: "Process the trash queue?",
-    message: `${items.length.toLocaleString()} queued file(s) will be moved to Google Drive Trash.`,
+    message: `${items.length.toLocaleString()} queued file(s) will be moved to Google Drive Trash`
+      + (queuedBytes > 0 ? `, freeing ${bytesToHuman(queuedBytes)}.` : "."),
     confirmLabel: `Move ${items.length} to Trash`,
     note: UNDO_NOTE,
     files: items,

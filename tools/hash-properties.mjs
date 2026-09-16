@@ -30,7 +30,7 @@ await page.goto('http://localhost:8080/index.html', { waitUntil: 'load' });
 await page.waitForTimeout(1500);
 
 const r = await page.evaluate(async () => {
-  const { hammingBytes32, bestCropDist } = await import('/js/common.js');
+  const { bestCropDist, hammingBytes32 } = await import('/js/distance.js');
 
   const w = new Worker(new URL('/js/worker-hash.js', location.href), { type: 'module' });
   let id = 0; const pend = new Map();

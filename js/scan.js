@@ -17,6 +17,72 @@
 import { el, nowMs, humanDuration, CONFIG } from "./util.js";
 import { validateFolderId, sanitizeText } from "./security.js";
 import { setStatus, setPhase, setProgress, showSpinner, updateStats, setSearchSummary, showEmptyState, setScanningState, showToast, setHashingErrors, updateEta, resetEta, showCollectingSpinner, setEmptyState } from "./ui.js";
+
+/**
+ * Everything the scan says about itself, in one place (#122).
+ *
+ * runScan is ~570 lines that interleave the pipeline -- enumerate, filter,
+ * exact-group, hash, reconcile, match, group, resolve paths -- with roughly 50
+ * calls into js/ui.js. There is no point at which the pipeline exists as
+ * something you can call and inspect, which is why the scan is only ever
+ * exercised through a browser: the sequence of phases, whether progress is
+ * monotonic, which empty state is chosen and whether the stats arithmetic is
+ * right all need a DOM to observe, and none of them should.
+ *
+ * Swapping this object for a recorder makes all four observable. It is a
+ * module-level default with a setter rather than a parameter threaded through
+ * a dozen helpers, matching the provider pattern ui.js already uses
+ * (setSelectedCountProvider, setRowCountProvider, setSizeStatsProvider).
+ */
+const UI_REPORTER = {
+  status: setStatus,
+  phase: setPhase,
+  progress: setProgress,
+  stats: updateStats,
+  spinner: showSpinner,
+  emptyState: setEmptyState,
+  showEmpty: showEmptyState,
+  eta: updateEta,
+  resetEta,
+  collecting: showCollectingSpinner,
+  searchSummary: setSearchSummary,
+  hashingErrors: setHashingErrors,
+  scanning: setScanningState,
+  toast: showToast,
+};
+
+let report = UI_REPORTER;
+
+/**
+ * Point the scan at a different reporter, or back at the UI with no argument.
+ *
+ * Anything the replacement leaves out falls back to the real thing, so a
+ * recorder that only cares about phases does not have to stub the other nine
+ * and silently break the ones it forgot.
+ */
+export function setScanReporter(r) {
+  report = r ? { ...UI_REPORTER, ...r } : UI_REPORTER;
+}
+
+/**
+ * A reporter that remembers instead of rendering.
+ *
+ * Lives here rather than in the harness so the recorded shape and the thing
+ * being recorded cannot drift apart, and so more than one test can use it.
+ */
+export function makeRecordingReporter() {
+  const calls = [];
+  const rec = (name) => (...args) => { calls.push({ name, args }); };
+  return {
+    calls,
+    phases: () => calls.filter(c => c.name === "phase").map(c => c.args[0]),
+    progresses: () => calls.filter(c => c.name === "progress").map(c => c.args[0]),
+    statuses: () => calls.filter(c => c.name === "status").map(c => c.args[0]),
+    emptyStates: () => calls.filter(c => c.name === "emptyState").map(c => c.args[0]),
+    lastStats: () => [...calls].reverse().find(c => c.name === "stats")?.args[0] ?? null,
+    reporter: Object.fromEntries(Object.keys(UI_REPORTER).map(k => [k, rec(k)])),
+  };
+}
 import { driveFetch, fetchChangesSince, getChangesStartToken, isFolderMime } from "./drive.js";
 
 import { ensureValidToken } from "./auth.js";
@@ -24,9 +90,14 @@ import { dbGetImagesBatch, dbPutImagesBatch, recordFoldersScan, dbCountImages, g
 import { computeHashesForFiles, getHashingStats, HASH_VERSION, HASH_CONCURRENCY } from "./hashing.js";
 import { runMatching, packEntries } from "./matcher.js";
 import { saveResumeState, clearResumeState } from "./resume.js";
+import {
+  enumerationScopeKey, loadFileList, saveFileList, applyChangesToList,
+} from "./fileListCache.js";
 import { getRejectionStats, preloadRejections, getRejectionKeys } from "./rejection.js";
 import { updateTelemetry } from "./telemetry.js";
-import { thresholdFromEasy, isSupportedImageFile, SUPPORTED_IMAGE_MIMES, getFileExtension, DEFAULT_KEEP_RULE, canBrowserDecode, SIMILARITY_BITS } from "./common.js";
+import { SIMILARITY_BITS, thresholdFromEasy } from "./distance.js";
+import { SUPPORTED_IMAGE_MIMES, canBrowserDecode, getFileExtension, isSupportedImageFile } from "./formats.js";
+import { DEFAULT_KEEP_RULE } from "./keeprule.js";
 import { buildPathsParallel, clearMemoryPathCaches } from "./paths.js";
 
 // ============================================================================
@@ -80,7 +151,7 @@ function yieldToUI() {
 // Discover by MIME type only. The generic `image/` prefix covers
 // gif/jpg/png/webp/bmp/tiff/etc. The remaining (non-image/) MIME types Drive
 // assigns to design/legacy formats are derived from SUPPORTED_IMAGE_MIMES in
-// common.js — the single source of truth for supported formats — so adding a
+// formats.js — the single source of truth for supported formats — so adding a
 // format there automatically updates this query. `mimeType =` is exact and
 // reliable (unlike the v12.8 name-prefix match this replaces). octet-stream is
 // included because Drive often reports PSD/TGA/IFF/PCX uploads that way; the
@@ -661,7 +732,7 @@ async function findMatchesProgressively({
     }
   };
   const handleStatus = ({ groups, matches }) =>
-    setStatus(`Finding matches… ${groups} groups (${matches} pairs)`);
+    report.status(`Finding matches… ${groups} groups (${matches} pairs)`);
 
   const finish = (result) => ({
     groups: result.groups.map(toFiles).filter(g => g.length > 1),
@@ -753,11 +824,11 @@ export async function runScan({
   resume = null       // Saved collection frontier from an interrupted scan
 }) {
   const start = nowMs();
-  showSpinner(true);
-  setScanningState(true);
-  setProgress(0);
-  resetEta();
-  setPhase("1/4 Collecting files");
+  report.spinner(true);
+  report.scanning(true);
+  report.progress(0);
+  report.resetEta();
+  report.phase("1/4 Collecting files");
   
   // Record scan history
   if (folders.length > 0) {
@@ -823,16 +894,39 @@ export async function runScan({
     // Feature #13: Delta scan - fetch only changed files
     const useChangesApi = el("useDeltaScan")?.checked || false;
 
-    setSearchSummary(recursive, maxItems, useDb);
+    report.searchSummary(recursive, maxItems, useDb);
 
     // Phase 1: Collect files
-    setStatus("Collecting files from Drive…");
+    report.status("Collecting files from Drive…");
     await ensureValidToken();
     
     if (resume) {
-      setStatus(`Resuming: ${resume.files?.length || 0} image(s) already collected, ${resume.pendingFolderIds?.length || 0} folder(s) left…`);
+      report.status(`Resuming: ${resume.files?.length || 0} image(s) already collected, ${resume.pendingFolderIds?.length || 0} folder(s) left…`);
       console.log(`[DDD] Resuming collection from ${resume.pendingFolderIds?.length || 0} pending folder(s)`);
     }
+
+    // #116: the enumeration itself, reused when nothing about the scope has
+    // changed. #67 corrected the comment that called the Changes reconcile a
+    // "delta scan" -- it runs AFTER files.list has been paginated across every
+    // folder, so it saves nothing. This is the pass it can actually skip.
+    //
+    // Deliberately not attempted while RESUMING: a resume is mid-enumeration by
+    // definition, and its frontier is what tells us where to carry on.
+    const scopeKey = enumerationScopeKey({ folderIds, exclusions, recursive, maxItems });
+    const cached = (useChangesApi && !quickScan && !resume && await getChangesToken())
+      ? await loadFileList(scopeKey)
+      : null;
+
+    let allItems, visitedFolderIds, reusedCache = false;
+
+    if (cached) {
+      allItems = cached.files;
+      visitedFolderIds = cached.visitedFolderIds;
+      reusedCache = true;
+      const when = new Date(cached.savedAt).toLocaleDateString();
+      report.status(`Reusing ${allItems.length.toLocaleString()} file(s) enumerated on ${when}; fetching changes…`);
+      console.log(`[DDD] Incremental scan: skipped enumeration, reusing ${allItems.length} file(s) from ${when}`);
+    } else {
 
     const fetcher = recursive ? fetchAllImagesRecursive : fetchAllImagesFlat;
     const collected = await fetcher({
@@ -858,8 +952,9 @@ export async function runScan({
         }).catch(() => {});
       }
     });
-    let allItems = collected.files;
-    const visitedFolderIds = collected.visitedFolderIds;
+    allItems = collected.files;
+    visitedFolderIds = collected.visitedFolderIds;
+    }
     
     if (signal?.aborted) throw new Error("Scan stopped.");
 
@@ -890,9 +985,9 @@ export async function runScan({
 
     images = allItems.filter(passesFilters);
 
-    setStatus(`Found ${images.length} image(s).`);
-    setProgress(10);
-    showCollectingSpinner(false);
+    report.status(`Found ${images.length} image(s).`);
+    report.progress(10);
+    report.collecting(false);
 
     // MD5 exact-duplicate fast path.
     //
@@ -925,7 +1020,7 @@ export async function runScan({
     }
 
     if (exactDupeGroups.length > 0) {
-      setStatus(
+      report.status(
         `Found ${exactDupeGroups.length} exact duplicate group(s) via MD5 ` +
         `(${md5ExactCount} files, skipping ${md5Redundant.size} redundant download(s))…`
       );
@@ -948,41 +1043,60 @@ export async function runScan({
     // A real incremental scan -- skipping the enumeration entirely when a stored
     // token and an unchanged folder selection say nothing relevant moved --
     // needs the previous file list persisted alongside the token, and
-    // invalidated whenever the selection, recursion setting or filters change.
-    // That is tracked separately; see #67. Nothing here should be read as
-    // saving a round trip today.
-    let deltaRemovedIds = new Set();
+    // invalidated whenever the selection or recursion setting changes. That is
+    // now js/fileListCache.js, and the block above will have skipped the
+    // enumeration entirely when the scope matched (#116) -- so on a repeat scan
+    // of an unchanged Drive this IS the whole collection pass, not a round trip
+    // on top of one.
     if (useChangesApi && !quickScan) {
       try {
         const savedToken = await getChangesToken();
         if (savedToken) {
-          setStatus("Fetching changes since last scan…");
+          report.status("Fetching changes since last scan…");
           const { files: changed, nextToken } = await fetchChangesSince(savedToken, { signal });
           const removedIds = changed.filter(f => f._removed).map(f => f.id);
-          deltaRemovedIds = new Set(removedIds);
           // The Changes API reports changes across the ENTIRE Drive, not just
           // the selected folders. Without a containment check this pulled in
           // images from anywhere -- including folders the user had explicitly
           // excluded -- and presented them as delete candidates.
-          const excludedSet = exclusions instanceof Set ? exclusions : new Set(exclusions || []);
-          const inScope = (f) => {
-            const parent = f.parents?.[0];
-            if (!parent) return false;
-            if (excludedSet.has(parent)) return false;
-            return visitedFolderIds.has(parent);
-          };
+          // Apply the changes to the UNFILTERED list, because that is what gets
+          // cached: caching the FILTERED set would permanently narrow every
+          // future scan to whatever the size limits and type toggles happened
+          // to be today, with no way back but a manual rescan (#116).
+          // `images` is then re-derived from it using today's filters.
+          const beforeIds = new Set(images.map(f => f.id));
+          const applied = applyChangesToList(allItems, changed, { visitedFolderIds, exclusions });
 
-          const existingIds = new Set(images.map(f => f.id));
-          let added = 0, outOfScope = 0, filteredOut = 0;
-
-          for (const cf of changed.filter(f => f._changed)) {
-            if (existingIds.has(cf.id)) continue;
-            if (!inScope(cf)) { outOfScope++; continue; }
-            // Same size/format rules as the main collection path.
-            if (!passesFilters(cf)) { filteredOut++; continue; }
-            images.push(cf);
-            added++;
+          // A change under a folder this scope never walked, on a run that
+          // SKIPPED the enumeration, is the one case where trusting the cache
+          // can silently lose files: the folder may be new inside the scanned
+          // tree, and nothing else this run would find it. Re-enumerate rather
+          // than guess. Costs the optimisation, never correctness -- and the
+          // full walk then teaches the cache the new folder, so it self-heals.
+          if (reusedCache && applied.unknownParent > 0) {
+            console.log(`[DDD] Incremental scan: ${applied.unknownParent} change(s) under folder(s) `
+              + `this scan has not walked; re-enumerating rather than risk missing them.`);
+            report.status("A folder has changed since the last scan; re-checking Drive…");
+            const refetch = recursive ? fetchAllImagesRecursive : fetchAllImagesFlat;
+            const recollected = await refetch({
+              folderIds, exclusions, maxItems, pageSize, signal, onStatus: report.status,
+            });
+            allItems = recollected.files;
+            visitedFolderIds = recollected.visitedFolderIds;
+            images = allItems.filter(passesFilters);
+            if (nextToken) await setChangesToken(nextToken);
+            throw { __handled: true };
           }
+
+          allItems = applied.files;
+          const outOfScope = applied.outOfScope;
+
+          images = allItems.filter(passesFilters);
+          const afterIds = new Set(images.map(f => f.id));
+          let added = 0;
+          for (const id of afterIds) if (!beforeIds.has(id)) added++;
+          // Changes that were in scope but did not survive today's filters.
+          const filteredOut = Math.max(0, applied.added - added);
 
           if (outOfScope || filteredOut) {
             console.log(
@@ -990,44 +1104,54 @@ export async function runScan({
               `and ${filteredOut} that did not pass the size/type filters.`
             );
           }
-          // Remove deleted files
-          images = images.filter(f => !deltaRemovedIds.has(f.id));
           if (nextToken) await setChangesToken(nextToken);
-          setStatus(`Delta scan: ${changed.length} change(s), ${added} added, ${removedIds.length} removed, ${images.length} image(s) to process`);
+          report.status(`Delta scan: ${changed.length} change(s), ${added} added, ${removedIds.length} removed, ${images.length} image(s) to process`);
         } else {
           // First run: get start token for future delta scans
           const startToken = await getChangesStartToken({ signal });
           if (startToken) await setChangesToken(startToken);
         }
       } catch (e) {
-        console.warn("[DDD] Delta scan failed, doing full scan:", e.message);
+        // The re-enumeration path above signals completion by throwing, so it
+        // does not also run the reconcile accounting it has just made moot.
+        if (!e?.__handled) console.warn("[DDD] Delta scan failed, doing full scan:", e.message);
       }
     }
 
+    // Remember this enumeration for the next scan (#116).
+    //
+    // Only when the Changes feed is in play: without a token there is no way to
+    // learn what moved since, and a cached list with no way to update it is
+    // just a stale list. Fire-and-forget -- a failed write costs one repeated
+    // enumeration, which is exactly what happened before this existed.
+    if (useChangesApi && !quickScan && allItems.length > 0) {
+      saveFileList({ scope: scopeKey, files: allItems, visitedFolderIds }).catch(() => {});
+    }
+
     if (images.length === 0) {
-      setEmptyState("none-found", "No images matched your folder and file-type settings.");
-      showEmptyState(true);
-      setStatus("No images found.");
-      setPhase("Complete");
-      showSpinner(false);
-      setScanningState(false);
-      updateStats({ groups: 0, files: 0, totalBytes: 0, cacheHit: null, durationMs: nowMs() - start });
+      report.emptyState("none-found", "No images matched your folder and file-type settings.");
+      report.showEmpty(true);
+      report.status("No images found.");
+      report.phase("Complete");
+      report.spinner(false);
+      report.scanning(false);
+      report.stats({ groups: 0, files: 0, totalBytes: 0, cacheHit: null, durationMs: nowMs() - start });
       return;
     }
 
     // Quick scan mode (MD5 only)
     if (quickScan) {
-      setPhase("2/4 Finding exact matches");
+      report.phase("2/4 Finding exact matches");
       const groups = quickExactGroups(images);
       
-      setPhase("3/4 Building paths");
+      report.phase("3/4 Building paths");
       // Only grouped files need folder paths (see Phase 4 note below).
       const pathMap = await buildPathsParallel(groups.flat(), { 
         concurrency: CONFIG.PATH_CONCURRENCY, signal, 
-        onProgress: (d, t) => setStatus(`Building paths… ${d}/${t}`) 
+        onProgress: (d, t) => report.status(`Building paths… ${d}/${t}`) 
       });
       
-      setPhase("4/4 Rendering");
+      report.phase("4/4 Rendering");
       await renderCb({ 
         groups, idToEntry: new Map(), pathMap, keepRule, folderPriority, 
         bitsCount: SIMILARITY_BITS, hamThresh, withVariants: false 
@@ -1035,7 +1159,7 @@ export async function runScan({
       
       if (emitGroupsCb) emitGroupsCb(groups);
       
-      updateStats({
+      report.stats({
         groups: groups.length,
         files: allItems.length,
         totalBytes: allItems.reduce((s, f) => s + (Number(f.size || 0) || 0), 0),
@@ -1043,16 +1167,16 @@ export async function runScan({
         durationMs: nowMs() - start
       });
       
-      showSpinner(false);
-      setScanningState(false);
-      setStatus(`Done. ${groups.length} exact duplicate group(s) found.`);
-      setPhase("Complete");
-      setProgress(100);
+      report.spinner(false);
+      report.scanning(false);
+      report.status(`Done. ${groups.length} exact duplicate group(s) found.`);
+      report.phase("Complete");
+      report.progress(100);
       return;
     }
 
     // Phase 2: Hash images
-    setPhase("2/4 Hashing (download + compute)");
+    report.phase("2/4 Hashing (download + compute)");
     let lastRateT = nowMs();
     let lastDone = 0;
     let errorCount = 0;
@@ -1090,8 +1214,8 @@ export async function runScan({
         if (signal?.aborted) return;
         
         const pct = 10 + (done / Math.max(1, total)) * 45;
-        setProgress(pct);
-        updateEta(pct);
+        report.progress(pct);
+        report.eta(pct);
         
         const now = nowMs();
         if (now - lastRateT > 800) {
@@ -1099,7 +1223,7 @@ export async function runScan({
           lastRateT = now;
           lastDone = done;
           const failedStr = errorCount > 0 ? ` (${errorCount} errors)` : "";
-          setStatus(`Hashing… ${done}/${total} (${rate.toFixed(1)} img/s)${failedStr}`);
+          report.status(`Hashing… ${done}/${total} (${rate.toFixed(1)} img/s)${failedStr}`);
         }
       },
       onError: (errorInfo) => {
@@ -1111,16 +1235,16 @@ export async function runScan({
     const { idToEntry, cacheHit, errors: hashErrors = [] } = hashResult;
     hashingFailed = hashResult.hashingFailed || 0;
     
-    setHashingErrors(hashErrors);
+    report.hashingErrors(hashErrors);
     
     if (hashingFailed > 0) {
       console.warn(`Hashing completed with ${hashingFailed} failures`);
     }
 
-    setProgress(55);
+    report.progress(55);
 
     // Phase 3: Find matches PROGRESSIVELY
-    setPhase("3/4 Finding matches");
+    report.phase("3/4 Finding matches");
     const idToFile = new Map(images.map(f => [f.id, f]));
 
     // Load the user's rejected-pairs set once so the matching loop can skip
@@ -1178,8 +1302,8 @@ export async function runScan({
       },
       onProgress: (current, total, matches, groups) => {
         const pct = 55 + (current / Math.max(1, total)) * 30;
-        setProgress(pct);
-        updateEta(pct);
+        report.progress(pct);
+        report.eta(pct);
       }
     });
 
@@ -1189,11 +1313,11 @@ export async function runScan({
     
     console.log(`[DDD] Matching complete: ${comparisons} comparisons, ${matches} matches, ${groups.length} groups`);
 
-    setProgress(85);
-    setStatus(`Found ${groups.length} group(s) from ${matches} matches.`);
+    report.progress(85);
+    report.status(`Found ${groups.length} group(s) from ${matches} matches.`);
 
     // Phase 4: Build paths and final render
-    setPhase("4/4 Building paths");
+    report.phase("4/4 Building paths");
     // Only resolve folder paths for files that actually appear in results.
     // Previously this ran over ALL scanned images (allItems), making a Drive
     // API call per unique parent folder even for non-duplicate files — on a
@@ -1203,10 +1327,10 @@ export async function runScan({
     const pathMap = await buildPathsParallel(filesNeedingPaths, { 
       concurrency: CONFIG.PATH_CONCURRENCY, 
       signal, 
-      onProgress: (d, t) => setStatus(`Building paths… ${d}/${t}`) 
+      onProgress: (d, t) => report.status(`Building paths… ${d}/${t}`) 
     });
 
-    setPhase("Rendering");
+    report.phase("Rendering");
     await renderCb({ 
       groups, 
       idToEntry, 
@@ -1228,7 +1352,7 @@ export async function runScan({
 
     const durationMs = nowMs() - start;
     
-    updateStats({
+    report.stats({
       groups: groups.length,
       files: images.length,
       totalBytes: images.reduce((s, f) => s + (Number(f.size || 0) || 0), 0),
@@ -1244,22 +1368,22 @@ export async function runScan({
     } catch {}
 
     await clearResumeState().catch(() => {});
-    setProgress(100);
-    setPhase("Complete");
+    report.progress(100);
+    report.phase("Complete");
     
     let statusMsg = `Done. ${groups.length} group(s), ${images.length} file(s) in ${humanDuration(durationMs)}.`;
     if (hashingFailed > 0) {
       statusMsg += ` (${hashingFailed} file(s) could not be hashed)`;
       showToast(`Scan complete with ${hashingFailed} errors.`, "info", 5000);
     }
-    setStatus(statusMsg);
+    report.status(statusMsg);
 
   } catch (e) {
     scanError = e;
     
     if (e.message === "Scan stopped.") {
-      setStatus("Scan stopped by user.");
-      setPhase("Stopped");
+      report.status("Scan stopped by user.");
+      report.phase("Stopped");
     } else {
       console.error("Scan failed:", e);
       
@@ -1291,13 +1415,13 @@ export async function runScan({
         errorMsg += e?.message || "Unknown error";
       }
       
-      setStatus(errorMsg);
-      setPhase("Failed");
+      report.status(errorMsg);
+      report.phase("Failed");
       showToast(errorMsg, "error", 8000);
     }
   } finally {
-    showSpinner(false);
-    setScanningState(false);
+    report.spinner(false);
+    report.scanning(false);
     // Drop the per-scan memo, KEEP the durable rows. This used to call
     // clearPathCaches(), which also empties the IndexedDB store -- so every path
     // resolved during a scan was deleted the moment it ended and the cache never
@@ -1339,7 +1463,7 @@ export function wireScanControls({ onScan }) {
     btnStop.onclick = () => {
       if (controller) {
         controller.abort();
-        setStatus("Stopping…");
+        report.status("Stopping…");
       }
     };
   }

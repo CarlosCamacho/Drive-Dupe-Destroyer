@@ -16,11 +16,11 @@
 import { makeLimiter, nowMs, CONFIG } from "./util.js";
 import { getSecurityHeadersStatus } from "./security.js";
 import { AIMDController } from "./aimd.js";
-import { isBackpressureError, isThrottleError } from "./common.js";
+import { isBackpressureError, isMemoryPressureError, isThrottleError } from "./errors.js";
 import { downloadFileBlob, thumbLinkSized } from "./drive.js";
 import { ensureValidToken } from "./auth.js";
 
-export { bestDist, hammingWithThreshold } from "./common.js";
+export { bestDist, hammingWithThreshold } from "./distance.js";
 
 // ============================================================================
 // Dynamic Imports for Optional Modules
@@ -54,11 +54,16 @@ class BlobUrlCache {
     this.maxBytes = maxBytes;
     this.bytes = 0;
     this.cache = new Map();   // key -> { url, bytes }
+    // Counted so the telemetry panel can say whether the budget is generous or
+    // tight in practice -- which is the measurement that should set it (#126).
+    this.hits = 0;
+    this.misses = 0;
   }
 
   get(key) {
     const entry = this.cache.get(key);
-    if (!entry) return undefined;
+    if (!entry) { this.misses++; return undefined; }
+    this.hits++;
     this.cache.delete(key);
     this.cache.set(key, entry);   // refresh recency
     return entry.url;
@@ -74,10 +79,10 @@ class BlobUrlCache {
 
     this.cache.set(key, { url, bytes });
     this.bytes += bytes;
-    this._evictToFit();
+    this.evictToFit();
   }
 
-  _evictToFit() {
+  evictToFit() {
     // Always keep at least one entry, so a single blob larger than the whole
     // budget is still usable rather than being evicted the instant it is added.
     while (this.bytes > this.maxBytes && this.cache.size > 1) {
@@ -95,8 +100,6 @@ class BlobUrlCache {
     }
   }
 
-  has(key) { return this.cache.has(key); }
-
   clear() {
     for (const { url } of this.cache.values()) this._revoke(url);
     this.cache.clear();
@@ -107,10 +110,73 @@ class BlobUrlCache {
   get byteSize() { return this.bytes; }
 }
 
-// 192 MB of decoded-image blobs is generous for a results table and small
-// enough to stay well clear of a tab's memory ceiling on a modest machine.
-const THUMB_CACHE_BYTES = 192 * 1024 * 1024;
+/**
+ * How many bytes of decoded-image blobs to hold, for THIS device (#126).
+ *
+ * 192 MB was a flat constant. On a desktop with 32 GB that is unremarkable; on
+ * a 3 GB Android phone, where a tab's heap ceiling is well under the device
+ * total, it is a large fraction of the budget -- claimed by thumbnails, which
+ * are the most disposable thing in the app, since re-fetching one costs a
+ * cached HTTP request.
+ *
+ * Everything else here already sizes itself to the machine: WORKER_POOL_SIZE
+ * from hardwareConcurrency, network and hashing concurrency from AIMD,
+ * checkpointInterval from the file count (#99). This one number did not.
+ *
+ * Scales DOWN from the old value and never up. navigator.deviceMemory is
+ * Chromium-only and coarse (0.25/0.5/1/2/4/8, capped at 8), so a browser that
+ * does not report it keeps exactly the previous behaviour -- lowering the
+ * budget for Safari and Firefox on no evidence would be swapping one guess for
+ * another.
+ *
+ * The right way to set this is still measurement, not judgement, which is why
+ * the telemetry panel now reports the cache's bytes and hit rate. Until there
+ * is data, this is a guess that at least scales.
+ *
+ * @param {number|undefined} deviceMemoryGb navigator.deviceMemory, or undefined
+ */
+export function thumbBudgetBytes(deviceMemoryGb) {
+  const MAX = 192 * 1024 * 1024;
+  const FLOOR = 48 * 1024 * 1024;
+  const gb = Number(deviceMemoryGb);
+  if (!Number.isFinite(gb) || gb <= 0) return MAX;   // not reported: unchanged
+  if (gb >= 8) return MAX;
+  return Math.max(FLOOR, Math.round((gb / 8) * MAX));
+}
+
+const THUMB_CACHE_BYTES = thumbBudgetBytes(globalThis.navigator?.deviceMemory);
 const thumbUrlCache = new BlobUrlCache(THUMB_CACHE_BYTES);
+
+/**
+ * Give memory back when the tab is running out of it (#126).
+ *
+ * The thumbnail cache is the cheapest thing in the app to drop: every entry is
+ * re-fetchable, usually from the browser's own HTTP cache. Halving the budget
+ * (never below the floor) and evicting is a better first response to an OOM
+ * than failing the image that happened to be decoding when memory ran out.
+ */
+export function shrinkThumbCache() {
+  const before = thumbUrlCache.maxBytes;
+  const floor = 48 * 1024 * 1024;
+  if (before <= floor) { thumbUrlCache.clear(); return { before, after: before, cleared: true }; }
+  thumbUrlCache.maxBytes = Math.max(floor, Math.floor(before / 2));
+  thumbUrlCache.evictToFit();
+  console.warn(`[DDD] Memory pressure: thumbnail budget ${Math.round(before / 1048576)}MB `
+    + `-> ${Math.round(thumbUrlCache.maxBytes / 1048576)}MB`);
+  return { before, after: thumbUrlCache.maxBytes, cleared: false };
+}
+
+/** What the thumbnail cache is doing, for the telemetry panel (#126). */
+export function getThumbCacheStats() {
+  return {
+    bytes: thumbUrlCache.byteSize,
+    budget: thumbUrlCache.maxBytes,
+    entries: thumbUrlCache.size,
+    hits: thumbUrlCache.hits,
+    misses: thumbUrlCache.misses,
+    deviceMemoryGb: globalThis.navigator?.deviceMemory ?? null,
+  };
+}
 
 // Every hash path downsamples to this edge length before looking at pixels.
 // dHash reduces to 12x12 (144 bits) or 8x8 (64 bits) and pHash to 32x32, so
@@ -301,7 +367,10 @@ function hashInWorker(bitmap, withVariants, timeout = 30000, withCropDetect = fa
  */
 export async function getThumbUrlForFile(file, { signal = null, size = 256 } = {}) {
   const cacheKey = `display:${file.id}:${size}`;
-  if (thumbUrlCache.has(cacheKey)) return thumbUrlCache.get(cacheKey);
+  // One lookup, not has()-then-get(). The pair meant get() only ever ran on a
+  // hit, so a miss was never counted and the hit rate would have read 100%.
+  const cachedUrl = thumbUrlCache.get(cacheKey);
+  if (cachedUrl) return cachedUrl;
 
   try {
     const blob = await downloadFileBlob(file.id, {
@@ -423,10 +492,6 @@ async function computeHashForFileWithRetry(file, {
   throw lastError;
 }
 
-export async function computeHashesForFile(file, opts = {}) {
-  return computeHashForFileWithRetry(file, { ...opts, maxRetries: 1 });
-}
-
 export async function computeHashesForFiles(files, {
   withVariants = false,
   withCropDetect = false,
@@ -489,10 +554,17 @@ export async function computeHashesForFiles(files, {
       if (signal?.aborted || e.message === "Scan stopped.") throw e;
 
       // Back off only for failures that mean the server is under pressure from
-      // us — see isBackpressureError in common.js. A decode failure is not one.
+      // us — see isBackpressureError in errors.js. A decode failure is not one.
       const throttled = isThrottleError(e);
       if (throttled) hashingStats.throttled++;
       if (isBackpressureError(e)) aimd.onError(throttled);
+      // Running out of memory is not backpressure: sending Drive fewer requests
+      // does not help, holding fewer decoded blobs does. The thumbnail cache is
+      // the cheapest thing in the app to give up (#126).
+      if (isMemoryPressureError(e)) {
+        hashingStats.memoryPressure = (hashingStats.memoryPressure || 0) + 1;
+        shrinkThumbCache();
+      }
       
       const errorInfo = { fileId: f.id, fileName: f.name, error: e.message || String(e) };
       hashingStats.failed++;
@@ -510,22 +582,4 @@ export async function computeHashesForFiles(files, {
   hashingStats.endTime = nowMs();
   
   return { out, failed: hashingStats.failed, failedFiles, stats: getHashingStats() };
-}
-
-export function terminateWorkers() {
-  for (const worker of workers) {
-    try { worker.terminate(); } catch {}
-  }
-  workers.length = 0;
-  workerIndex = 0;
-  pending.clear();
-  poolInitialized = false;
-}
-
-export function getWorkerPoolStatus() {
-  return {
-    poolSize: workers.length,
-    pendingJobs: pending.size,
-    initialized: poolInitialized,
-  };
 }

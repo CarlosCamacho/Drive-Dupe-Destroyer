@@ -13,21 +13,63 @@
  */
 // Bulk actions for selected files
 
-import { el } from "./util.js";
+import { el, bytesToHuman } from "./util.js";
 import { confirmAction, UNDO_NOTE } from "./confirm.js";
 import { batchTrash } from "./drive.js";
 import { selectedIds, getIdToFile } from "./render.js";
 import { setStatus, setProgress, showSpinner, refreshActionButtons, showToast, showTrashedToast } from "./ui.js";
 import { getExclusions } from "./folderPicker.js";
 import { pushUndoDeleteBatch, undoLastDelete } from "./undo.js";
+import { addToQueueBatch } from "./queue.js";
 
 export function wireActions() {
   const btnTrashNow = el("btnTrashNow");
   if (btnTrashNow) {
     btnTrashNow.onclick = () => trashSelectedNow();
   }
+
+  const btnQueueSelected = el("btnQueueSelected");
+  if (btnQueueSelected) {
+    btnQueueSelected.onclick = () => queueSelectedNow();
+  }
   
   refreshActionButtons();
+}
+
+/**
+ * The selection, resolved to files, minus anything in an excluded folder.
+ *
+ * Both bulk actions need exactly this. trashSelectedNow used to resolve ids and
+ * then hand the ID STRINGS to confirmAction as `files` -- so the confirmation
+ * for the most destructive path in the app listed "Untitled" with no thumbnail,
+ * no path and no size, which is the one thing #109 exists to prevent.
+ */
+function selectedFilesForBulkAction() {
+  const ids = selectedIds();
+  const idToFile = getIdToFile();
+  const files = ids.map(id => idToFile.get(id)).filter(Boolean).filter(f => !isProtected(f));
+  return { files, skipped: ids.length - files.length, total: ids.length };
+}
+
+export async function queueSelectedNow() {
+  const { files, skipped, total } = selectedFilesForBulkAction();
+
+  if (!total) {
+    showToast("Select at least one image to queue", "info");
+    return;
+  }
+  if (!files.length) {
+    showToast("All selected items are in excluded folders", "info");
+    return;
+  }
+
+  // No confirmation: queuing is not destructive and is undone by removing the
+  // row, which is the "undo over confirm" rule. The confirmation happens once,
+  // at Process Queue, where the deletion actually happens.
+  await addToQueueBatch(files);
+  if (skipped > 0) {
+    showToast(`${skipped} file(s) in excluded folders were not queued`, "info");
+  }
 }
 
 function isProtected(file) {
@@ -44,31 +86,30 @@ export async function trashSelectedNow() {
   }
 
   const idToFile = getIdToFile();
-  
-  const filtered = ids.filter(id => {
-    const file = idToFile.get(id);
-    if (!file) return false;
-    if (isProtected(file)) return false;
-    return true;
-  });
+  const { files, skipped } = selectedFilesForBulkAction();
 
-  if (!filtered.length) {
+  if (!files.length) {
     showToast("All selected items are in excluded folders", "info");
     return;
   }
-  
-  const protectedCount = ids.length - filtered.length;
-  let message = `Move ${filtered.length} selected file(s) to trash?`;
-  if (protectedCount > 0) {
-    message += `\n\n(${protectedCount} file(s) in excluded folders will be skipped)`;
+
+  const filtered = files.map(f => f.id);
+  // Say what is at stake in bytes as well as in files (#114). "Move 1,204 to
+  // Trash" is a count; "frees 6.1 GB" is the reason the user is here.
+  const bytes = files.reduce((n, f) => n + (Number(f.size) || 0), 0);
+  let message = `${files.length.toLocaleString()} selected file(s) will be moved to Google Drive Trash`;
+  message += bytes > 0 ? `, freeing ${bytesToHuman(bytes)}.` : ".";
+  if (skipped > 0) {
+    message += ` ${skipped} file(s) in excluded folders will be skipped.`;
   }
   
   if (!await confirmAction({
     title: "Move selected files to Trash?",
     message,
-    confirmLabel: `Move ${filtered.length} to Trash`,
+    confirmLabel: `Move ${files.length} to Trash`,
     note: UNDO_NOTE,
-    files: filtered,
+    // FILE OBJECTS, not ids. Passing ids here made every row read "Untitled".
+    files,
   })) return;
 
   showSpinner(true);

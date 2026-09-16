@@ -22,15 +22,25 @@ import { releaseAllThumbBlobs, getThumbUrlForFile } from "./hashing.js";
 import { openCompare, setCompareCallbacks } from "./compare.js";
 import { setCropCallbacks } from "./crop.js";
 import { batchTrash, driveFilePreviewLink, driveFolderLink, downloadFileBlob, thumbLinkSized } from "./drive.js";
-import { chooseKeepIndex, distToPercent, bestDist, DEFAULT_KEEP_RULE, SIMILARITY_BITS } from "./common.js";
+import { SIMILARITY_BITS, bestDist, distToPercent } from "./distance.js";
+import { DEFAULT_KEEP_RULE, chooseKeepIndex } from "./keeprule.js";
+import {
+  groupSignature, keeperFor as keeperForGroup, sizeStatsFor,
+  sortGroups as sortGroupsBy, filterBySearch, dropLoneKeepers,
+} from "./resultsModel.js";
+import {
+  loadReviewState, saveReviewState, makeReviewState, reviewScopeKey,
+  markDecided, markSkipped, setKeeper, isReviewed, reviewCounts,
+  pruneToSignatures, UNTOUCHED,
+} from "./reviewState.js";
 import { pushUndoDeleteBatch, undoLastDelete } from "./undo.js";
+import { addToQueue } from "./queue.js";
 
 const ROW_HEIGHT = 58;
 const BUFFER_ROWS = 10;
 
 let thumbObserver = null;
 const loadedThumbs = new Set();
-let scrollListenersAttached = false;
 
 let currentState = null;
 let allRows = [];
@@ -42,18 +52,65 @@ let allRows = [];
 // single consultation rather than four call sites to keep in step.
 const keepOverrides = new Map();
 
-const groupSignature = (g) => g.map(f => f.id).sort().join("|");
+/**
+ * How far through the review we are, restored from the last session (#117).
+ *
+ * keepOverrides is populated FROM this on load and written back to it on every
+ * change, so a pinned keeper survives a reload the same way a decision does.
+ */
+let review = makeReviewState("");
+
+/** Called by app.js once the folder selection for this result set is known. */
+export async function restoreReviewState({ folderIds = [], exclusions = [] } = {}) {
+  review = await loadReviewState(reviewScopeKey({ folderIds, exclusions }));
+  keepOverrides.clear();
+  for (const [sig, fileId] of review.keepers) keepOverrides.set(sig, fileId);
+  return review;
+}
+
+/** For the harness and for app.js's "start a fresh review" path. */
+export function getReviewState() { return review; }
+
+/**
+ * How much of this result set has been dealt with.
+ *
+ * READ-ONLY by default, and that default is not cosmetic.
+ *
+ * The first version pruned here, reasoning that this is where the live set of
+ * signatures is known. It is not. beginProgressive() sets currentState.groups
+ * to [], and rebuildProgressiveRows() refills it ONE STREAMED MATCH AT A TIME,
+ * calling this on every one. So the first progressive render of a new scan
+ * pruned the review down to the handful of groups that had arrived so far, and
+ * the next mark persisted that loss -- destroying an entire previous review a
+ * few hundred milliseconds into the rescan that was meant to resume it.
+ *
+ * Pruning happens once, from renderGroups, where the list is complete.
+ */
+export function reviewProgress({ prune = false } = {}) {
+  const sigs = (currentState?.groups || []).map(groupSignature);
+  // Belt and braces: never prune against a partial list, whoever asks.
+  if (prune && !progressiveActive) pruneToSignatures(review, sigs);
+  const c = reviewCounts(review, sigs);
+  return { untouched: c[UNTOUCHED], decided: c.decided, skipped: c.skipped, total: sigs.length };
+}
+
+function persistReview() {
+  saveReviewState(review);
+  // Refresh the "N of M reviewed" figure. Marking happens AFTER the render
+  // that last wrote it, so without this the toolbar keeps reporting the count
+  // from before the user did anything.
+  refreshReviewStats();
+}
+
+function refreshReviewStats() {
+  if (!currentState) return;
+  const totalGroups = new Set(allRows.map(r => r.groupId)).size;
+  updateFilterStats(totalGroups, allRows.length, el("filterMode")?.value || "all", reviewProgress());
+}
+
 
 function keeperFor(group, rule, folderPriority) {
-  const pinned = keepOverrides.get(groupSignature(group));
-  if (pinned) {
-    const match = group.find(f => f.id === pinned);
-    if (match) return match;
-    // The pin refers to a file no longer in this group -- it was deleted, or a
-    // rescan reshaped the group. Drop it rather than silently ignore it.
-    keepOverrides.delete(groupSignature(group));
-  }
-  return group[chooseKeepIndex(group, rule, folderPriority)] || group[0];
+  return keeperForGroup(group, rule, folderPriority, keepOverrides);
 }
 
 // #70: how the result set is ordered. Groups move as units -- sorting rows
@@ -88,6 +145,28 @@ const GROUP_COLORS = [
 
 export function selectedIds() { return Array.from(selected); }
 export function getSelectedCount() { return selected.size; }
+/** Rows in the current (filtered) result set — see setRowCountProvider in ui.js. */
+export function getRowCount() { return allRows.length; }
+
+/**
+ * What this scan could actually free, and how much of it is selected (#114).
+ *
+ * The "Size" stat summed every image the scan LOOKED AT, which on a 40 GB
+ * library with 3 GB of duplicates read 40 GB -- it answered "how much did I
+ * scan", which nobody asked. The number people came for is the sum of the
+ * non-keepers, and it has to move as they pin a different keeper, narrow the
+ * filter, select rows or trash a batch.
+ *
+ * Scoped to the FILTERED rows, the same scope updateFilterStats already
+ * reports, so the figure never disagrees with the table it sits above.
+ *
+ * `unknown` is not decoration: Drive returns no size for some items, so a sum
+ * that silently skipped them would promise space the user does not get back.
+ */
+export function getSizeStats() {
+  return sizeStatsFor(allRows, selected);
+}
+
 export function getIdToFile() { return idToFile; }
 export function getCurrentGroups() { return currentState?.groups || []; }
 export function getPathMap() { return currentState?.pathMap || new Map(); }
@@ -244,6 +323,11 @@ function createRowElement(rowData, rowIndex) {
         : '')
     : '<button class="btnMiniIcon" data-action="pin-keep" title="Keep this one instead"><i class="fa-solid fa-thumbtack"></i></button>';
   const downloadBtn = '<button class="btnMiniIcon" data-action="download" title="Download this image"><i class="fa-solid fa-download"></i></button>';
+  // #113: the queue had no entry point at all -- addToQueue() was exported and
+  // called from nowhere, so the badge could never read anything but 0. Offered
+  // on every row for the same reason delete is: the KEEP file can be deleted
+  // too, and deferring that decision is exactly what the queue is for.
+  const queueBtn = '<button class="btnMiniIcon" data-action="queue" title="Add to the trash queue, to run later"><i class="fa-solid fa-list-check"></i></button>';
 
   tr.innerHTML = `
     <td class="cellCb">${isKeep
@@ -258,7 +342,7 @@ function createRowElement(rowData, rowIndex) {
     <td>${bytesToHuman(Number(file.size || 0))}</td>
     <td><span class="pill">${formatSimilarity(pctValue)}</span></td>
     <td class="cellGrp"><span class="groupBadge">${groupId}</span>${isFirstInGroup(rowData, rowIndex) ? makeSimilarityBadge(groupPct) : ""}</td>
-    <td class="cellActions">${keepBtn}${downloadBtn}${deleteBtn}</td>
+    <td class="cellActions">${keepBtn}${downloadBtn}${queueBtn}${deleteBtn}</td>
   `;
 
   return tr;
@@ -308,12 +392,25 @@ function renderVisibleRows() {
   tbody.innerHTML = "";
   tbody.appendChild(fragment);
 
-  requestAnimationFrame(() => {
-    observeThumbnails();
-    throttledLoadVisibleThumbs();
-  });
+  requestAnimationFrame(() => observeThumbnails());
 }
 
+// One mechanism, not two (#119).
+//
+// There used to be an IntersectionObserver AND a throttled handler on scroll,
+// wheel and window scroll, each deciding visibility its own way: rootMargin
+// '200px' here, a hand-rolled `rect.bottom >= wrapRect.top - 200` there. Two
+// implementations of one policy, which is how the guard bug documented in
+// loadThumbnailForImg got in -- the scroll path tested
+// `img.src.startsWith('http')`, which blob: URLs fail, so it re-processed every
+// blob-backed thumbnail ten times a second forever. The observer never had that
+// bug, because it unobserves.
+//
+// The observer covers what the scroll path was reaching for, and more: it is
+// geometry-based rather than event-based, so rows that become visible from a
+// filter change, a group removal or a window resize are handled without an
+// event to hang off. Rows added after a progressive render are picked up by
+// observeThumbnails(), which was already the mechanism for that.
 function setupThumbObserver() {
   if (thumbObserver) thumbObserver.disconnect();
   
@@ -325,38 +422,8 @@ function setupThumbObserver() {
       }
     }
   }, { root: document.querySelector('.tableWrap'), rootMargin: '200px', threshold: 0 });
-  
-  if (!scrollListenersAttached) {
-    scrollListenersAttached = true;
-    const tableWrap = document.querySelector('.tableWrap');
-    if (tableWrap) {
-      tableWrap.addEventListener('scroll', throttledLoadVisibleThumbs, { passive: true });
-      tableWrap.addEventListener('wheel', throttledLoadVisibleThumbs, { passive: true });
-    }
-    window.addEventListener('scroll', throttledLoadVisibleThumbs, { passive: true });
-  }
 }
 
-const throttledLoadVisibleThumbs = throttle(() => {
-  const tableWrap = document.querySelector('.tableWrap');
-  if (!tableWrap) return;
-  const imgs = tableWrap.querySelectorAll('img.thumb[data-file-id]');
-  const wrapRect = tableWrap.getBoundingClientRect();
-
-  for (const img of imgs) {
-    if (img.dataset.failed) continue;
-    // loadedThumbs is the authority on what is already showing. The previous
-    // guard tested `img.src.startsWith('http')`, which blob: URLs fail, so every
-    // blob-backed thumbnail was re-processed on every scroll tick — an async
-    // call and a cache lookup per image, ten times a second, for images that
-    // were already painted.
-    if (loadedThumbs.has(img.dataset.fileId)) continue;
-    const rect = img.getBoundingClientRect();
-    if (rect.bottom >= wrapRect.top - 200 && rect.top <= wrapRect.bottom + 200) {
-      loadThumbnailForImg(img);
-    }
-  }
-}, 100);
 
 /**
  * Point a results-table <img> at a thumbnail.
@@ -411,6 +478,18 @@ async function loadThumbnailViaBlob(img, file, fileId) {
   img.dataset.failed = "1";
 }
 
+/**
+ * Tear the observer down, for tools/thumb-loading.mjs.
+ *
+ * #119 removed a second, redundant thumbnail loader. The check that it is gone
+ * cannot be "grep for addEventListener" -- that tests the source, not the
+ * behaviour. It disconnects the observer and asserts that scrolling then loads
+ * NOTHING, which is only true if the observer is the only mechanism left.
+ */
+export function __test_disconnectThumbObserver() {
+  if (thumbObserver) { thumbObserver.disconnect(); thumbObserver = null; }
+}
+
 function observeThumbnails() {
   if (!thumbObserver) return;
   const tbody = el("resultsTbody");
@@ -450,10 +529,18 @@ async function handleTableClick(e) {
     const group = (currentState?.groups || []).find(g => g.some(f => f.id === file.id));
     if (group) {
       keepOverrides.set(groupSignature(group), file.id);
+      setKeeper(review, groupSignature(group), file.id);
+      persistReview();
       selected.delete(file.id);        // it is the keeper now; it cannot be a delete candidate
       handleFilterChange();
       showToast(`Keeping "${file.name}" in this group`, "success", 1800);
     }
+    return;
+  }
+
+  if (target.matches('[data-action="queue"]') || target.closest('[data-action="queue"]')) {
+    e.stopPropagation();
+    await addToQueue(file);
     return;
   }
 
@@ -462,6 +549,8 @@ async function handleTableClick(e) {
     const group = (currentState?.groups || []).find(g => g.some(f => f.id === file.id));
     if (group) {
       keepOverrides.delete(groupSignature(group));
+      setKeeper(review, groupSignature(group), null);
+      persistReview();
       handleFilterChange();
       showToast("Back to the Keep rule for this group", "info", 1800);
     }
@@ -600,6 +689,10 @@ function removeFileFromGroups(fileId) {
     const group = currentState.groups[i];
     const fileIndex = group.findIndex(f => f.id === fileId);
     if (fileIndex !== -1) {
+      // Mark BEFORE the splice: the signature is the ids the group has now,
+      // and removing a member changes it (#117).
+      markDecided(review, groupSignature(group));
+      persistReview();
       group.splice(fileIndex, 1);
       if (group.length < 2) currentState.groups.splice(i, 1);
       break;
@@ -611,6 +704,9 @@ function removeGroupByIndex(groupIndex) {
   if (!currentState?.groups || groupIndex < 0 || groupIndex >= currentState.groups.length) return;
   
   const group = currentState.groups[groupIndex];
+  // "Ignore this group" is the user explicitly passing it over (#117).
+  markSkipped(review, groupSignature(group));
+  persistReview();
   const fileIds = new Set(group.map(f => f.id));
   currentState.groups.splice(groupIndex, 1);
   
@@ -864,7 +960,7 @@ function handleFilterChange() {
   
   renderVisibleRows();
   refreshActionButtons();
-  updateFilterStats(totalGroupsAfter, allRows.length, el("filterMode")?.value || "all");
+  updateFilterStats(totalGroupsAfter, allRows.length, el("filterMode")?.value || "all", reviewProgress());
   setStatus(`Filtered: ${totalGroupsAfter} group(s), ${allRows.length} file(s).`);
 }
 
@@ -874,33 +970,9 @@ function handleFilterChange() {
 //
 // "size" is the space the group's DUPLICATES would free, not the largest file:
 // that is the number worth triaging by, and it did not exist as a column before.
-function groupSortValue(b, key) {
-  const n = (v) => Number(v || 0) || 0;
-  switch (key) {
-    case "name":   return (b.keepFile.name || "").toLowerCase();
-    case "folder": return (b.keepFile._path || "").toLowerCase();
-    case "dims": {
-      const m = b.keepFile.imageMediaMetadata;
-      return n(m?.width) * n(m?.height);
-    }
-    case "size":
-      return b.members.reduce((sum, f) => f.id === b.keepFile.id ? sum : sum + n(f.size), 0);
-    default:
-      return 0;
-  }
-}
 
 function sortGroups(built) {
-  if (!sortKey) return;                       // keep the order matching produced
-  const dir = sortDir === "asc" ? 1 : -1;
-  built.sort((x, y) => {
-    const a = groupSortValue(x, sortKey), b = groupSortValue(y, sortKey);
-    if (a === b) {
-      // Stable and reproducible: fall back to the keeper's id, which is unique.
-      return x.keepFile.id < y.keepFile.id ? -1 : x.keepFile.id > y.keepFile.id ? 1 : 0;
-    }
-    return (typeof a === "string" ? a.localeCompare(b) : a - b) * dir;
-  });
+  sortGroupsBy(built, sortKey, sortDir);
 }
 
 function updateSortIndicators() {
@@ -919,18 +991,24 @@ function applyFilter() {
   // one file of three and hiding its siblings would leave a lone row with
   // nothing to compare against, which is not a useful thing to show -- so a
   // group survives if any member matches, and survives whole.
-  if (searchText) {
-    const needle = searchText.toLowerCase();
-    const matched = new Set();
-    for (const row of allRows) {
-      const name = (row.file.name || "").toLowerCase();
-      const path = (row.file._path || "").toLowerCase();
-      if (name.includes(needle) || path.includes(needle)) matched.add(row.groupId);
-    }
-    allRows = allRows.filter(row => matched.has(row.groupId));
-  }
+  allRows = filterBySearch(allRows, searchText);
 
-  if (filter !== "all") {
+  // "Unreviewed only" is the filter that makes a long review resumable in
+  // practice: 800 groups is an evening, and coming back to an undifferentiated
+  // list with no marker for where you were is what makes people not come back
+  // (#117).
+  if (filter === "unreviewed") {
+    const byGroup = new Map();
+    for (const row of allRows) {
+      if (!byGroup.has(row.groupId)) byGroup.set(row.groupId, []);
+      byGroup.get(row.groupId).push(row.file);
+    }
+    const unreviewed = new Set();
+    for (const [gid, files] of byGroup) {
+      if (!isReviewed(review, groupSignature(files))) unreviewed.add(gid);
+    }
+    allRows = allRows.filter(row => unreviewed.has(row.groupId));
+  } else if (filter !== "all") {
     const minPct = filter === "pct90" ? 90 : filter === "pct75" ? 75 : filter === "pct50" ? 50 : 0;
 
     allRows = allRows.filter(row => {
@@ -941,9 +1019,7 @@ function applyFilter() {
   }
 
   // A group reduced to its keeper has nothing left to compare, in either path.
-  const groupCounts = new Map();
-  for (const row of allRows) groupCounts.set(row.groupId, (groupCounts.get(row.groupId) || 0) + 1);
-  allRows = allRows.filter(row => groupCounts.get(row.groupId) > 1);
+  allRows = dropLoneKeepers(allRows);
 }
 
 // ============================================================================
@@ -1107,7 +1183,7 @@ function rebuildProgressiveRows() {
   refreshActionButtons();
 
   const totalGroups = new Set(allRows.map(r => r.groupId)).size;
-  updateFilterStats(totalGroups, allRows.length, el("filterMode")?.value || "all");
+  updateFilterStats(totalGroups, allRows.length, el("filterMode")?.value || "all", reviewProgress());
 }
 
 /**
@@ -1170,7 +1246,7 @@ export async function renderGroups({ groups, idToEntry, pathMap, keepRule = DEFA
   applyFilter();
   
   const totalGroups = new Set(allRows.map(r => r.groupId)).size;
-  updateFilterStats(totalGroups, allRows.length, "all");
+  updateFilterStats(totalGroups, allRows.length, "all", reviewProgress({ prune: true }));
   setStatus(`Showing ${groups.length} group(s), ${allRows.length} file(s). (Virtual scroll enabled)`);
   refreshActionButtons();
 

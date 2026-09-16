@@ -9,34 +9,40 @@
 //
 // The area is stored as FRACTIONS of the displayed image, never pixels. The
 // canvas is scaled to fit the window and the next image may be a different size
-// entirely, so pixels would land somewhere arbitrary. This pins the mapping —
-// crop.js holds it in a DOM-bound module, so the arithmetic is reproduced here
-// and asserted against the source so it cannot drift silently.
+// entirely, so pixels would land somewhere arbitrary.
+//
+// This file used to REPRODUCE that arithmetic and then regex the source to
+// check the copy still matched, because crop.js held it in a DOM-bound module.
+// That is the workaround #123 exists to remove: the mapping now lives in
+// js/cropGeometry.js as plain functions over numbers, so these tests call the
+// real code instead of a copy of it that could drift.
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { areaToFractions, fractionsToArea, isUsableSelection, MIN_SELECTION_PX } from "../js/cropGeometry.js";
 
 const CROP = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "js", "crop.js"), "utf8");
 
-// Mirrors rememberCurrentArea / applyRememberedArea in crop.js.
-const capture = (sel, cw, ch) => ({ x: sel.x / cw, y: sel.y / ch, w: sel.width / cw, h: sel.height / ch });
-
-function apply(area, cw, ch) {
-  const w = Math.min(cw, Math.max(10, area.w * cw));
-  const h = Math.min(ch, Math.max(10, area.h * ch));
-  const x = Math.max(0, Math.min(cw - w, area.x * cw));
-  const y = Math.max(0, Math.min(ch - h, area.y * ch));
-  return { x, y, width: w, height: h };
-}
+// The real functions, not a copy of them.
+const capture = areaToFractions;
+const apply = fractionsToArea;
 
 describe("remembered crop area", () => {
-  test("crop.js really does store fractions, not pixels", () => {
-    assert.match(CROP, /x:\s*selection\.x\s*\/\s*canvas\.width/);
-    assert.match(CROP, /w:\s*selection\.width\s*\/\s*canvas\.width/);
-    assert.match(CROP, /lastArea\.x\s*\*\s*canvas\.width/);
+  test("it really does store fractions, not pixels", () => {
+    // No longer a regex over crop.js: the function is right here.
+    const area = capture({ x: 250, y: 100, width: 500, height: 200 }, 1000, 400);
+    assert.deepEqual(area, { x: 0.25, y: 0.25, w: 0.5, h: 0.5 });
+    for (const v of Object.values(area)) {
+      assert.ok(v >= 0 && v <= 1, `${v} is not a fraction`);
+    }
+  });
+
+  test("and refuses to store anything without a canvas to be a fraction OF", () => {
+    assert.equal(capture({ x: 0, y: 0, width: 10, height: 10 }, 0, 0), null);
+    assert.equal(capture(null, 100, 100), null);
   });
 
   // The case the feature is for: a run of same-size pictures.
@@ -82,10 +88,15 @@ describe("remembered crop area", () => {
     assert.ok(back.width >= 10 && back.height >= 10, "at least the minimum selectable size");
   });
 
-  test("tiny selections are not remembered at all", () => {
-    // crop.js refuses to store anything under 10px, so a stray click does not
-    // become the area every subsequent image inherits.
-    assert.match(CROP, /selection\.width\s*<\s*10\s*\|\|\s*selection\.height\s*<\s*10\)\s*return;/);
+  test("tiny selections are not usable, so a stray click cannot become the remembered area", () => {
+    // One threshold, named once, rather than four copies of `< 10` -- one of
+    // which was written `> 10` and disagreed at exactly 10px (#123).
+    assert.equal(isUsableSelection({ x: 0, y: 0, width: 9, height: 100 }), false);
+    assert.equal(isUsableSelection({ x: 0, y: 0, width: 100, height: 9 }), false);
+    assert.equal(isUsableSelection({ x: 0, y: 0, width: MIN_SELECTION_PX, height: MIN_SELECTION_PX }), true);
+    assert.equal(isUsableSelection(null), false);
+    // And crop.js still guards the store with it.
+    assert.match(CROP, /if \(!isUsableSelection\(selection\)\) return;/);
   });
 
   test("the locked fixed-size feature keeps priority over a remembered area", () => {

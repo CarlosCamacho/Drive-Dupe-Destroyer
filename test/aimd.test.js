@@ -9,14 +9,14 @@
 // The controller halves concurrency on EVERY onError call — its isThrottle
 // argument only changes the log line. That makes the decision of *when to call
 // it* the load-bearing part. That decision lives in isBackpressureError, which
-// is in common.js precisely so this can test the real function rather than a
+// is in errors.js precisely so this can test the real function rather than a
 // copy of it that would drift.
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
 import { AIMDController } from "../js/aimd.js";
-import { isBackpressureError, isThrottleError } from "../js/common.js";
+import { isBackpressureError, isThrottleError } from "../js/errors.js";
 
 describe("AIMDController", () => {
   test("halves on error, down to the floor", () => {

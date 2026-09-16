@@ -1,5 +1,14 @@
-<!-- Drive Dupe Destroyer v12.8 — OAUTH_VERIFICATION_GUIDE.md -->
-# Google OAuth Verification Guide — Drive Dupe Destroyer v12.0
+<!-- Drive Dupe Destroyer — OAUTH_VERIFICATION_GUIDE.md -->
+# Google OAuth Verification Guide — Drive Dupe Destroyer
+
+> **Status: not submitted.** This guide describes what verification would take.
+> It has not been done, and until it is, every user has to create their own
+> Google Cloud project and OAuth client before the app does anything at all
+> (#115). That is the single largest drop-off point in the product, and no
+> amount of instruction copy removes it — #111 made the steps clear, not fewer.
+>
+> Re-audited against the shipping app; the claims table below is measured, not
+> remembered.
 
 ## What This Achieves
 Once your app passes Google's verification:
@@ -89,23 +98,48 @@ Until verified, add your own email (and testers' emails) as **Test Users**:
 
 ## What Google Reviewers Check
 
-| Requirement | Status in v12.0 |
-|---|---|
-| Minimal scopes — only request what you use | ✅ Only `drive` scope (required for arbitrary folder listing) |
-| Privacy policy publicly hosted | ✅ `privacy.html` included |
-| Terms of service publicly hosted | ✅ `terms.html` included |
-| Accurate scope justification | ✅ Explained in `privacy.html` |
-| Tokens not stored in localStorage | ✅ In-memory only (security.js) |
-| No eval() usage | ✅ Verified |
-| XSS protection (escapeHtml on all user data) | ✅ All innerHTML uses escapeHtml() |
-| Content-Security-Policy | ✅ Set by security.js + sw.js |
-| X-Frame-Options: DENY | ✅ Set by sw.js |
-| X-Content-Type-Options: nosniff | ✅ Set in index.html meta + sw.js |
-| Referrer-Policy | ✅ Set in index.html meta + sw.js |
-| Permissions-Policy | ✅ Set by security.js |
-| Sign-out revokes token | ✅ auth.js calls google.accounts.oauth2.revoke() |
-| Demo video showing scope usage | ⚠️ You need to record this |
-| App logo (120×120px PNG) | ⚠️ You need to create this |
+Re-checked against the current source rather than carried forward.
+
+| Requirement | Status | How it was checked |
+|---|---|---|
+| Minimal scopes — only request what you use | ✅ | One scope, `REQUIRED_SCOPE` in `security.js`. `auth.js` used to declare its own copy of the same string, with a comment calling it "minimal" while security.js called it Google's *restricted* full-access scope; it now imports the one constant (#120). |
+| Privacy policy publicly hosted | ✅ | `privacy.html` present in the repo root |
+| Terms of service publicly hosted | ✅ | `terms.html` present in the repo root |
+| Accurate scope justification | ✅ | Explained in `privacy.html` |
+| Tokens not stored in localStorage | ✅ | No `localStorage` or `sessionStorage` write anywhere in `js/`; all persistence is IndexedDB |
+| No `eval()` or `new Function()` | ✅ | No occurrence in `js/` or `sw.js` |
+| XSS protection on user data in `innerHTML` | ✅ | Every interpolation of Drive-supplied data goes through `escapeHtml`, or `encodeURIComponent` in a URL. **This was NOT true when the claim was first written:** `folderPicker.js` wrote a raw folder id into text and `ui.js` wrote a raw file id into an `href`. Drive ids are `[A-Za-z0-9_-]` so neither was exploitable, but the claim was absolute and the code was not. Fixed rather than softened. |
+| Content-Security-Policy | ✅ | `applyContentSecurityPolicy()` in `security.js`, mirrored in `sw.js` |
+| X-Frame-Options: DENY | ✅ | Set by `sw.js` |
+| X-Content-Type-Options: nosniff | ✅ | `index.html` meta + `sw.js` |
+| Referrer-Policy | ✅ | `applyReferrerPolicy()` + `sw.js` |
+| Permissions-Policy | ✅ | Set by `security.js` |
+| Sign-out revokes the token | ✅ | `auth.js` calls `google.accounts.oauth2.revoke()`, including for a token minted by a request that a sign-out superseded — pinned by `tools/trash-partial.mjs` (#82) |
+| Demo video showing scope usage | ⚠️ | Not recorded |
+| App logo (120×120px PNG) | ⚠️ | Not created |
+| App publicly hosted for reviewers | ⚠️ | Not hosted |
+
+## What verification would actually cost
+
+Worth stating plainly, because "submit for verification" reads like a form and
+is not one. The `drive` scope is **restricted**, not merely sensitive, so it
+brings:
+
+- A security assessment by a Google-approved third-party assessor, which is the
+  expensive part and recurs annually.
+- A demo video, a logo, a publicly hosted build, and a privacy policy at a
+  stable URL.
+- Weeks of round-trips, and a standing obligation to respond to re-reviews.
+
+The alternative that avoids all of it is the `drive.file` scope, which only
+grants access to files the user picks through Google's own Picker. That would
+not work for this app as designed: it scans whole folder trees the user
+nominates, and `drive.file` cannot enumerate a folder.
+
+So the honest position is that the current design — every user brings their own
+client ID — is the *consequence* of wanting arbitrary folder scanning without a
+restricted-scope assessment, not an oversight. It should be a decision someone
+makes on purpose, which is what #115 asks for.
 
 ---
 
