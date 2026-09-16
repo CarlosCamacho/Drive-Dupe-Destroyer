@@ -27,7 +27,11 @@ const PERSISTABLE = [
   { id: "pHashMode",       type: "checkbox", default: false },
   { id: "rotationVariants",type: "checkbox", default: false },
   { id: "sensitivityLevel",type: "range",    default: "3" },
-  { id: "hamThresh",       type: "range",    default: "2" },
+  // hamThresh is DERIVED from sensitivityLevel and is no longer persisted
+  // (#137). It was saved with a default of 2 while every scan actually ran at
+  // thresholdFromEasy(3) = 10, because nothing read it; restoring that stale 2
+  // once the value became live would have silently made matching far stricter
+  // for every existing user.
   { id: "maxItems",        type: "range",    default: "3" },
   { id: "pageSize",        type: "range",    default: "2" },
   { id: "keepRule",        type: "select",   default: "hires" },
