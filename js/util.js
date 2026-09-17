@@ -62,9 +62,6 @@ export const HELP_TEXT = {
   folderPriority: "Comma-separated folder name patterns. Files in folders matching earlier patterns are preferred as keepers.",
   exportResults: "Download the duplicate groups found in this scan as a JSON file. Useful for record-keeping or processing elsewhere.",
   queue: "Files added to the queue will be moved to trash when you process the queue. Use this for bulk deletions across multiple groups.",
-  cacheExport: "Save your cached hashes to a file. Useful for backup or transferring to another browser/computer.",
-  cacheImport: "Load previously exported hashes. Avoids re-downloading and re-hashing images you've already scanned.",
-  cacheClear: "Delete all cached hashes from your browser. You'll need to re-download thumbnails on the next scan.",
 };
 
 /**
