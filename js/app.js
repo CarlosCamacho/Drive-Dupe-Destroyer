@@ -14,7 +14,7 @@
 // Security-hardened: localStorage replaced with IndexedDB for all persistence
 // Main application entry point
 
-import { SIMILARITY_BITS } from "./distance.js";
+import { SIMILARITY_BITS, thresholdFromEasy } from "./distance.js";
 import { confirmAction } from "./confirm.js";
 import { el, APP_VERSION } from "./util.js";
 import { uiInit, setSignedInUi, setStatus, showEmptyState, setScanningState, showToast, wireErrorModal, setSelectedCountProvider, setRowCountProvider, setSizeStatsProvider, lockBodyScroll } from "./ui.js";
@@ -46,6 +46,32 @@ let abortCtrl = null;
 const MAX_ITEMS_VALUES = [500, 1000, 2500, 5000, 10000, 15000, 0]; // 0 = infinity
 const PAGE_SIZE_VALUES = [100, 250, 500, 750, 1000];
 
+/**
+ * Keep the advanced threshold slider showing the level Sensitivity selected
+ * (#137).
+ *
+ * These are one value with two ways to set it. Sensitivity is the simple front
+ * end; the advanced slider is the same number, exposed. Before this the slider
+ * was displayed, persisted and documented but never READ -- the scan took
+ * thresholdFromEasy(sensitivityLevel) and nothing else -- so dragging it moved
+ * the readout beside it and changed nothing at all.
+ *
+ * Sensitivity wins whenever it changes, and on load. The slider is therefore a
+ * fine-tune within the chosen level rather than a stored preference, which is
+ * also what keeps existing users where they are: every saved profile carries
+ * the old stale default of 2 while having actually been scanned at 10, so
+ * reading the saved value directly would silently have made everyone's
+ * matching far stricter overnight.
+ */
+export function syncThresholdToSensitivity() {
+  const level = parseInt(el("sensitivityLevel")?.value || "3", 10);
+  const slider = el("hamThresh");
+  const display = el("hamThreshVal");
+  if (!slider) return;
+  slider.value = String(thresholdFromEasy(level));
+  if (display) display.textContent = slider.value;
+}
+
 function wireSliders() {
   // Simple sliders
   const simpleSliders = [
@@ -64,6 +90,17 @@ function wireSliders() {
       slider.oninput = () => display.textContent = slider.value;
       display.textContent = slider.value;
     }
+  }
+
+  // Moving Sensitivity moves the threshold with it, so the two controls can
+  // never show different answers to the same question (#137).
+  const sens = el("sensitivityLevel");
+  if (sens) {
+    const sensDisplay = el("sensitivityVal");
+    sens.oninput = () => {
+      if (sensDisplay) sensDisplay.textContent = sens.value;
+      syncThresholdToSensitivity();
+    };
   }
   
   // Max Items slider (with infinity)
@@ -691,6 +728,9 @@ async function init() {
   wireUndoButton();
   wireAboutModal();
   await initPersistentSettings();
+  // After the restore, not before: initPersistentSettings runs long after
+  // wireSliders and would otherwise put the stale saved threshold back (#137).
+  syncThresholdToSensitivity();
   await checkResumeState();
   
   setSignedInUi(false);
