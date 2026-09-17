@@ -53,6 +53,44 @@ function isFresh(op) {
   return op && typeof op.trashedAt === "number" && Date.now() - op.trashedAt <= UNDO_TTL_MS;
 }
 
+/**
+ * How long until the button's claim stops being true (#141).
+ *
+ * Pure, so the scheduling can be tested without waiting out a real clock.
+ * Returns null when there is nothing to expire.
+ *
+ * It is the SOONEST expiry that matters, not the newest entry: the count on
+ * the button drops by one the moment the oldest fresh operation lapses, so
+ * waiting for the newest would leave an overstated count on screen until then.
+ *
+ * @param {Array<{trashedAt: number}>} stack
+ * @param {number} now
+ */
+export function msUntilNextExpiry(stack, now = Date.now()) {
+  const live = (stack || []).filter(
+    (op) => op && typeof op.trashedAt === "number" && now - op.trashedAt <= UNDO_TTL_MS,
+  );
+  if (live.length === 0) return null;
+  const oldest = Math.min(...live.map((op) => op.trashedAt));
+  // Never negative, and never 0 -- a 0 timeout against a boundary case would
+  // reschedule in a tight loop.
+  return Math.max(1, oldest + UNDO_TTL_MS - now);
+}
+
+// One pending timeout, not a heartbeat. Rescheduled from updateUndoButton,
+// which already runs on every push and every undo.
+let expiryTimer = 0;
+
+function scheduleExpiryRefresh() {
+  if (expiryTimer) { clearTimeout(expiryTimer); expiryTimer = 0; }
+  const ms = msUntilNextExpiry(undoStack);
+  if (ms == null) return;
+  expiryTimer = setTimeout(() => {
+    expiryTimer = 0;
+    updateUndoButton();   // recomputes, and reschedules for the next one
+  }, ms);
+}
+
 /** Load the persisted stack once per session. Safe to call repeatedly. */
 export async function loadUndoStack() {
   if (!loadPromise) {
@@ -239,4 +277,20 @@ function updateUndoButton() {
     ? `Undo the last delete (Ctrl+Z) — restores ${files} file(s) from Google Drive Trash. ` +
       `${ops} operation(s) available, expiring in about ${minsLeft} minute(s).`
     : "Nothing to undo";
+
+  // Without this the button goes on offering an undo that has already lapsed.
+  // #106 added the tooltip announcing the expiry and left the count and the
+  // enabled state frozen, so "Undo (3)" -- and the tooltip promising 30
+  // minutes -- both survived the thing they describe (#141).
+  scheduleExpiryRefresh();
+}
+
+// A hidden tab has its timers throttled hard, so the timeout above can fire
+// late or not until the tab is shown again. "Deleted some files, switched
+// tabs, came back later" is the common shape of this, so recompute on the way
+// back in as well (#141).
+if (typeof document !== "undefined" && document.addEventListener) {
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) updateUndoButton();
+  });
 }
