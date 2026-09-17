@@ -44,7 +44,7 @@ export const HELP_TEXT = {
   imgMinSize: "Ignore images smaller than this size. Useful to skip tiny thumbnails or icons.",
   imgMaxSize: "Ignore images larger than this size. Useful to skip huge raw files.",
   sensitivityLevel: "Controls how similar images must be to match. 1 = Loose (catches more duplicates, may include false positives). 5 = Strict (only near-identical images).",
-  hamThresh: "Hamming distance threshold for perceptual hashing. Lower = stricter matching. 0-2 = nearly identical, 3-5 = very similar, 6-10 = somewhat similar. Default: 2.",
+  hamThresh: "Hamming distance threshold for perceptual hashing. Lower = stricter matching. 0-2 = nearly identical, 3-6 = very similar, 10 = balanced, 14-20 = loose. Follows the Sensitivity setting; drag it to fine-tune the level you picked.",
   useDb: "Cache computed hashes in your browser. Dramatically speeds up subsequent scans of the same images.",
   keepRule: "Automatically marks which file to keep in each duplicate group. Options: highest resolution, newest, oldest, smallest, largest, or by folder priority.",
   checkVariants: "Also check for rotated or flipped versions of images. Slower but catches more duplicates.",

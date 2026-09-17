@@ -910,7 +910,13 @@ export async function runScan({
     const matchMode = document.querySelector('input[name="matchMode"]:checked')?.value || "similar";
     const quickScan = matchMode === "exact";
     const sensitivityLevel = parseInt(el("sensitivityLevel")?.value || "3", 10);
-    const hamThresh = thresholdFromEasy(sensitivityLevel);
+    // Read the advanced slider, which app.js keeps in step with Sensitivity
+    // (#137). It used to be ignored entirely: the slider was shown, saved and
+    // documented, and the scan took the level and nothing else, so dragging it
+    // to 0 -- "nearly identical" by its own help text -- still matched at 10.
+    const hamThreshEl = el("hamThresh");
+    const rawThresh = parseInt(hamThreshEl?.value ?? "", 10);
+    const hamThresh = Number.isFinite(rawThresh) ? rawThresh : thresholdFromEasy(sensitivityLevel);
     const keepRule = el("keepRule")?.value || DEFAULT_KEEP_RULE;
     const folderPriority = el("folderPriority")?.value || "";
     const withVariants = el("checkVariants")?.checked || el("checkVariants")?.value === "yes";
