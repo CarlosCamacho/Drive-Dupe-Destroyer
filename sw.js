@@ -52,6 +52,7 @@ const PRECACHE = [
   "./js/db.js",
   "./js/distance.js",
   "./js/drive.js",
+  "./js/earlyGroups.js",
   "./js/errors.js",
   "./js/exporter.js",
   "./js/fileListCache.js",

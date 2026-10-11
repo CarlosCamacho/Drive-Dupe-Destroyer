@@ -10,6 +10,76 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Size range defaults are now 32 KB to 2 MB.** They were 50 KB to 999 MB in
+  the page and 50 KB to "0" in the saved-settings table, which disagreed with
+  each other. Because the controls are saved on first use and restored over the
+  page defaults, a changed default never reached anyone who had used the app
+  before. Saved size values from before this change are now reset once to the
+  new defaults (`SIZE_DEFAULTS_VERSION` in `js/settings.js`); every other
+  saved setting still restores, and a range saved after the reset is kept.
+
+- **Duplicates appear in the table while the scan is still downloading.** Live
+  results used to start only at "3/4 Finding matches", after every image had
+  been hashed, which on a large Drive is nearly the whole scan. Byte-identical
+  files (same MD5) are now listed as soon as enumeration ends, before any
+  download, and files whose perceptual hash comes out identical are listed the
+  moment the second one is hashed (`js/earlyGroups.js`). Near-but-not-identical
+  matches still need every hash and still arrive during matching. The early
+  groups follow the same rules the matcher does (rejected pairs, the aspect
+  filter), so each one is a subset of a group the matcher will produce, and the
+  matcher's groups replace them in place.
+
+- **The crop area is remembered as soon as it is drawn.** It used to be
+  remembered only after a crop succeeded, so drawing an area and stepping to
+  the next picture without cropping this one (the keeper, say) lost it. A plain
+  click on the image now keeps the current area instead of clearing it; drag to
+  draw a new one.
+
+### Fixed
+
+- **An impossible size range is refused instead of scanned.** A minimum of
+  60 MB with a maximum of 4 MB filtered out every image and was reported as
+  "No images matched your folder and file-type settings". The scan now stops
+  before enumerating and says which fields are wrong, and the fields are
+  outlined while the range is impossible.
+
+- **The live table listed files twice after a union-find merge.** When the
+  matcher merged group B into group A it re-emitted A and never mentioned B
+  again, so B's earlier rows stayed on screen beside A's, each with its own
+  keeper. Live groups that share a file are now shown as one.
+
+- **Files trashed during a scan came back when it finished.** The final render
+  used the scan's groups, computed before the trash. A trashed keeper could
+  then make the table offer its surviving copy for deletion. Groups ignored
+  during the scan stayed ignored only until the next live update, and rows
+  ticked during the scan were unticked when it finished. All three now hold
+  for the whole scan.
+
+- **Crop modal races.** Enter could start a second upload of a crop already in
+  progress, and the arrow keys could move to another image while the "Move the
+  original to Trash?" dialog was open, so the file trashed was not the one just
+  cropped. Navigation, delete, rotate and close now wait for the crop to
+  finish. Quick Prev/Next clicks could also leave an earlier image on screen
+  under a later image's counter. A load that has been superseded is now
+  dropped.
+
+- **`js/earlyGroups.js` was missing from the service worker precache**, so an
+  offline load would have failed on the import. Regenerated with
+  `tools/gen_precache.py`.
+
+### Testing
+
+- `test/size-limits.test.js` pins the defaults in `index.html`, `settings.js`
+  and `formats.js` to one another and covers the range check.
+  `test/early-groups.test.js` checks the early grouper against the real
+  matcher: every early group must fall inside one matcher group.
+- `tools/live-results.mjs` drives the real render module and a real `runScan`
+  over a synthetic Drive. Against the previous `render.js`, 6 of its checks
+  fail. `tools/crop-area.mjs` now draws areas with real mouse events; all 4 new
+  checks fail against the previous `crop.js`.
+
 ### Testing
 
 - **First coverage of the hashing core** (#97). `js/worker-hash.js` computes

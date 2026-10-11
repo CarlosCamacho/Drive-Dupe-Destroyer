@@ -182,3 +182,35 @@ export function isImageMime(mime) {
   const lower = mime.toLowerCase();
   return SUPPORTED_IMAGE_MIMES.has(lower) || lower.startsWith('image/');
 }
+
+/**
+ * Turn the "Min / Max image size" controls into a byte range, and say when the
+ * range cannot match anything.
+ *
+ * The scan used to take the two numbers on trust. A minimum of 60 MB with a
+ * maximum of 4 MB -- one wrong unit -- filtered out every image in the Drive
+ * and reported "No images matched your folder and file-type settings", which
+ * sent the user looking at their folders instead of at the size fields.
+ *
+ * A blank, zero or unparseable maximum means "no upper limit", as it always
+ * has. Negative values are treated as zero rather than as a range.
+ */
+export const DEFAULT_MIN_SIZE = { value: 32, unit: 'KB' };
+export const DEFAULT_MAX_SIZE = { value: 2, unit: 'MB' };
+
+const unitBytes = (unit) => (String(unit).toUpperCase() === 'KB' ? 1024 : 1024 * 1024);
+
+export function sizeLimitsBytes({ minValue, minUnit, maxValue, maxUnit } = {}) {
+  const min = Math.max(0, parseFloat(minValue) || 0);
+  const max = Math.max(0, parseFloat(maxValue) || 0);
+  const minBytes = min * unitBytes(minUnit);
+  const maxBytes = max > 0 ? max * unitBytes(maxUnit) : Infinity;
+  return { minBytes, maxBytes, valid: minBytes <= maxBytes };
+}
+
+/** "32 KB", "1.5 MB" -- for messages about the size range. */
+export function formatSizeLimit(bytes) {
+  if (!Number.isFinite(bytes)) return 'no limit';
+  if (bytes >= 1024 * 1024) return `${+(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  return `${+(bytes / 1024).toFixed(2)} KB`;
+}

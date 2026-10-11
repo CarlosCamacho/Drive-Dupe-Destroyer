@@ -97,8 +97,9 @@ import {
 } from "./fileListCache.js";
 import { getRejectionStats, preloadRejections, getRejectionKeys } from "./rejection.js";
 import { updateTelemetry } from "./telemetry.js";
-import { SIMILARITY_BITS, thresholdFromEasy } from "./distance.js";
-import { SUPPORTED_IMAGE_MIMES, canBrowserDecode, getFileExtension, isSupportedImageFile } from "./formats.js";
+import { SIMILARITY_BITS, aspectRatioCompatible, thresholdFromEasy } from "./distance.js";
+import { exactGroupsForLive, makeEarlyGrouper } from "./earlyGroups.js";
+import { SUPPORTED_IMAGE_MIMES, canBrowserDecode, formatSizeLimit, getFileExtension, isSupportedImageFile, sizeLimitsBytes } from "./formats.js";
 import { DEFAULT_KEEP_RULE } from "./keeprule.js";
 import { buildPathsParallel, clearMemoryPathCaches } from "./paths.js";
 
@@ -502,11 +503,16 @@ async function computeHashesWithDb(images, {
   concurrency = HASH_CONCURRENCY, 
   signal = null, 
   onProgress = null,
-  onError = null
+  onError = null,
+  onEntry = null,       // (file, entry) for every hash, cached or computed
+  idToEntry = new Map() // filled in place, so a live view can hold it early
 } = {}) {
   const toCompute = [];
-  const idToEntry = new Map();
   let cacheHits = 0;
+  const emitEntry = (f, e) => {
+    if (!onEntry || !e?.base12) return;
+    try { onEntry(f, e); } catch (err) { console.warn("[DDD] onEntry failed:", err); }
+  };
 
   // Check DB cache first
   if (useDb) {
@@ -520,7 +526,9 @@ async function computeHashesWithDb(images, {
           toCompute.push(f);
         } else {
           cacheHits++;
-          idToEntry.set(f.id, entryFromCacheRecord(rec));
+          const entry = entryFromCacheRecord(rec);
+          idToEntry.set(f.id, entry);
+          emitEntry(f, entry);
         }
       }
     } catch (e) {
@@ -549,7 +557,10 @@ async function computeHashesWithDb(images, {
       concurrency, 
       signal, 
       onProgress,
-      onError
+      onError,
+      // Into the shared map as each hash lands, not only after the whole batch,
+      // so a group shown mid-hashing can already report its similarity.
+      onEntry: (f, e) => { idToEntry.set(f.id, e); emitEntry(f, e); }
     });
     
     hashingFailed = result.failed || 0;
@@ -877,6 +888,25 @@ export async function runScan({
   report.progress(0);
   report.resetEta();
   report.phase("1/4 Collecting files");
+
+  // A size range that cannot match anything is a settings mistake, not an
+  // empty Drive. Say which fields are wrong before walking a single folder,
+  // instead of enumerating everything and then reporting "no images found".
+  const sizeLimits = sizeLimitsBytes({
+    minValue: el("imgMinSize")?.value, minUnit: el("imgMinUnit")?.value,
+    maxValue: el("imgMaxSize")?.value, maxUnit: el("imgMaxUnit")?.value,
+  });
+  if (!sizeLimits.valid) {
+    const msg = `Min image size (${formatSizeLimit(sizeLimits.minBytes)}) is larger than ` +
+      `Max image size (${formatSizeLimit(sizeLimits.maxBytes)}), so no image could match. ` +
+      `Fix the size range in Advanced settings and scan again.`;
+    report.status(msg);
+    report.phase("Not started");
+    report.toast(msg, "error", 8000);
+    report.spinner(false);
+    report.scanning(false);
+    return;
+  }
   
   // Record scan history
   if (folders.length > 0) {
@@ -890,6 +920,9 @@ export async function runScan({
   let scanError = null;
   let hashingFailed = 0;
   let images = [];
+  // Hoisted so `finally` can stop it: a scan stopped mid-hashing must not
+  // leave a debounced path lookup firing after the scan is over.
+  let livePaths = null;
   
   try {
     // Get settings from UI
@@ -899,12 +932,8 @@ export async function runScan({
     const maxItems = parseInt(maxItemsEl?.dataset?.actualValue || maxItemsEl?.value || "0", 10) || 0;
     const pageSize = parseInt(pageSizeEl?.dataset?.actualValue || pageSizeEl?.value || "500", 10) || 500;
     
-    const imgMinSize = parseFloat(el("imgMinSize")?.value || "0") || 0;
-    const imgMinUnit = el("imgMinUnit")?.value || "MB";
-    const imgMaxSize = parseFloat(el("imgMaxSize")?.value || "999") || 999;
-    const imgMaxUnit = el("imgMaxUnit")?.value || "MB";
-    const minBytes = imgMinSize * (imgMinUnit === "KB" ? 1024 : 1024 * 1024);
-    const maxBytes = imgMaxSize * (imgMaxUnit === "KB" ? 1024 : 1024 * 1024);
+    // Read and validated at the top of runScan, before anything is recorded.
+    const { minBytes, maxBytes } = sizeLimits;
     
     const useDb = el("useDb")?.value !== "no";
     const matchMode = document.querySelector('input[name="matchMode"]:checked')?.value || "similar";
@@ -1290,7 +1319,59 @@ export async function runScan({
       );
     }
 
+    // Live results from here on, not from phase 3 (see earlyGroups.js).
+    //
+    // The live table used to open only once matching began, which on a large
+    // Drive is after nearly the whole scan: hashing is the download. Byte-
+    // identical files are known now, and files whose hash comes out identical
+    // are certain matches the moment the second one is hashed, so both are
+    // shown as they are found. The matcher's groups replace them in place when
+    // it runs -- each early group is a subset of the matcher's -- so nothing is
+    // listed twice.
+    //
+    // Load the user's rejected pairs first: the early grouper must decline
+    // what the matcher will decline, and the matching loop wants them too.
+    try { await preloadRejections(); } catch {}
+    const idToEntry = new Map();
+    let pushLive = null;
+    let onEntry = null;
+    if (onProgressiveMatch) {
+      onProgressiveMatch({ type: 'start', total: imagesToHash.length, idToEntry });
+
+      // Resolve folder paths for live groups as they appear. buildPathsParallel
+      // memoises within a scan (and persists between them since #79), so phase
+      // 4 below finds this work already done rather than repeating it.
+      livePaths = makeLivePathResolver({
+        signal,
+        onResolved: (entries) => onProgressiveMatch({ type: 'paths', entries }),
+      });
+      pushLive = (root, group) => {
+        onProgressiveMatch({ type: 'match', root, group });
+        // The folder-priority keep rule ranks on the resolved path, so until it
+        // arrives the live table nominates a keeper by tie-break and then
+        // silently changes its mind when the scan ends (#91).
+        livePaths.enqueue(group);
+      };
+
+      const { groups: md5Live, siblings } = exactGroupsForLive(exactDupeGroups);
+      for (const { key, group } of md5Live) pushLive(key, group);
+
+      const grouper = makeEarlyGrouper({
+        rejectedKeys: getRejectionKeys(),
+        siblings,
+        compatible: useAspectFilter
+          ? (a, b) => aspectRatioCompatible(a, b, aspectTolerancePct)
+          : null,
+      });
+      onEntry = (f, entry) => {
+        const hit = grouper.add(f, entry);
+        if (hit) pushLive(hit.key, hit.group);
+      };
+    }
+
     const hashResult = await computeHashesWithDb(imagesToHash, {
+      idToEntry,
+      onEntry,
       useDb, 
       withVariants,
       withCropDetect,
@@ -1321,7 +1402,7 @@ export async function runScan({
       }
     });
 
-    const { idToEntry, cacheHit, errors: hashErrors = [] } = hashResult;
+    const { cacheHit, errors: hashErrors = [] } = hashResult;
     hashingFailed = hashResult.hashingFailed || 0;
     
     report.hashingErrors(hashErrors);
@@ -1336,29 +1417,9 @@ export async function runScan({
     report.phase("3/4 Finding matches");
     const idToFile = new Map(images.map(f => [f.id, f]));
 
-    // Load the user's rejected-pairs set once so the matching loop can skip
-    // them synchronously (the "ignore group" feature now actually persists).
-    try { await preloadRejections(); } catch {}
-    
-    // Notify UI to prepare for progressive results
-    if (onProgressiveMatch) {
-      onProgressiveMatch({ type: 'start', total: idToEntry.size, idToEntry });
-    }
+    // The live session opened before hashing (above) carries on: the matcher's
+    // groups stream into the same table, replacing the early ones they contain.
 
-    // Resolve folder paths for live groups while matching runs.
-    //
-    // This costs nothing overall: matching is CPU-bound and runs after hashing,
-    // so the network is idle exactly when live groups appear, and
-    // buildPathsParallel memoises within a scan (and persists between them
-    // since #79) -- so phase 4 below finds the work already done rather than
-    // repeating it. The same requests, moved earlier and overlapped.
-    // Reported through the same channel as live matches, so there is one
-    // progressive callback rather than two.
-    const livePaths = makeLivePathResolver({
-      signal,
-      onResolved: onProgressiveMatch ? (entries) => onProgressiveMatch({ type: 'paths', entries }) : null,
-    });
-    
     const matchResult = await findMatchesProgressively({
       idToEntry,
       idToFile,
@@ -1377,17 +1438,7 @@ export async function runScan({
       onMatchFound: (match) => {
         // Stream each changed group to the live UI. Status text is updated once
         // per flush inside findMatchesProgressively, so we don't repeat it here.
-        if (onProgressiveMatch) {
-          onProgressiveMatch({ 
-            type: 'match', 
-            ...match 
-          });
-        }
-        // Start resolving this group's folder paths now rather than waiting for
-        // phase 4. The folder-priority keep rule ranks on the resolved path, so
-        // until it arrives the live table nominates a keeper by tie-break and
-        // then silently changes its mind when the scan ends (#91).
-        if (Array.isArray(match?.group)) livePaths.enqueue(match.group);
+        if (pushLive && Array.isArray(match?.group)) pushLive(match.root, match.group);
       },
       onProgress: (current, total, matches, groups) => {
         const pct = 55 + (current / Math.max(1, total)) * 30;
@@ -1396,7 +1447,7 @@ export async function runScan({
       }
     });
 
-    livePaths.stop();
+    livePaths?.stop();
 
     const { groups, comparisons, matches } = matchResult;
     
@@ -1517,6 +1568,7 @@ export async function runScan({
       showToast(errorMsg, "error", 8000);
     }
   } finally {
+    livePaths?.stop();
     report.spinner(false);
     report.scanning(false);
     // Drop the per-scan memo, KEEP the durable rows. This used to call
