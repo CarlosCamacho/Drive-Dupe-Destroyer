@@ -10,6 +10,8 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [14.8.0] - 2026-10-11
+
 ### Changed
 
 - **Size range defaults are now 32 KB to 2 MB.** They were 50 KB to 999 MB in
