@@ -17,13 +17,13 @@
 
 import { el, bytesToHuman, escapeHtml, throttle, debounce, IMAGE_PLACEHOLDER } from "./util.js";
 import { confirmAction, UNDO_NOTE } from "./confirm.js";
-import { setStatus, refreshActionButtons, showEmptyState, showToast, updateFilterStats, showTrashedToast, setEmptyState } from "./ui.js";
+import { setStatus, refreshActionButtons, showEmptyState, showToast, updateFilterStats, setEmptyState } from "./ui.js";
 import { releaseAllThumbBlobs, getThumbUrlForFile } from "./hashing.js";
 import { openCompare, setCompareCallbacks } from "./compare.js";
 import { setCropCallbacks } from "./crop.js";
-import { batchTrash, driveFilePreviewLink, driveFolderLink, downloadFileBlob, thumbLinkSized } from "./drive.js";
+import { driveFilePreviewLink, driveFolderLink, downloadFileBlob, thumbLinkSized } from "./drive.js";
 import { SIMILARITY_BITS, bestDist, distToPercent } from "./distance.js";
-import { DEFAULT_KEEP_RULE, chooseKeepIndex } from "./keeprule.js";
+import { DEFAULT_KEEP_RULE } from "./keeprule.js";
 import {
   groupSignature, keeperFor as keeperForGroup, sizeStatsFor,
   sortGroups as sortGroupsBy, filterBySearch, dropLoneKeepers,
@@ -33,7 +33,7 @@ import {
   markDecided, markSkipped, setKeeper, isReviewed, reviewCounts,
   pruneToSignatures, UNTOUCHED,
 } from "./reviewState.js";
-import { pushUndoDeleteBatch, undoLastDelete } from "./undo.js";
+import { trashFiles } from "./trash.js";
 import { addToQueue } from "./queue.js";
 
 const ROW_HEIGHT = 58;
@@ -86,8 +86,15 @@ export function getReviewState() { return review; }
  *
  * Pruning happens once, from renderGroups, where the list is complete.
  */
+// Signatures of groups ignored in the current result set. An ignored group
+// leaves the table but is still part of the review -- it is the "skipped"
+// half of "N of M reviewed" -- so it is counted here, and it is protected
+// from the prune below, which would otherwise delete its skip mark the moment
+// the finished scan rendered without it.
+let ignoredSigs = new Set();
+
 export function reviewProgress({ prune = false } = {}) {
-  const sigs = (currentState?.groups || []).map(groupSignature);
+  const sigs = [...(currentState?.groups || []).map(groupSignature), ...ignoredSigs];
   // Belt and braces: never prune against a partial list, whoever asks.
   if (prune && !progressiveActive) pruneToSignatures(review, sigs);
   const c = reviewCounts(review, sigs);
@@ -134,7 +141,6 @@ let visibleRange = { start: 0, end: 0 };
 // select / delete) while the search continues.
 let progressiveActive = false;
 let progressiveGroups = new Map();   // root -> array<file>
-let progressiveOptions = null;       // { keepRule, folderPriority, bitsCount, withVariants }
 let progressiveRenderScheduled = false;
 let progressiveTrashed = new Set();  // file ids the user trashed mid-scan
 let progressiveOwner = new Map();    // file id -> root of the live group showing it
@@ -172,6 +178,10 @@ export function getSizeStats() {
 
 export function getIdToFile() { return idToFile; }
 export function getCurrentGroups() { return currentState?.groups || []; }
+/** The keeper the table shows for `group`: the result set's rule plus pins. */
+export function currentKeeperFor(group) {
+  return keeperFor(group, currentState?.keepRule || DEFAULT_KEEP_RULE, currentState?.folderPriority || "");
+}
 export function getPathMap() { return currentState?.pathMap || new Map(); }
 
 function getFolderPath(file, pathMap) {
@@ -666,17 +676,11 @@ async function handleSingleDelete(file, tr) {
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>'; }
 
   try {
-    const result = await batchTrash([file.id]);
-    if (result.success.includes(file.id)) {
-      // Record before removing the row: this path used to trash the file without
-      // any undo entry, so a misclick was only recoverable from Drive Trash.
-      pushUndoDeleteBatch([file]);
-
-      selected.delete(file.id);
-      removeFileFromResults(file.id);
-      window.dispatchEvent(new CustomEvent("ddd:trashed", { detail: { ids: [file.id] } }));
-      showTrashedToast(1, () => undoLastDelete());
-    } else throw new Error("Trash failed");
+    // trashFiles records the undo and dispatches ddd:trashed, whose listener
+    // removes the row (handleBulkTrash) -- one removal path, not two.
+    const result = await trashFiles([file]);
+    if (result.error) throw result.error;
+    if (!result.success.includes(file.id)) throw new Error("Trash failed");
   } catch (err) {
     showToast("Trash failed: " + (err?.message || err), "error");
     if (btn) { 
@@ -703,97 +707,38 @@ function removeFileFromGroups(fileId) {
   }
 }
 
-function removeGroupByIndex(groupIndex) {
-  if (!currentState?.groups || groupIndex < 0 || groupIndex >= currentState.groups.length) return;
+// "Ignore this group", identified by its members. Compare used to send a
+// position in its own snapshot of the groups, which the table rebuilds under
+// it -- every live frame mid-scan, and when the scan ends -- so the group
+// hidden was whichever had moved into that slot.
+function removeGroupByIds(ids) {
+  if (!currentState?.groups || !ids?.length) return;
+  const wanted = new Set(ids);
+  let best = -1, bestOverlap = 0;
+  currentState.groups.forEach((g, i) => {
+    const overlap = g.reduce((n, f) => n + (wanted.has(f.id) ? 1 : 0), 0);
+    if (overlap > bestOverlap) { best = i; bestOverlap = overlap; }
+  });
+  if (best < 0) return;
   
-  const group = currentState.groups[groupIndex];
+  const group = currentState.groups[best];
   // "Ignore this group" is the user explicitly passing it over (#117).
   markSkipped(review, groupSignature(group));
+  ignoredSigs.add(groupSignature(group));
   persistReview();
   const fileIds = new Set(group.map(f => f.id));
   // Mid-scan, the matcher re-emits this group whenever it grows and the final
   // render lists it again, so removing the rows alone lasted until the next
   // update. Remember it for the rest of this scan.
   if (progressiveActive) for (const id of fileIds) progressiveIgnored.add(id);
-  currentState.groups.splice(groupIndex, 1);
-  
-  for (let i = allRows.length - 1; i >= 0; i--) {
-    if (fileIds.has(allRows[i].file.id)) {
-      idToFile.delete(allRows[i].file.id);
-      selected.delete(allRows[i].file.id);
-      allRows.splice(i, 1);
-    }
-  }
-  
-  if (allRows.length === 0) {
-    showEmptyState(true);
-    setStatus("All duplicates processed.");
-  } else {
-    visibleRange = { start: -1, end: -1 };
-    renderVisibleRows();
-  }
-  refreshActionButtons();
-}
-
-function removeFileFromResults(fileId) {
-  removeFileFromGroups(fileId);
-  
-  const rowIndex = allRows.findIndex(r => r.file.id === fileId);
-  if (rowIndex === -1) return;
-
-  const groupId = allRows[rowIndex].groupId;
-  allRows.splice(rowIndex, 1);
-  idToFile.delete(fileId);
-
-  const groupRows = allRows.filter(r => r.groupId === groupId);
-  if (groupRows.length <= 1) {
-    const keepRowIndex = allRows.findIndex(r => r.groupId === groupId);
-    if (keepRowIndex !== -1) {
-      idToFile.delete(allRows[keepRowIndex].file.id);
-      allRows.splice(keepRowIndex, 1);
-    }
-  }
-
-  if (allRows.length === 0) {
-    showEmptyState(true);
-    setStatus("All duplicates processed.");
-  } else {
-    visibleRange = { start: -1, end: -1 };
-    renderVisibleRows();
-  }
-  refreshActionButtons();
+  currentState.groups.splice(best, 1);
+  for (const id of fileIds) selected.delete(id);
+  refreshAfterRemoval();
 }
 
 function handleBulkTrash(ids) {
-  const idSet = new Set(ids);
-  for (const fileId of ids) removeFileFromGroups(fileId);
-  
-  for (let i = allRows.length - 1; i >= 0; i--) {
-    if (idSet.has(allRows[i].file.id)) {
-      idToFile.delete(allRows[i].file.id);
-      selected.delete(allRows[i].file.id);
-      allRows.splice(i, 1);
-    }
-  }
-
-  const groupCounts = new Map();
-  for (const row of allRows) groupCounts.set(row.groupId, (groupCounts.get(row.groupId) || 0) + 1);
-
-  for (let i = allRows.length - 1; i >= 0; i--) {
-    if (groupCounts.get(allRows[i].groupId) <= 1) {
-      idToFile.delete(allRows[i].file.id);
-      allRows.splice(i, 1);
-    }
-  }
-
-  if (allRows.length === 0) {
-    showEmptyState(true);
-    setStatus("All duplicates processed.");
-  } else {
-    visibleRange = { start: -1, end: -1 };
-    renderVisibleRows();
-  }
-  refreshActionButtons();
+  for (const fileId of ids) { removeFileFromGroups(fileId); selected.delete(fileId); }
+  refreshAfterRemoval();
 }
 
 export function wireRenderControls() {
@@ -890,8 +835,8 @@ export function wireRenderControls() {
   });
   
   window.addEventListener("ddd:ignoreGroup", (e) => {
-    const groupIndex = e.detail?.groupIndex;
-    if (groupIndex !== undefined && groupIndex >= 0) removeGroupByIndex(groupIndex);
+    const ids = e.detail?.ids;
+    if (Array.isArray(ids)) removeGroupByIds(ids);
   });
 
   setCompareCallbacks({
@@ -901,7 +846,10 @@ export function wireRenderControls() {
     },
     onDelete: null,
     getCurrentGroups: () => currentState?.groups || [],
-    onIgnore: (groupIndex) => removeGroupByIndex(groupIndex),
+    onIgnore: (ids) => removeGroupByIds(ids),
+    // Compare shows the keeper the table shows: the result set's own rule
+    // plus the user's pins.
+    keeperFor: currentKeeperFor,
     getPathMap: () => currentState?.pathMap || new Map(),
     // v14.0: lets the compare modal record "ignore" rejections so ignored
     // pairs stay suppressed across future scans (previously never wired up).
@@ -917,58 +865,116 @@ export function wireRenderControls() {
   if (filterEl) filterEl.onchange = handleFilterChange;
 }
 
-function handleFilterChange() {
-  if (!currentState) return;
-  
-  allRows = [];
+/**
+ * The table's rows for `groups`: keeper first in each group, groups in the
+ * current sort order. The ONE place a keeper is chosen for display.
+ *
+ * There were three. renderGroups and the live table called chooseKeepIndex
+ * directly and never saw a pinned keeper; only this path (filter/sort) did. So
+ * a pin restored from a previous session showed the rule's keeper -- with the
+ * pinned file offered for deletion and swept up by "Select all duplicates" --
+ * until the first sort or search silently switched it, and a pin made
+ * mid-scan was undone on the next live frame. They also disagreed on the
+ * similarity badge, which only two of the three computed: it vanished from
+ * every group the first time the filter or sort changed.
+ *
+ * Uses the rule the result set was BUILT with (currentState), not the
+ * dropdown, so changing it after a scan cannot make two views disagree.
+ */
+function buildRows(groups) {
+  const rule = currentState?.keepRule || DEFAULT_KEEP_RULE;
+  const priority = currentState?.folderPriority || "";
+  const idToEntry = currentState?.idToEntry || new Map();
+  const pathMap = currentState?.pathMap || new Map();
 
-  // Build one record per group first, so sorting can move groups as units.
   const built = [];
-  for (const g of currentState.groups) {
-    // Use the rule this result set was built with rather than re-reading the
-    // dropdown, so changing it mid-scan cannot make the filter disagree with the
-    // table it is filtering.
-    resolvePaths(g, currentState.pathMap);
-    const keepFile = keeperFor(
-      g,
-      currentState.keepRule || DEFAULT_KEEP_RULE,
-      currentState.folderPriority || ""
-    );
+  for (const g of groups) {
+    resolvePaths(g, pathMap);
+    const keepFile = keeperFor(g, rule, priority);
     const members = [keepFile, ...g.filter(f => f.id !== keepFile.id)];
     built.push({ group: g, keepFile, members, pinned: keepOverrides.has(groupSignature(g)) });
   }
-
   sortGroups(built);
 
+  const rows = [];
   let groupId = 0;
   for (const b of built) {
     groupId++;
+    const groupPct = groupBestPct(b.members, 0, idToEntry, currentState?.bitsCount, currentState?.withVariants);
     for (const f of b.members) {
-      allRows.push({
+      rows.push({
         file: f, groupId, keepFile: b.keepFile,
-        idToEntry: currentState.idToEntry,
-        pathMap: currentState.pathMap,
+        idToEntry, pathMap,
         isKeep: f.id === b.keepFile.id,
         pinned: b.pinned,
-        bitsCount: currentState.bitsCount,
-        withVariants: currentState.withVariants,
-        groupColorIdx: groupId - 1
+        bitsCount: currentState?.bitsCount,
+        withVariants: currentState?.withVariants,
+        groupColorIdx: groupId - 1,
+        groupPct,
       });
     }
   }
+  return rows;
+}
+
+/**
+ * Keep the selection to rows the user can see and could delete.
+ *
+ * "Trash Selected" acts on the selection, so anything in it the user cannot
+ * see is a deletion they are not looking at. It used to survive:
+ *   - a filter or search that hid the row ("Select all", then "≥90%", then
+ *     Trash also trashed every hidden row -- while the selected-size figure,
+ *     which counts visible rows, understated it);
+ *   - the file becoming its group's KEEPER (unpin, a pin restored, the keeper
+ *     trashed so another file took over). The keeper row has no checkbox, so
+ *     the selection was invisible, and Trash Selected deleted the keeper.
+ */
+function pruneSelection() {
+  const deletable = new Set();
+  for (const r of allRows) if (!r.isKeep) deletable.add(r.file.id);
+  for (const id of [...selected]) if (!deletable.has(id)) selected.delete(id);
+}
+
+// Also the rebuild after a delete or an ignore, with { resetScroll: false } so
+// the table does not jump to the top under the user's next click. (As the
+// filter's onchange handler it receives an Event, which is "reset".)
+function handleFilterChange(opts) {
+  if (!currentState) return;
+  const resetScroll = opts?.resetScroll !== false;
   
+  allRows = buildRows(currentState.groups);
   applyFilter();
+  pruneSelection();
   
   const totalGroupsAfter = new Set(allRows.map(r => r.groupId)).size;
   visibleRange = { start: -1, end: -1 };
   
-  const tableWrap = document.querySelector(".tableWrap");
-  if (tableWrap) tableWrap.scrollTop = 0;
+  if (resetScroll) {
+    const tableWrap = document.querySelector(".tableWrap");
+    if (tableWrap) tableWrap.scrollTop = 0;
+  }
   
+  if (allRows.length === 0) {
+    showEmptyState(true);
+    if (!resetScroll) setStatus("All duplicates processed.");
+  } else {
+    showEmptyState(false);
+  }
   renderVisibleRows();
   refreshActionButtons();
   updateFilterStats(totalGroupsAfter, allRows.length, el("filterMode")?.value || "all", reviewProgress());
-  setStatus(`Filtered: ${totalGroupsAfter} group(s), ${allRows.length} file(s).`);
+  if (resetScroll) setStatus(`Filtered: ${totalGroupsAfter} group(s), ${allRows.length} file(s).`);
+}
+
+// After files leave the result set: rebuild through the one row builder, so a
+// group that lost its keeper gets a new one and the selection is re-checked
+// against it. The hand-patched removal that used to live in the trash and
+// ignore handlers left a group whose keeper had been deleted with no keeper
+// at all -- every survivor shown as a duplicate, all of them taken by "Select
+// all duplicates".
+function refreshAfterRemoval() {
+  if (progressiveActive) scheduleProgressiveRender();
+  else handleFilterChange({ resetScroll: false });
 }
 
 // #70: order groups by a key derived from the whole group, never by moving rows
@@ -1056,7 +1062,7 @@ export function beginProgressive({ idToEntry, keepRule = DEFAULT_KEEP_RULE, fold
   progressiveOwner = new Map();
   progressiveIgnored = new Set();
   progressiveSelected = null;
-  progressiveOptions = { keepRule, folderPriority, bitsCount, withVariants };
+  ignoredSigs = new Set();
 
   // currentState is needed by Compare/delete handlers. The path map starts
   // empty and is filled in by mergeProgressivePaths as the scan resolves paths
@@ -1160,10 +1166,6 @@ function scheduleProgressiveRender() {
 }
 
 function rebuildProgressiveRows() {
-  const opts = progressiveOptions || {};
-  const idToEntry = currentState?.idToEntry || new Map();
-  const pathMap = currentState?.pathMap || new Map();
-
   // Preserve the user's current selection across live re-renders.
   const prevSelected = new Set(selected);
 
@@ -1171,7 +1173,6 @@ function rebuildProgressiveRows() {
   idToFile = new Map();
   const liveGroups = [];
 
-  let groupId = 0;
   for (const rawGroup of mergedProgressiveGroups()) {
     // Drop files the user already trashed during this live session so a
     // re-emitted (grown/merged) group never resurrects a deleted row.
@@ -1180,32 +1181,22 @@ function rebuildProgressiveRows() {
       : rawGroup;
     if (!group || group.length < 2) continue;
     if (isIgnoredGroup(group)) continue;
-    groupId++;
     liveGroups.push(group);
-
-    resolvePaths(group, pathMap);
-    const keepIdx = chooseKeepIndex(group, opts.keepRule || DEFAULT_KEEP_RULE, opts.folderPriority || "");
-    const keepFile = group[keepIdx] || group[0];
-    const sortedGroup = [keepFile, ...group.filter(f => f.id !== keepFile.id)];
-    const _groupPct = groupBestPct(sortedGroup, 0, idToEntry, opts.bitsCount, opts.withVariants);
-
-    for (const f of sortedGroup) {
-      idToFile.set(f.id, f);
-      allRows.push({
-        file: f, groupId, keepFile, idToEntry, pathMap,
-        isKeep: f.id === keepFile.id,
-        bitsCount: opts.bitsCount, withVariants: opts.withVariants,
-        groupColorIdx: groupId - 1, groupPct: _groupPct
-      });
-    }
+    for (const f of group) idToFile.set(f.id, f);
   }
+  // The same builder as the finished table, so pins hold mid-scan; and the
+  // filter, search and sort apply to it too -- they used to be dropped on the
+  // next live frame while the controls still showed what had been chosen.
+  allRows = buildRows(liveGroups);
+  applyFilter();
 
   // Keep currentState.groups live so Compare / delete handlers work on what's
   // currently shown, even mid-scan.
   currentState.groups = liveGroups;
 
-  // Drop any selections whose files no longer exist in the live set.
+  // Drop any selections whose files are gone, hidden, or now a keeper.
   selected = new Set([...prevSelected].filter(id => idToFile.has(id)));
+  pruneSelection();
 
   if (allRows.length === 0) {
     showEmptyState(true);
@@ -1269,11 +1260,40 @@ export function endProgressive() {
   // Hand the live selection to the final render. renderGroups starts from an
   // empty selection, so ticking rows while the scan ran -- which live results
   // exist to allow -- was silently undone the moment it finished.
-  if (progressiveActive) progressiveSelected = new Set(selected);
+  //
+  // Only from a session that is still live. A Stop also ends the session, and
+  // what it captured used to linger until the next renderGroups -- which, for
+  // an Exact scan (it never opens a live session), restored those ticks into
+  // a different scan's results.
+  progressiveSelected = progressiveActive ? new Set(selected) : null;
   progressiveActive = false;
   progressiveGroups = new Map();
-  progressiveOptions = null;
   progressiveRenderScheduled = false;
+}
+
+/**
+ * Empty the results: rows, selection, the live session and what it carries.
+ * For sign-out -- the table, Compare and the export all read this state, and it
+ * used to stay on the page for whoever signed in next.
+ */
+export function clearResults() {
+  endProgressive();
+  progressiveSelected = null;
+  progressiveTrashed = new Set();
+  progressiveIgnored = new Set();
+  ignoredSigs = new Set();
+  releaseAllThumbBlobs();
+  loadedThumbs.clear();
+  clearSimCache();
+  const tbody = el("resultsTbody");
+  if (tbody) tbody.innerHTML = "";
+  selected.clear();
+  allRows = [];
+  idToFile = new Map();
+  currentState = null;
+  visibleRange = { start: -1, end: -1 };
+  showEmptyState(true);
+  refreshActionButtons();
 }
 
 export async function renderGroups({ groups, idToEntry, pathMap, keepRule = DEFAULT_KEEP_RULE, folderPriority = "", bitsCount = SIMILARITY_BITS, withVariants = false }) {
@@ -1300,6 +1320,9 @@ export async function renderGroups({ groups, idToEntry, pathMap, keepRule = DEFA
   }
   const carried = progressiveSelected;
   progressiveSelected = null;
+  // A new result set starts its own count -- unless it is the end of the live
+  // session whose ignores these are.
+  if (progressiveIgnored.size === 0) ignoredSigs = new Set();
 
   currentState = { groups, idToEntry, pathMap, bitsCount, withVariants, keepRule, folderPriority };
   idToFile = new Map(groups.flat().map(f => [f.id, f]));
@@ -1316,24 +1339,7 @@ export async function renderGroups({ groups, idToEntry, pathMap, keepRule = DEFA
   showEmptyState(false);
   setStatus(`Preparing ${groups.length} group(s)…`);
 
-  let groupId = 0;
-  for (const g of groups) {
-    groupId++;
-    resolvePaths(g, pathMap);
-    const keepIdx = chooseKeepIndex(g, keepRule || DEFAULT_KEEP_RULE, folderPriority);
-    const keepFile = g[keepIdx] || g[0];
-    const sortedGroup = [keepFile, ...g.filter(f => f.id !== keepFile.id)];
-    
-    // Feature #2: compute best group similarity pct for badge
-    const _groupPct = groupBestPct(sortedGroup, 0, idToEntry, bitsCount, withVariants);
-    for (const f of sortedGroup) {
-      allRows.push({ 
-        file: f, groupId, keepFile, idToEntry, pathMap, 
-        isKeep: f.id === keepFile.id, bitsCount, withVariants, groupColorIdx: groupId - 1,
-        groupPct: _groupPct
-      });
-    }
-  }
+  allRows = buildRows(groups);
 
   // Restore the live selection, minus anything that is now a keeper: the
   // keeper is never offered for deletion, and the final keep rule may have
@@ -1345,9 +1351,10 @@ export async function renderGroups({ groups, idToEntry, pathMap, keepRule = DEFA
   }
 
   applyFilter();
+  pruneSelection();
   
   const totalGroups = new Set(allRows.map(r => r.groupId)).size;
-  updateFilterStats(totalGroups, allRows.length, "all", reviewProgress({ prune: true }));
+  updateFilterStats(totalGroups, allRows.length, el("filterMode")?.value || "all", reviewProgress({ prune: true }));
   setStatus(`Showing ${groups.length} group(s), ${allRows.length} file(s). (Virtual scroll enabled)`);
   refreshActionButtons();
 

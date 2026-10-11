@@ -61,12 +61,18 @@ export function enumerationScopeKey({ folderIds = [], exclusions = [], recursive
 const shrink = ({ webViewLink, ...rest }) => rest;
 const rehydrate = (f) => (f.webViewLink ? f : { ...f, webViewLink: driveFilePreviewLink(f) });
 
-export async function saveFileList({ scope, files, visitedFolderIds }) {
+/**
+ * `savedAt` is when the list was last ENUMERATED, so a list that was reused
+ * and patched with changes keeps its original time. Stamping "now" on every
+ * save meant MAX_AGE_MS never fired for anyone who scanned at least weekly:
+ * the patched list lived forever and never met a real listing again.
+ */
+export async function saveFileList({ scope, files, visitedFolderIds, savedAt = Date.now() }) {
   await stateSet(KEY, {
     scope,
     files: (files || []).map(shrink),
     visitedFolderIds: [...(visitedFolderIds || [])],
-    savedAt: Date.now(),
+    savedAt,
   }).catch(() => {});
 }
 
@@ -108,8 +114,39 @@ export function applyChangesToList(files, changes, { visitedFolderIds, exclusion
   const removedIds = new Set(changes.filter(c => c._removed).map(c => c.id));
   const existing = new Set(files.map(f => f.id));
 
-  let added = 0, outOfScope = 0, unknownParent = 0;
-  const out = files.filter(f => !removedIds.has(f.id));
+  let added = 0, outOfScope = 0, unknownParent = 0, updated = 0;
+  let out = files.filter(f => !removedIds.has(f.id));
+
+  // A change to a file ALREADY in the list -- edited, renamed or moved. These
+  // used to be skipped outright, so the cached entry stayed as it was: an
+  // edited photo kept its old md5 and could be grouped as a byte-identical
+  // copy it no longer was, and a file moved into an excluded folder kept
+  // being scanned and offered for deletion. Replace it when it is still in
+  // scope; drop it when it has left.
+  const changedExisting = new Map();
+  for (const cf of changes) {
+    if (cf._changed && existing.has(cf.id) && !removedIds.has(cf.id)) changedExisting.set(cf.id, cf);
+  }
+  if (changedExisting.size) {
+    const next = [];
+    for (const f of out) {
+      const cf = changedExisting.get(f.id);
+      if (!cf) { next.push(f); continue; }
+      const parent = cf.parents?.[0];
+      if (parent && !excluded.has(parent) && visited.has(parent)) {
+        next.push(cf);
+        updated++;
+      } else {
+        // Moved out of the walked tree, or into a folder this cache has never
+        // seen -- which may be a new folder inside it. Dropping it is right
+        // either way; the unknown case is reported so the caller re-walks.
+        if (parent && !excluded.has(parent) && !visited.has(parent)) unknownParent++;
+        outOfScope++;
+      }
+    }
+    out = next;
+  }
+
   for (const cf of changes.filter(c => c._changed)) {
     if (existing.has(cf.id) || removedIds.has(cf.id)) continue;
     const parent = cf.parents?.[0];
@@ -133,5 +170,5 @@ export function applyChangesToList(files, changes, { visitedFolderIds, exclusion
     out.push(cf);
     added++;
   }
-  return { files: out, added, removed: removedIds.size, outOfScope, unknownParent, removedIds };
+  return { files: out, added, updated, removed: removedIds.size, outOfScope, unknownParent, removedIds };
 }

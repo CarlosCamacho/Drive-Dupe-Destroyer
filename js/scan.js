@@ -1167,7 +1167,9 @@ export async function runScan({
             });
             allItems = recollected.files;
             visitedFolderIds = recollected.visitedFolderIds;
+            unreadableFolders = recollected.unreadable || [];
             images = allItems.filter(passesFilters);
+            reusedCache = false;   // a fresh walk: its cache entry starts a new clock
             if (nextToken) await setChangesToken(nextToken);
             throw { __handled: true };
           }
@@ -1198,7 +1200,28 @@ export async function runScan({
       } catch (e) {
         // The re-enumeration path above signals completion by throwing, so it
         // does not also run the reconcile accounting it has just made moot.
-        if (!e?.__handled) console.warn("[DDD] Delta scan failed, doing full scan:", e.message);
+        if (!e?.__handled) {
+          if (signal?.aborted) throw e;
+          console.warn("[DDD] Delta scan failed:", e.message);
+          // The log used to say "doing full scan" and then did nothing of the
+          // kind: on a run that had REUSED the cached list, it carried on with
+          // that list unpatched -- every file trashed, moved or edited since
+          // it was saved, exactly as it was. Without the changes feed, the
+          // cache cannot be brought up to date, so walk the folders instead.
+          if (reusedCache) {
+            report.status("Could not fetch changes from Drive; re-checking every folder…");
+            await clearFileList().catch(() => {});
+            const refetch = recursive ? fetchAllImagesRecursive : fetchAllImagesFlat;
+            const recollected = await refetch({
+              folderIds, exclusions, maxItems, pageSize, signal, onStatus: report.status,
+            });
+            allItems = recollected.files;
+            visitedFolderIds = recollected.visitedFolderIds;
+            unreadableFolders = recollected.unreadable || [];
+            images = allItems.filter(passesFilters);
+            reusedCache = false;
+          }
+        }
       }
     }
 
@@ -1221,7 +1244,12 @@ export async function runScan({
     // from here. That enumeration is as complete as it can ever be.
     const transientGap = unreadableFolders.some((u) => !u.permanent);
     if (useChangesApi && !quickScan && allItems.length > 0 && !transientGap) {
-      saveFileList({ scope: scopeKey, files: allItems, visitedFolderIds }).catch(() => {});
+      // A reused list keeps the time it was ENUMERATED (see saveFileList), so
+      // MAX_AGE_MS can still retire it; a fresh walk starts the clock again.
+      saveFileList({
+        scope: scopeKey, files: allItems, visitedFolderIds,
+        savedAt: reusedCache && cached?.savedAt ? cached.savedAt : Date.now(),
+      }).catch(() => {});
     } else if (transientGap) {
       // And drop any cache from an earlier run, so the next scan re-enumerates
       // instead of reusing a list this one has just shown to be unreliable.

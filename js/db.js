@@ -46,6 +46,25 @@ function promisifyTransaction(tx) {
 }
 
 /**
+ * One write, resolved when it is COMMITTED -- not when the request succeeds.
+ *
+ * A put's onsuccess fires before the transaction commits, and a commit can
+ * still fail: Chromium reports running out of quota at commit time, as an
+ * abort. Resolving on the request said "saved" for a resume checkpoint, a
+ * queued deletion or a "not a duplicate" decision that never reached disk.
+ */
+async function writeOne(storeName, op) {
+  const db = await openDb();
+  const tx = db.transaction(storeName, "readwrite");
+  const done = promisifyTransaction(tx);
+  done.catch(() => {});   // observed below; this only stops an early request
+                          // failure from also reporting an unhandled rejection
+  const result = await promisifyRequest(op(tx.objectStore(storeName)));
+  await done;
+  return result;
+}
+
+/**
  * Open database with migration support
  */
 function openDb() {
@@ -266,8 +285,7 @@ export function onQuotaExceeded(notify) {
 // ============================================================================
 
 export async function dbClearImages() {
-  const store = await getStore("images", "readwrite");
-  return promisifyRequest(store.clear());
+  return writeOne("images", store => store.clear());
 }
 
 export async function dbCountImages() {
@@ -471,8 +489,7 @@ export async function dbCleanupOldEntries(maxAgeDays = 90) {
 // ============================================================================
 
 export async function stateSet(key, value) {
-  const store = await getStore("scanState", "readwrite");
-  return promisifyRequest(store.put({ key, value }));
+  return writeOne("scanState", store => store.put({ key, value }));
 }
 
 export async function stateGet(key) {
@@ -506,18 +523,15 @@ export async function queueList() {
 }
 
 export async function queueAdd(item) {
-  const store = await getStore("trashQueue", "readwrite");
-  return promisifyRequest(store.put({ ...item, ts: toIso() }));
+  return writeOne("trashQueue", store => store.put({ ...item, ts: toIso() }));
 }
 
 export async function queueDel(id) {
-  const store = await getStore("trashQueue", "readwrite");
-  return promisifyRequest(store.delete(id));
+  return writeOne("trashQueue", store => store.delete(id));
 }
 
 export async function queueClear() {
-  const store = await getStore("trashQueue", "readwrite");
-  return promisifyRequest(store.clear());
+  return writeOne("trashQueue", store => store.clear());
 }
 
 export async function queueAddBatch(items) {
@@ -654,13 +668,11 @@ export async function settingGet(key, defaultValue = null) {
 }
 
 export async function settingSet(key, value) {
-  const store = await getStore("settings", "readwrite");
-  return promisifyRequest(store.put({ key, value }));
+  return writeOne("settings", store => store.put({ key, value }));
 }
 
 export async function settingDel(key) {
-  const store = await getStore("settings", "readwrite");
-  return promisifyRequest(store.delete(key));
+  return writeOne("settings", store => store.delete(key));
 }
 
 // ============================================================================
@@ -736,8 +748,7 @@ export async function rejectionsAll() {
 
 /** Record one rejected pair. A single small put, not a whole-collection rewrite. */
 export async function rejectionAdd(key) {
-  const store = await getStore("rejections", "readwrite");
-  return promisifyRequest(store.put({ key, ts: Date.now() }));
+  return writeOne("rejections", store => store.put({ key, ts: Date.now() }));
 }
 
 export async function rejectionCount() {
@@ -746,8 +757,7 @@ export async function rejectionCount() {
 }
 
 export async function rejectionsClear() {
-  const store = await getStore("rejections", "readwrite");
-  return promisifyRequest(store.clear());
+  return writeOne("rejections", store => store.clear());
 }
 
 /** Drop the oldest entries once the cap is exceeded. */

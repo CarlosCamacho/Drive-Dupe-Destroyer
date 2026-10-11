@@ -85,7 +85,7 @@ const r = await page.evaluate(async () => {
   render.beginProgressive({ idToEntry, keepRule: 'oldest' });
   render.pushProgressiveMatch({ root: 'g', group: [F.a, F.b] });
   await settle();
-  window.dispatchEvent(new CustomEvent('ddd:ignoreGroup', { detail: { groupIndex: 0 } }));
+  window.dispatchEvent(new CustomEvent('ddd:ignoreGroup', { detail: { ids: ['a', 'b'] } }));
   render.pushProgressiveMatch({ root: 'g', group: [F.a, F.b] });
   await settle();
   out.ignoredLive = rows();

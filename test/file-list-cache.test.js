@@ -127,6 +127,27 @@ describe("applying changes to a cached list", () => {
     assert.deepEqual(original.map(x => x.id), ["1"]);
   });
 
+  // A change to a file the list already holds used to be skipped, so the
+  // cached entry was kept as it was.
+  test("an edited file already in the list is REPLACED, not kept stale", () => {
+    const before = { ...f("1"), md5Checksum: "OLD" };
+    const r = applyChangesToList([before], [{ ...f("1"), md5Checksum: "NEW", _changed: true }], opts);
+    assert.equal(r.files.length, 1);
+    assert.equal(r.files[0].md5Checksum, "NEW");
+    assert.equal(r.updated, 1);
+  });
+
+  test("a file moved into an EXCLUDED folder leaves the list", () => {
+    const r = applyChangesToList([f("1"), f("2")], [{ ...f("2", "SECRET"), _changed: true }], opts);
+    assert.deepEqual(r.files.map(x => x.id), ["1"]);
+  });
+
+  test("a file moved to a folder this cache never walked leaves it, and asks for a re-walk", () => {
+    const r = applyChangesToList([f("1"), f("2")], [{ ...f("2", "NEWFOLDER"), _changed: true }], opts);
+    assert.deepEqual(r.files.map(x => x.id), ["1"]);
+    assert.equal(r.unknownParent, 1);
+  });
+
   test("no changes leaves the list exactly as it was", () => {
     const r = applyChangesToList([f("1"), f("2")], [], opts);
     assert.deepEqual(r.files.map(x => x.id), ["1", "2"]);

@@ -38,6 +38,7 @@ export const UNDO_NOTE =
 
 let modal = null;
 let lastFocused = null;
+let pendingDone = null;   // settles the confirmation on screen, if any
 
 function build() {
   if (modal) return modal;
@@ -94,6 +95,16 @@ function fileRow(f) {
  * @param {boolean}  [o.danger]     styles the confirm button as destructive
  * @returns {Promise<boolean>}
  */
+/**
+ * True while a confirmation is on screen. Modal keyboard handlers (Compare,
+ * crop) check this: they listen on the document, so they kept acting on their
+ * own shortcuts underneath the dialog -- the arrow keys could change which file
+ * the pending "Move to Trash?" was about to act on.
+ */
+export function isConfirmOpen() {
+  return !!modal && modal.style.display !== "none";
+}
+
 export function confirmAction({
   title = "Are you sure?",
   message = "",
@@ -103,6 +114,12 @@ export function confirmAction({
   danger = true,
 } = {}) {
   const m = build();
+  // A second question while one is open replaces it. The first one is
+  // answered "no" rather than left pending: its caller would otherwise wait
+  // forever -- and every delete path now holds an in-flight flag across its
+  // confirmation, so a promise that never settles would lock that path for
+  // the rest of the session.
+  if (pendingDone) pendingDone(false);
   m.querySelector("#confirmModalTitle").textContent = title;
   m.querySelector("#confirmMessage").textContent = message;
 
@@ -131,6 +148,8 @@ export function confirmAction({
 
   return new Promise((resolve) => {
     const done = (answer) => {
+      if (pendingDone !== done) return;   // already answered or superseded
+      pendingDone = null;
       m.style.display = "none";
       lockBodyScroll(false);
       m.onclick = null;
@@ -138,6 +157,8 @@ export function confirmAction({
       try { lastFocused?.focus?.(); } catch { /* element may be gone */ }
       resolve(answer);
     };
+
+    pendingDone = done;
 
     const onKey = (e) => {
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done(false); }

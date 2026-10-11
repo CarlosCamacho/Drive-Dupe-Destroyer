@@ -20,11 +20,12 @@ import {
   candidatesIn as candidatesInGroup, pairCount as pairCountOf,
   nextReviewable as nextReviewableFrom, anyReviewable, resolvePair, progressLabel,
 } from "./compareNav.js";
-import { pushUndoDeleteBatch, undoLastDelete } from "./undo.js";
+import { trashFiles, stoppedMessage } from "./trash.js";
+import { confirmAction, UNDO_NOTE, isConfirmOpen } from "./confirm.js";
 import { el, bytesToHuman, formatDate, IMAGE_PLACEHOLDER } from "./util.js";
 import { getThumbUrlForFile } from "./hashing.js";
-import { lockBodyScroll, showToast, showTrashedToast } from "./ui.js";
-import { driveFilePreviewLink, driveFolderLink, batchTrash, downloadFileBlob, thumbLinkSized } from "./drive.js";
+import { lockBodyScroll, showToast } from "./ui.js";
+import { driveFilePreviewLink, driveFolderLink, downloadFileBlob, thumbLinkSized } from "./drive.js";
 import { openCropModal } from "./crop.js";
 
 let leftFile = null;
@@ -85,6 +86,13 @@ function setupModalKeyboard() {
     const modal = el("compareModal");
     if (!modal || modal.style.display === "none") return;
     if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+    // A confirmation dialog on top owns the keyboard. Without this, the arrow
+    // keys moved to another pair and 1/2/3 started more deletes underneath
+    // a "Move to Trash?" question about a different file.
+    if (isConfirmOpen()) return;
+    // Holding 2 used to trash the next pair every 300 ms. A delete key is one
+    // decision per press.
+    if (e.repeat && /^[1-4]$/.test(e.key)) return;
     
     switch (e.key) {
       case "Escape": e.preventDefault(); closeCompare(); break;
@@ -124,8 +132,20 @@ function currentFolderPriority() {
   return el("folderPriority")?.value || "";
 }
 
+// The results table decides the keeper -- with the rule the results were
+// BUILT with and the user's pinned keepers -- and hands that decision over
+// here. Compare used to work it out again from the live dropdown and with no
+// pins, so a pinned keeper, or the keeper after the dropdown was changed, sat
+// on the right as an ordinary candidate: no badge, no warning, one keypress
+// from Trash. The fallback below only serves a Compare opened with no table.
+let onKeeperFor = null;
+
 function keepFileForGroup(group) {
   if (!Array.isArray(group) || group.length === 0) return null;
+  if (onKeeperFor) {
+    const k = onKeeperFor(group);
+    if (k && group.some(f => f.id === k.id)) return group.find(f => f.id === k.id);
+  }
   const idx = chooseKeepIndex(group, currentKeepRule(), currentFolderPriority());
   return group[idx] || group[0];
 }
@@ -205,7 +225,13 @@ async function handleIgnoreGroup() {
   // which call removeGroupByIndex(currentGroupIndex). The second call ran after
   // the array had already shifted, so it silently removed an unrelated adjacent
   // group. Remove via a single path (the event, matching the ddd:trashed flow).
-  window.dispatchEvent(new CustomEvent("ddd:ignoreGroup", { detail: { groupIndex: currentGroupIndex } }));
+  //
+  // By MEMBERSHIP, not by index. The index was a position in this modal's
+  // snapshot of the groups, and the table's list is rebuilt underneath it --
+  // on every live frame while a scan runs, and when it finishes -- so the
+  // table hid whichever group had moved into that slot while the rejections
+  // were recorded for this one.
+  window.dispatchEvent(new CustomEvent("ddd:ignoreGroup", { detail: { ids: group.map(f => f.id) } }));
 
   setTimeout(() => {
     refreshGroups();
@@ -327,77 +353,90 @@ async function handleDownload(side) {
   }
 }
 
-async function handleDeleteBoth() {
-  const filesToDelete = [];
-  if (leftFile) filesToDelete.push({ file: leftFile, isKeep: leftIsKeep });
-  if (rightFile) filesToDelete.push({ file: rightFile, isKeep: rightIsKeep });
-  
-  if (filesToDelete.length === 0) return;
-  if (filesToDelete.some(f => f.isKeep)) showToast("⚠️ Warning: Deleting KEEP file(s)!", "info", 2000);
-  
-  const btnLeft = el('btnCompareLeftDelete');
-  const btnRight = el('btnCompareRightDelete');
-  if (btnLeft) btnLeft.classList.add("loading");
-  if (btnRight) btnRight.classList.add("loading");
-  
-  try {
-    const ids = filesToDelete.map(f => f.file.id);
-    const result = await batchTrash(ids);
-    
-    if (result.success.length > 0) {
-      // Record as one undo operation. pushUndoDelete was imported here but never
-      // actually called, so no delete path in the app recorded anything and the
-      // Undo button had nothing to restore.
-      const trashed = new Set(result.success);
-      pushUndoDeleteBatch(filesToDelete.map(f => f.file).filter(f => trashed.has(f.id)));
+// One delete at a time from this modal. The buttons were guarded only by a
+// CSS class; the 1/2/3 keys went straight past it, so a second press trashed
+// the same file again (a second undo record) or, via the 300 ms re-render
+// each one schedules, skipped a pair entirely.
+let deleteInFlight = false;
 
-      showTrashedToast(result.success.length, () => undoLastDelete());
-      window.dispatchEvent(new CustomEvent("ddd:trashed", { detail: { ids: result.success } }));
-      
-      setTimeout(() => {
-        refreshGroups();
-        if (allGroups.length === 0) { showToast("All groups processed!", "success"); closeCompare(); }
-        else showPair(Math.min(currentGroupIndex, allGroups.length - 1), currentPairIndex);
-      }, 300);
-    }
-    if (result.failed.length > 0) showToast(`${result.failed.length} file(s) failed to delete`, "error");
+// Re-render after a delete has landed in the table.
+function afterDelete() {
+  setTimeout(() => {
+    refreshGroups();
+    if (!anyReviewable(allGroups, keepFileForGroup)) { showToast("All groups processed!", "success"); closeCompare(); }
+    else showPair(Math.min(currentGroupIndex, allGroups.length - 1), currentPairIndex);
+  }, 300);
+}
+
+async function runDelete(files, buttons) {
+  for (const b of buttons) b?.classList.add("loading");
+  try {
+    const result = await trashFiles(files);
+    if (result.error) showToast(stoppedMessage(result), "error", 8000);
+    else if (result.failed.length > 0) showToast(`${result.failed.length} file(s) failed to delete`, "error");
+    if (result.success.length > 0) afterDelete();
+    else for (const b of buttons) b?.classList.remove("loading");
   } catch (err) {
     showToast("Delete failed: " + (err?.message || err), "error");
-    if (btnLeft) btnLeft.classList.remove("loading");
-    if (btnRight) btnRight.classList.remove("loading");
+    for (const b of buttons) b?.classList.remove("loading");
+  }
+}
+
+async function handleDeleteBoth() {
+  if (deleteInFlight) return;
+  const files = [leftFile, rightFile].filter(Boolean);
+  if (files.length === 0) return;
+
+  deleteInFlight = true;
+  try {
+    // Always ask. One keypress used to trash both sides with nothing but a
+    // two-second toast -- and in a two-file group "both" is every copy there is.
+    const group = allGroups[currentGroupIndex] || [];
+    const survivors = group.filter(f => !files.some(d => d.id === f.id)).length;
+    const keeperInvolved = leftIsKeep || rightIsKeep;
+    if (!await confirmAction({
+      title: survivors === 0 ? "Delete every copy of this image?" : "Delete both files?",
+      message: survivors === 0
+        ? "These are the only copies in this group. Nothing will be left."
+        : (keeperInvolved
+          ? "One of these is the file the scan chose to keep."
+          : "Both files will be moved to Google Drive Trash."),
+      confirmLabel: survivors === 0 ? "Delete every copy" : "Delete both",
+      note: UNDO_NOTE,
+      files,
+    })) return;
+    await runDelete(files, [el('btnCompareLeftDelete'), el('btnCompareRightDelete')]);
+  } finally {
+    deleteInFlight = false;
   }
 }
 
 async function handleDelete(side) {
+  if (deleteInFlight) return;
   const file = side === 'left' ? leftFile : rightFile;
   const isKeep = side === 'left' ? leftIsKeep : rightIsKeep;
-  
   if (!file) return;
-  if (isKeep) showToast("⚠️ Warning: Deleting the KEEP file!", "info", 2000);
-  
-  const btn = el(side === 'left' ? 'btnCompareLeftDelete' : 'btnCompareRightDelete');
-  if (btn) btn.classList.add("loading");
-  
+
+  deleteInFlight = true;
   try {
-    const result = await batchTrash([file.id]);
-    if (result.success.includes(file.id)) {
-      pushUndoDeleteBatch([file]);
-      showTrashedToast(1, () => undoLastDelete());
-      window.dispatchEvent(new CustomEvent("ddd:trashed", { detail: { ids: [file.id] } }));
-      
-      setTimeout(() => {
-        refreshGroups();
-        if (allGroups.length === 0) { showToast("All groups processed!", "success"); closeCompare(); }
-        else showPair(Math.min(currentGroupIndex, allGroups.length - 1), currentPairIndex);
-      }, 300);
-    } else throw new Error("Trash operation failed");
-  } catch (err) {
-    showToast("Delete failed: " + (err?.message || err), "error");
-    if (btn) btn.classList.remove("loading");
+    // The keeper gets the same confirmation as the table's delete-keep button.
+    // Deleting a candidate stays a single keypress: that is the quick review
+    // this modal is for, and it is undoable.
+    if (isKeep && !await confirmAction({
+      title: "This is the file the scan chose to keep",
+      message: "It is the best copy in its group by your keep rule. Deleting it leaves the ones you were offered to delete.",
+      confirmLabel: "Delete the keep file",
+      note: UNDO_NOTE,
+      files: [file],
+    })) return;
+    await runDelete([file], [el(side === 'left' ? 'btnCompareLeftDelete' : 'btnCompareRightDelete')]);
+  } finally {
+    deleteInFlight = false;
   }
 }
 
-export function setCompareCallbacks({ onDelete, onSelect, getCurrentGroups, onIgnore, getPathMap, getIdToEntry }) {
+export function setCompareCallbacks({ onDelete, onSelect, getCurrentGroups, onIgnore, getPathMap, getIdToEntry, keeperFor }) {
+  onKeeperFor = typeof keeperFor === "function" ? keeperFor : null;
   onDeleteCallback = onDelete;
   onSelectCallback = onSelect;
   onGetCurrentGroups = getCurrentGroups;
