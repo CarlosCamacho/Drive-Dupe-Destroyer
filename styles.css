@@ -322,6 +322,12 @@ html, body {
   flex-shrink: 0;
 }
 
+/* Min larger than Max: the range matches nothing (see wireSizeRange). */
+.sizeInputGroup [aria-invalid="true"] {
+  border-color: var(--accent-red);
+  box-shadow: 0 0 0 1px var(--accent-red);
+}
+
 .bottomBarItem {
   display: flex;
   align-items: center;

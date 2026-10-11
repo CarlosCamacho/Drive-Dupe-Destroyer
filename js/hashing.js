@@ -501,7 +501,8 @@ export async function computeHashesForFiles(files, {
   concurrency = HASH_CONCURRENCY,
   signal = null,
   onProgress = null,
-  onError = null
+  onError = null,
+  onEntry = null      // (file, entry) as each hash lands, for the live table
 } = {}) {
   resetHashingStats();
   hashingStats.startTime = nowMs();
@@ -550,6 +551,8 @@ export async function computeHashesForFiles(files, {
       out.set(f.id, hashes);
       hashingStats.success++;
       aimd.onSuccess();
+      // A consumer's failure must not be counted as this file's hash failing.
+      if (onEntry) { try { onEntry(f, hashes); } catch (cbErr) { console.warn("[Hashing] onEntry failed:", cbErr); } }
     } catch (e) {
       if (signal?.aborted || e.message === "Scan stopped.") throw e;
 

@@ -137,6 +137,9 @@ let progressiveGroups = new Map();   // root -> array<file>
 let progressiveOptions = null;       // { keepRule, folderPriority, bitsCount, withVariants }
 let progressiveRenderScheduled = false;
 let progressiveTrashed = new Set();  // file ids the user trashed mid-scan
+let progressiveOwner = new Map();    // file id -> root of the live group showing it
+let progressiveIgnored = new Set();  // file ids in groups the user ignored mid-scan
+let progressiveSelected = null;      // selection carried from the live table into the final render
 
 const GROUP_COLORS = [
   { keep: 'rgba(6, 214, 160, 0.15)', delete: 'rgba(239, 71, 111, 0.12)' },
@@ -708,6 +711,10 @@ function removeGroupByIndex(groupIndex) {
   markSkipped(review, groupSignature(group));
   persistReview();
   const fileIds = new Set(group.map(f => f.id));
+  // Mid-scan, the matcher re-emits this group whenever it grows and the final
+  // render lists it again, so removing the rows alone lasted until the next
+  // update. Remember it for the rest of this scan.
+  if (progressiveActive) for (const id of fileIds) progressiveIgnored.add(id);
   currentState.groups.splice(groupIndex, 1);
   
   for (let i = allRows.length - 1; i >= 0; i--) {
@@ -1046,6 +1053,9 @@ export function beginProgressive({ idToEntry, keepRule = DEFAULT_KEEP_RULE, fold
   progressiveActive = true;
   progressiveGroups = new Map();
   progressiveTrashed = new Set();
+  progressiveOwner = new Map();
+  progressiveIgnored = new Set();
+  progressiveSelected = null;
   progressiveOptions = { keepRule, folderPriority, bitsCount, withVariants };
 
   // currentState is needed by Compare/delete handlers. The path map starts
@@ -1108,9 +1118,33 @@ export function pushProgressiveMatch(match) {
   if (match.group.length < 2) return;
 
   // Replace the group stored under this root. The scan emits the full current
-  // group on every update, and cleans up merged roots on its side, so a plain
-  // set-by-root keeps us consistent without double-counting.
+  // group on every update.
+  //
+  // Set-by-root alone is NOT enough, though the comment here used to say the
+  // scan "cleans up merged roots on its side". It forgets them on its side
+  // only: when union-find merges root B into root A, the matcher re-emits A
+  // and never mentions B again, so B's old group stayed in this map and its
+  // files were listed twice -- once in each group, each with its own keeper.
+  // The same goes for the early MD5 and identical-hash groups shown during
+  // hashing (earlyGroups.js), whose keys the matcher has never heard of.
+  //
+  // Groups only ever grow, so any other live group that the incoming one
+  // fully contains is a stale earlier view of it. Retire it.
+  const incoming = new Set();
+  for (const f of match.group) if (f?.id) incoming.add(f.id);
+  const superseded = new Set();
+  for (const id of incoming) {
+    const owner = progressiveOwner.get(id);
+    if (owner !== undefined && owner !== match.root) superseded.add(owner);
+  }
+  for (const root of superseded) {
+    const old = progressiveGroups.get(root) || [];
+    // A partial overlap is not a stale copy; leave it rather than lose files.
+    if (!old.every(f => incoming.has(f.id))) continue;
+    progressiveGroups.delete(root);
+  }
   progressiveGroups.set(match.root, match.group);
+  for (const id of incoming) progressiveOwner.set(id, match.root);
 
   scheduleProgressiveRender();
 }
@@ -1138,13 +1172,14 @@ function rebuildProgressiveRows() {
   const liveGroups = [];
 
   let groupId = 0;
-  for (const rawGroup of progressiveGroups.values()) {
+  for (const rawGroup of mergedProgressiveGroups()) {
     // Drop files the user already trashed during this live session so a
     // re-emitted (grown/merged) group never resurrects a deleted row.
     const group = progressiveTrashed.size
       ? rawGroup.filter(f => !progressiveTrashed.has(f.id))
       : rawGroup;
     if (!group || group.length < 2) continue;
+    if (isIgnoredGroup(group)) continue;
     groupId++;
     liveGroups.push(group);
 
@@ -1190,7 +1225,51 @@ function rebuildProgressiveRows() {
  * End the live session. The caller follows this with a normal renderGroups()
  * pass that re-renders cleanly (with folder paths and final keep-rule sorting).
  */
+// The live groups as they should be SHOWN: any two that share a file are one.
+//
+// Retiring subsumed groups (pushProgressiveMatch) is not enough on its own.
+// While the matcher is still running it can emit a PARTIAL view of a group --
+// {h1, m1, m2} -- after an early identical-hash group {h1, h2, h3, m1, m2} is
+// already on screen, and neither contains the other until the matcher catches
+// up. Shown separately, h1, m1 and m2 would each be listed twice, with two
+// keepers. Merging is safe because of the contract earlyGroups.js keeps: every
+// live group is a subset of one final group, and final groups never overlap,
+// so two live groups that overlap belong to the same final group.
+function mergedProgressiveGroups() {
+  const merged = [];             // array of Map(id -> file), null once absorbed
+  const at = new Map();          // file id -> index into merged
+  for (const group of progressiveGroups.values()) {
+    const hits = new Set();
+    for (const f of group) if (at.has(f.id)) hits.add(at.get(f.id));
+    let target;
+    if (hits.size === 0) {
+      target = merged.length;
+      merged.push(new Map());
+    } else {
+      const [first, ...rest] = [...hits].sort((a, b) => a - b);
+      target = first;
+      for (const idx of rest) {
+        for (const [id, f] of merged[idx]) { merged[target].set(id, f); at.set(id, target); }
+        merged[idx] = null;
+      }
+    }
+    for (const f of group) { merged[target].set(f.id, f); at.set(f.id, target); }
+  }
+  return merged.filter(Boolean).map(m => [...m.values()]);
+}
+
+// A group the user ignored mid-scan stays ignored while it contains nothing
+// new. If it grows to include a file they have not seen, it is a different
+// question and is shown again.
+function isIgnoredGroup(group) {
+  return progressiveIgnored.size > 0 && group.every(f => progressiveIgnored.has(f.id));
+}
+
 export function endProgressive() {
+  // Hand the live selection to the final render. renderGroups starts from an
+  // empty selection, so ticking rows while the scan ran -- which live results
+  // exist to allow -- was silently undone the moment it finished.
+  if (progressiveActive) progressiveSelected = new Set(selected);
   progressiveActive = false;
   progressiveGroups = new Map();
   progressiveOptions = null;
@@ -1208,6 +1287,19 @@ export async function renderGroups({ groups, idToEntry, pathMap, keepRule = DEFA
   selected.clear();
   allRows = [];
   visibleRange = { start: -1, end: -1 };
+
+  // Files trashed from the live table while the scan ran are gone from Drive,
+  // but the scan's groups were computed before that and still list them. Left
+  // in, a trashed keeper would make the final table offer its surviving copy
+  // for deletion. Groups ignored mid-scan are dropped for the same reason
+  // they are hidden live. Both sets live until the next scan begins.
+  if (progressiveTrashed.size || progressiveIgnored.size) {
+    groups = groups
+      .map(g => g.filter(f => !progressiveTrashed.has(f.id)))
+      .filter(g => g.length > 1 && !isIgnoredGroup(g));
+  }
+  const carried = progressiveSelected;
+  progressiveSelected = null;
 
   currentState = { groups, idToEntry, pathMap, bitsCount, withVariants, keepRule, folderPriority };
   idToFile = new Map(groups.flat().map(f => [f.id, f]));
@@ -1240,6 +1332,15 @@ export async function renderGroups({ groups, idToEntry, pathMap, keepRule = DEFA
         isKeep: f.id === keepFile.id, bitsCount, withVariants, groupColorIdx: groupId - 1,
         groupPct: _groupPct
       });
+    }
+  }
+
+  // Restore the live selection, minus anything that is now a keeper: the
+  // keeper is never offered for deletion, and the final keep rule may have
+  // picked a different file than the live table did.
+  if (carried?.size) {
+    for (const row of allRows) {
+      if (!row.isKeep && carried.has(row.file.id)) selected.add(row.file.id);
     }
   }
 

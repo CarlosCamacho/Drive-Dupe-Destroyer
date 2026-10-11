@@ -37,10 +37,12 @@ const PERSISTABLE = [
   { id: "keepRule",        type: "select",   default: "hires" },
   { id: "folderPriority",  type: "text",     default: "" },
   { id: "matchMode",       type: "radio",    default: "similar", name: "matchMode" },
-  { id: "imgMinSize",      type: "number",   default: "50" },
-  { id: "imgMinUnit",      type: "select",   default: "KB" },
-  { id: "imgMaxSize",      type: "number",   default: "0" },
-  { id: "imgMaxUnit",      type: "select",   default: "MB" },
+  // 32 KB .. 2 MB, matching index.html. `sizeDefaults` marks these as part of
+  // the size range that SIZE_DEFAULTS_VERSION migrates (see loadSettings).
+  { id: "imgMinSize",      type: "number",   default: "32", sizeDefaults: true },
+  { id: "imgMinUnit",      type: "select",   default: "KB", sizeDefaults: true },
+  { id: "imgMaxSize",      type: "number",   default: "2",  sizeDefaults: true },
+  { id: "imgMaxUnit",      type: "select",   default: "MB", sizeDefaults: true },
   { id: "aspectFilter",    type: "checkbox", default: false },
   // 20, matching index.html -- the range is 0..50, so the old "2" here was a
   // copy of hamThresh's default and never a valid aspect tolerance.
@@ -65,12 +67,22 @@ function notifyRestored(node) {
   node.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
+// Bumped when the default size range changes. Saved settings from before the
+// current version restore everything EXCEPT the four size controls, which fall
+// back to the new defaults once. Without this a changed default never reached
+// anyone who had ever opened the app: the old values were saved on first use
+// and restored over the new HTML defaults forever after -- including ranges
+// like "min 60 MB, max 4 MB" that match nothing at all.
+const SIZE_DEFAULTS_VERSION = 2;
+
 async function loadSettings() {
   const saved = await settingGet("destroyer_scan_settings_v1", null).catch(() => null);
   if (!saved) return;
 
+  const sizeCurrent = saved._sizeDefaultsVersion === SIZE_DEFAULTS_VERSION;
   const restored = [];
   for (const def of PERSISTABLE) {
+    if (def.sizeDefaults && !sizeCurrent) continue;
     const val = saved[def.id];
     if (val === undefined || val === null) continue;
     if (def.type === "radio") {
@@ -92,7 +104,7 @@ async function loadSettings() {
 }
 
 async function saveSettings() {
-  const out = {};
+  const out = { _sizeDefaultsVersion: SIZE_DEFAULTS_VERSION };
   for (const def of PERSISTABLE) {
     if (def.type === "radio") {
       const checked = document.querySelector(`input[name="${def.name}"]:checked`);
