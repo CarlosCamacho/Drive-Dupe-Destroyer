@@ -69,6 +69,70 @@ ck(after.area && after.area.w === 0.3, '#77 the area itself survives a reload');
 ck(Object.values(after.area).every(v => v >= 0 && v <= 1),
    '#77 the stored area is fractions of the image, not pixels');
 
+// An area is remembered the moment it is DRAWN, not only once a crop succeeds.
+// Drawing it and stepping to the next picture without cropping this one used
+// to lose it. Driven through real mouse events on the real canvas.
+await page.evaluate(async () => {
+  const db = await import('/js/db.js');
+  await db.settingSet('destroyer_crop_area_reuse', true);
+  await db.settingSet('destroyer_crop_area', null);
+});
+await page.reload({ waitUntil: 'load' });
+await page.waitForTimeout(2500);
+const box = await page.evaluate(async () => {
+  const crop = await import('/js/crop.js');
+  document.getElementById('cropModal').style.display = 'flex';
+  const src = document.createElement('canvas');
+  src.width = 800; src.height = 600;
+  src.naturalWidth = 800; src.naturalHeight = 600;   // what an <img> would report
+  crop.__test.mount(src);
+  document.getElementById('cropLoading').style.display = 'none';
+  const c = document.getElementById('cropCanvas');
+  c.style.display = 'block';
+  // Let the modal's open transition finish before measuring where to click.
+  await new Promise(r => setTimeout(r, 600));
+  const r = c.getBoundingClientRect();
+  return { x: r.left, y: r.top, w: c.width, h: c.height };
+});
+await page.mouse.move(box.x + 20, box.y + 20);
+await page.mouse.down();
+await page.mouse.move(box.x + 120, box.y + 100, { steps: 5 });
+await page.mouse.up();
+await page.waitForTimeout(300);
+const drawn = await page.evaluate(async () => {
+  const db = await import('/js/db.js');
+  const crop = await import('/js/crop.js');
+  return { stored: await db.settingGet('destroyer_crop_area', null), sel: crop.__test.selection };
+});
+console.log('  ', drawn);
+ck(drawn.stored && drawn.stored.w > 0, 'the area is remembered as soon as it is drawn, before any crop');
+
+// A plain click on the image keeps the area instead of wiping it.
+await page.mouse.click(box.x + 300, box.y + 200);
+await page.waitForTimeout(100);
+const afterClick = await page.evaluate(async () => (await import('/js/crop.js')).__test.selection);
+ck(afterClick && afterClick.width === drawn.sel.width && afterClick.x === drawn.sel.x,
+   'a click without a drag keeps the existing area');
+
+// Dragging a new one replaces it, and that is what is remembered.
+await page.mouse.move(box.x + 200, box.y + 150);
+await page.mouse.down();
+await page.mouse.move(box.x + 260, box.y + 190, { steps: 5 });
+await page.mouse.up();
+await page.waitForTimeout(300);
+const redrawn = await page.evaluate(async () => (await import('/js/db.js')).settingGet('destroyer_crop_area', null));
+ck(redrawn && Math.abs(redrawn.w - drawn.stored.w) > 0.01, 'dragging a new area replaces the remembered one');
+
+// The next image gets the remembered area without any drawing.
+const next = await page.evaluate(async () => {
+  const crop = await import('/js/crop.js');
+  const src = document.createElement('canvas');
+  src.width = 1000; src.height = 750; src.naturalWidth = 1000; src.naturalHeight = 750;
+  crop.__test.mount(src);   // mount -> redrawCanvas, the same path a loaded image takes
+  return crop.__test.selection;
+});
+ck(next && next.width > 0, 'the next image opens with the remembered area already on it');
+
 console.log(f ? `\n${f} FAILED` : '\nALL CHECKS PASSED');
 console.log('\nNot covered here (needs a signed-in Drive): loading a second image and');
 console.log('seeing the rectangle restored on it. test/crop-area.test.js pins that mapping.');

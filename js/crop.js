@@ -76,6 +76,22 @@ const AREA_KEY = "destroyer_crop_area";
 const AREA_ON_KEY = "destroyer_crop_area_reuse";
 let rememberArea = true;
 let lastArea = null;        // { x, y, w, h } as 0..1 fractions
+// The selection as it was when a new drag began. A click that never becomes a
+// usable rectangle -- a stray tap, a click to focus the canvas -- puts this
+// back instead of leaving the image with no selection at all.
+let selectionBeforeDrag = null;
+// Incremented per image load. Prev/Next do not wait for the download, so two
+// quick clicks start two loads; whichever finished LAST used to win, which
+// could leave image N on screen while the counter said N+1 and Crop acted on
+// N+1's file.
+let loadSeq = 0;
+// True from the moment a crop starts until it has uploaded, asked about the
+// original and finished. performCrop reads `currentFile` after every await, so
+// anything that changes it meanwhile -- Prev/Next, which the arrow keys reach
+// even while the "Move the original to Trash?" dialog is open -- would trash
+// a DIFFERENT file than the one just cropped. Enter could also start a second
+// upload of the same crop; the button was disabled, the shortcut was not.
+let cropBusy = false;
 
 // Fixed size selection state (persisted during session)
 let isLocked = false;
@@ -118,8 +134,8 @@ export function wireCrop() {
   const modal = el("cropModal");
   const cropCanvas = el("cropCanvas");
   
-  if (btnClose) btnClose.onclick = closeCropReturnToCompare;
-  if (btnCancel) btnCancel.onclick = closeCropReturnToCompare;
+  if (btnClose) btnClose.onclick = userCloseCrop;
+  if (btnCancel) btnCancel.onclick = userCloseCrop;
   if (btnCrop) btnCrop.onclick = performCrop;
   if (btnDelete) btnDelete.onclick = handleCropDelete;
   if (btnPrev) btnPrev.onclick = navigatePrev;
@@ -151,7 +167,7 @@ export function wireCrop() {
   
   if (modal) {
     modal.addEventListener("click", (e) => {
-      if (e.target === modal) closeCropReturnToCompare();
+      if (e.target === modal) userCloseCrop();
     });
   }
   
@@ -171,7 +187,7 @@ function handleCropKeyboard(e) {
   switch (e.key) {
     case "Escape":
       e.preventDefault();
-      closeCropReturnToCompare();
+      userCloseCrop();
       break;
     case "ArrowLeft":
       e.preventDefault();
@@ -330,6 +346,7 @@ export async function openCropModal(file, options = {}) {
 }
 
 async function loadImageForCrop(file) {
+  const seq = ++loadSeq;
   const cropLoading = el("cropLoading");
   const cropCanvas = el("cropCanvas");
   
@@ -351,14 +368,20 @@ async function loadImageForCrop(file) {
     // a 401. The raw fetch here surfaced an expired token as
     // "Failed to download image".
     const blob = await downloadFileBlob(file.id);
+    if (seq !== loadSeq) return;     // a newer image was asked for meanwhile
     const imageUrl = URL.createObjectURL(blob);
     
-    originalImage = new Image();
+    const img = new Image();
     await new Promise((resolve, reject) => {
-      originalImage.onload = resolve;
-      originalImage.onerror = reject;
-      originalImage.src = imageUrl;
+      img.onload = resolve;
+      img.onerror = reject;
+      img.src = imageUrl;
     });
+    if (seq !== loadSeq) { URL.revokeObjectURL(imageUrl); return; }
+    if (originalImage?.src?.startsWith("blob:") && originalImage.src !== imageUrl) {
+      try { URL.revokeObjectURL(originalImage.src); } catch {}
+    }
+    originalImage = img;
     
     updateCropInfo();
     redrawCanvas();
@@ -373,6 +396,7 @@ async function loadImageForCrop(file) {
     { const o = el("cropOverlay"); if (o) o.style.display = "block"; }
     
   } catch (err) {
+    if (seq !== loadSeq) return;     // superseded; the newer load reports its own outcome
     console.error("Failed to load image for crop:", err);
     showToast("Failed to load image: " + (err.message || err), "error");
     if (cropLoading) cropLoading.textContent = "Failed to load image";
@@ -438,8 +462,13 @@ function updateAreaUI() {
 async function loadCropAreaSettings() {
   const on = await settingGet(AREA_ON_KEY, null).catch(() => null);
   rememberArea = on === null ? true : on === true;
-  const area = await settingGet(AREA_KEY, null).catch(() => null);
-  lastArea = (area && typeof area.w === "number" && area.w > 0 && area.h > 0) ? area : null;
+  // What this session already holds wins. The stored copy is written without
+  // waiting, so reading it back on every open could replace the area just
+  // drawn with an older one (or with nothing, if the write failed).
+  if (!lastArea) {
+    const area = await settingGet(AREA_KEY, null).catch(() => null);
+    lastArea = (area && typeof area.w === "number" && area.w > 0 && area.h > 0) ? area : null;
+  }
   updateAreaUI();
 }
 
@@ -500,6 +529,7 @@ function redrawCanvas() {
 }
 
 function rotateImage() {
+  if (cropBusy) return;
   rotation = (rotation + 90) % 360;
   redrawCanvas();
   startMarchingAnts();
@@ -568,6 +598,7 @@ function updateNavButtons() {
 }
 
 function navigatePrev() {
+  if (cropBusy) return;
   stopMarchingAnts();
   cleanupDragListeners();
   selection = null;
@@ -598,6 +629,7 @@ function navigatePrev() {
 }
 
 function navigateNext() {
+  if (cropBusy) return;
   stopMarchingAnts();
   cleanupDragListeners();
   selection = null;
@@ -681,6 +713,7 @@ function handleMouseDown(e) {
     startY = clamp(pos.y, 0, canvas.height);
     isSelecting = true;
     isDragging = false;
+    selectionBeforeDrag = selection;
     selection = null;
   }
   
@@ -718,6 +751,7 @@ function handleTouchStart(e) {
     startY = clamp(pos.y, 0, canvas.height);
     isSelecting = true;
     isDragging = false;
+    selectionBeforeDrag = selection;
     selection = null;
   }
   
@@ -760,15 +794,33 @@ function updateSelection(currentX, currentY) {
   updateCropButton();
 }
 
-function handleMouseUp(e) {
+// A selection gesture has ended. Remember the result straight away -- "once a
+// crop area is defined, keep it" -- rather than only after a successful crop,
+// which is what this used to wait for. Drawing an area and stepping to the
+// next image without cropping this one (it may be the keeper) lost the area,
+// so it had to be drawn again on every picture until one was actually cropped.
+function finishSelectionGesture() {
+  const wasSelecting = isSelecting;
   isSelecting = false;
   isDragging = false;
+  if (!canvas) return;
+  if (selection && isUsableSelection(selection)) {
+    if (!isLocked) rememberCurrentArea();
+  } else if (wasSelecting && selectionBeforeDrag) {
+    // A click, not a drag: keep what was there.
+    selection = selectionBeforeDrag;
+  }
+  selectionBeforeDrag = null;
+  updateCropButton();
+}
+
+function handleMouseUp(e) {
+  finishSelectionGesture();
   cleanupDragListeners();
 }
 
 function handleTouchEnd(e) {
-  isSelecting = false;
-  isDragging = false;
+  finishSelectionGesture();
   document.removeEventListener("touchmove", handleTouchMove);
   document.removeEventListener("touchend", handleTouchEnd);
   document.removeEventListener("touchcancel", handleTouchEnd);
@@ -934,6 +986,7 @@ function stopMarchingAnts() {
 }
 
 async function handleCropDelete() {
+  if (cropBusy) return;
   if (!currentFile) return;
   
   if (!await confirmAction({
@@ -1037,6 +1090,9 @@ async function performCrop() {
     return;
   }
   
+  if (cropBusy) return;
+  cropBusy = true;
+
   const btnCrop = el("btnCropConfirm");
   const btnCancel = el("btnCropCancel");
   
@@ -1134,6 +1190,11 @@ async function performCrop() {
       showToast(`Saved "${newName}". Original kept.`, "success", 4000);
       window.dispatchEvent(new CustomEvent("ddd:fileReplaced", { detail: { oldId: currentFile.id, newFile: uploadedFile } }));
       resetAfterCrop();
+      // Still on the same picture. Redraw it -- resetAfterCrop undid any zoom
+      // or rotation without showing it -- which also puts the remembered area
+      // back rather than leaving the image blank, so it is visibly the one Next
+      // will carry forward.
+      redrawCanvas();
       return;
     }
 
@@ -1184,6 +1245,7 @@ async function performCrop() {
     console.error("Crop failed:", err);
     showToast("Crop failed: " + (err.message || err), "error");
   } finally {
+    cropBusy = false;
     if (btnCrop) {
       btnCrop.disabled = false;
       btnCrop.innerHTML = '<i class="fa-solid fa-crop"></i> Crop';
@@ -1217,6 +1279,13 @@ function moveToNextAvailableImage() {
     showToast("No more images to edit", "info");
     closeCropReturnToCompare();
   }
+}
+
+// Closing at the user's request waits for a crop in progress to finish; the
+// crop itself still closes the modal when it runs out of images.
+function userCloseCrop() {
+  if (cropBusy) return;
+  closeCropReturnToCompare();
 }
 
 function closeCropReturnToCompare() {

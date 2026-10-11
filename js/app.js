@@ -15,6 +15,7 @@
 // Main application entry point
 
 import { SIMILARITY_BITS, thresholdFromEasy } from "./distance.js";
+import { sizeLimitsBytes } from "./formats.js";
 import { confirmAction } from "./confirm.js";
 import { el, APP_VERSION } from "./util.js";
 import { uiInit, setSignedInUi, setStatus, showEmptyState, setScanningState, showToast, wireErrorModal, setSelectedCountProvider, setRowCountProvider, setSizeStatsProvider, lockBodyScroll } from "./ui.js";
@@ -130,6 +131,36 @@ function wireSliders() {
     pageSizeSlider.oninput = updatePageSize;
     updatePageSize();
   }
+
+  wireSizeRange();
+}
+
+// Flag an impossible size range where it is typed, not only when Scan is
+// pressed. "Min 60 MB, max 4 MB" is one wrong unit away from the defaults and
+// matches nothing; runScan refuses it too, but by then the user is looking at
+// the Scan button rather than at the fields that are wrong.
+function wireSizeRange() {
+  const ids = ["imgMinSize", "imgMinUnit", "imgMaxSize", "imgMaxUnit"];
+  const nodes = ids.map(el);
+  if (nodes.some(n => !n)) return;
+  const [minV, minU, maxV, maxU] = nodes;
+  const check = () => {
+    const { valid } = sizeLimitsBytes({
+      minValue: minV.value, minUnit: minU.value, maxValue: maxV.value, maxUnit: maxU.value,
+    });
+    for (const n of nodes) {
+      if (valid) n.removeAttribute("aria-invalid");
+      else n.setAttribute("aria-invalid", "true");
+    }
+    const msg = valid ? "" : "Min image size is larger than Max image size, so no image can match.";
+    minV.title = msg;
+    maxV.title = msg;
+  };
+  for (const n of nodes) {
+    n.addEventListener("input", check);
+    n.addEventListener("change", check);
+  }
+  check();
 }
 
 // Theme has THREE states, not two. The stored value is "dark", "light", or
