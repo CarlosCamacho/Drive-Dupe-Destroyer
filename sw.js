@@ -20,16 +20,12 @@
 // against APP_VERSION at boot and warns if they diverge -- a mismatch means a
 // release bumped util.js without bumping the cache, which would serve stale JS.
 // Keep SW_VERSION in step with APP_VERSION in js/util.js.
-const SW_VERSION = "14.8.0";
+const SW_VERSION = "14.8.1";
 // Deriving the cache name from the version means every release gets a fresh
 // cache and the activate handler evicts the old one. Bumping the version is
 // now sufficient to invalidate; it is no longer a separate thing to remember.
 const CACHE_NAME = `drive-dupe-destroyer-v${SW_VERSION}`;
 
-// Resolved once, not per request. This was rebuilt inside the fetch handler --
-// roughly thirty URL constructions plus a Set on every single request, for a
-// value that never changes (#76).
-const KNOWN_ASSETS = new Set(PRECACHE.map(p => new URL(p, self.location.href).pathname));
 // PRECACHE is generated from the contents of js/ — see tools/gen_precache.py.
 // It was hand-maintained and had drifted in both directions: nine modules the
 // app statically imports were missing (so offline loaded the shell and then
@@ -74,6 +70,7 @@ const PRECACHE = [
   "./js/security.js",
   "./js/settings.js",
   "./js/telemetry.js",
+  "./js/trash.js",
   "./js/ui.js",
   "./js/uiText.js",
   "./js/undo.js",
@@ -82,6 +79,18 @@ const PRECACHE = [
   "./js/worker-hash.js",
   "./js/worker-match.js",
 ];
+
+// Resolved once, not per request. This was rebuilt inside the fetch handler --
+// roughly thirty URL constructions plus a Set on every single request, for a
+// value that never changes (#76).
+//
+// It MUST stay below PRECACHE. It sat above it from v14.6.1, where it read the
+// const before initialisation and threw on every evaluation of this script:
+// no service worker could install or update after that, so anyone holding an
+// older worker was served that older build from its cache-first handler
+// indefinitely, and every release since never reached them.
+// test/sw-load.test.js evaluates the script to keep it that way.
+const KNOWN_ASSETS = new Set(PRECACHE.map(p => new URL(p, self.location.href).pathname));
 
 // ============================================================================
 // Install: pre-cache app shell

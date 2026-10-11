@@ -63,7 +63,7 @@ const marked = await page.evaluate(async () => {
   document.querySelector('#resultsTbody [data-action="pin-keep"]')?.click();
   await new Promise(r => setTimeout(r, 200));
   // "Ignore this group" is the explicit skip.
-  window.dispatchEvent(new CustomEvent('ddd:ignoreGroup', { detail: { groupIndex: 2 } }));
+  window.dispatchEvent(new CustomEvent('ddd:ignoreGroup', { detail: { ids: ['g2f0', 'g2f1', 'g2f2'] } }));
   await new Promise(r => setTimeout(r, 200));
   const st = render.getReviewState();
   return {

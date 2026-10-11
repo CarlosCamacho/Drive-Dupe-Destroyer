@@ -22,8 +22,22 @@ function focusRow(row) {
   row.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
+// Result rows. This selected "[data-item]", an attribute nothing renders --
+// rows carry data-file-id -- so Space, D, the arrows, Home and End, all listed
+// in the shortcuts panel, have never done anything.
+const ROW = "#resultsTbody tr[data-file-id]";
+
 function allRows() {
-  return Array.from(document.querySelectorAll("[data-item]"));
+  return Array.from(document.querySelectorAll(ROW));
+}
+
+// Toggle through a real click. Setting .checked and dispatching "change" (what
+// this did) is invisible to the table: its selection is kept by a click
+// handler on the tbody, so the box looked ticked and Trash Selected ignored it.
+function toggleRow(row, wantChecked = null) {
+  const cb = row.querySelector('input[type="checkbox"]');
+  if (!cb) return;                 // the keeper has no checkbox, by design
+  if (wantChecked === null || cb.checked !== wantChecked) cb.click();
 }
 
 export function wireKeyboard() {
@@ -34,28 +48,22 @@ export function wireKeyboard() {
     
     const active = document.activeElement;
     
-    if (active && active.matches?.("[data-item]")) {
+    if (active && active.matches?.(ROW) && !anyModalOpen()) {
       const rows = allRows();
       const idx = rows.indexOf(active);
       if (idx < 0) return;
 
       if (e.key === " ") {
         e.preventDefault();
-        const cb = active.querySelector('input[type="checkbox"]');
-        if (cb) {
-          cb.checked = !cb.checked;
-          cb.dispatchEvent(new Event("change", { bubbles: true }));
-        }
+        toggleRow(active);
         return;
       }
       
-      if (e.key.toLowerCase() === "d") {
+      // D marks the focused file for deletion. It does not trash anything by
+      // itself -- Trash Selected does, behind a confirmation.
+      if (e.key.toLowerCase() === "d" && !e.ctrlKey && !e.metaKey) {
         e.preventDefault();
-        const cb = active.querySelector('input[type="checkbox"]');
-        if (cb && !cb.checked) {
-          cb.checked = true;
-          cb.dispatchEvent(new Event("change", { bubbles: true }));
-        }
+        toggleRow(active, true);
         return;
       }
       
@@ -100,9 +108,12 @@ export function wireKeyboard() {
     }
 
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+      // Focus stays on the row's Compare button behind the Compare modal, so
+      // without this Ctrl+A there selected every duplicate in the table.
+      if (anyModalOpen()) return;
       const resultsArea = document.querySelector(".tableWrap");
       if (resultsArea?.contains(document.activeElement) || 
-          document.activeElement?.matches?.("[data-item]")) {
+          document.activeElement?.matches?.(ROW)) {
         e.preventDefault();
         const btnSelectAll = el("btnSelectAll");
         if (btnSelectAll && !btnSelectAll.disabled) btnSelectAll.click();
@@ -129,11 +140,11 @@ export function wireKeyboard() {
   });
 
   document.addEventListener("focusin", (e) => {
-    if (e.target.matches?.("[data-item]")) e.target.classList.add("focused");
+    if (e.target.matches?.(ROW)) e.target.classList.add("focused");
   });
 
   document.addEventListener("focusout", (e) => {
-    if (e.target.matches?.("[data-item]")) e.target.classList.remove("focused");
+    if (e.target.matches?.(ROW)) e.target.classList.remove("focused");
   });
 }
 

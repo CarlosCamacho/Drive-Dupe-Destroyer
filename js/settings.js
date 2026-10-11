@@ -19,7 +19,11 @@ import { el } from "./util.js";
 
 // All persistable controls with their defaults
 const PERSISTABLE = [
-  { id: "recursiveMode",   type: "checkbox", default: true },
+  // A <select> (yes/no), not a checkbox. Declared as a checkbox, it was saved
+  // as select.checked -- undefined -- so "No – top level only" never survived
+  // a reload.
+  { id: "recursiveMode",   type: "select",   default: "yes" },
+  { id: "useDeltaScan",    type: "checkbox", default: false },
   { id: "useDb",           type: "checkbox", default: true },
   { id: "checkVariants",   type: "checkbox", default: false },
   { id: "cropDetect",      type: "checkbox", default: false },
@@ -75,6 +79,34 @@ function notifyRestored(node) {
 // like "min 60 MB, max 4 MB" that match nothing at all.
 const SIZE_DEFAULTS_VERSION = 2;
 
+// Whether a saved value is one this control can actually hold. A value from
+// an older build -- a boolean saved for what is now a <select>, an option that
+// has since been removed, a number outside the slider's range -- used to be
+// assigned regardless: a <select> given an unknown value shows a blank entry
+// and reads back as "", which every reader then treats as its own fallback.
+// Refusing it keeps the HTML default instead.
+function acceptable(def, node, val) {
+  switch (def.type) {
+    case "checkbox": return typeof val === "boolean";
+    case "select":   return typeof val === "string" && [...node.options].some(o => o.value === val);
+    case "text":     return typeof val === "string";
+    case "number":
+    case "range": {
+      const n = Number(val);
+      if (val === "" || !Number.isFinite(n)) return false;
+      if (node.min !== "" && n < Number(node.min)) return false;
+      if (node.max !== "" && n > Number(node.max)) return false;
+      return true;
+    }
+    default: return true;
+  }
+}
+
+// The Image Types toggles carry no ids, so they are saved by their extension
+// list. Saving only the UNCHECKED ones means a type added in a later release
+// arrives switched on, as it does for a new user.
+const typeToggles = () => Array.from(document.querySelectorAll(".imgTypeToggle"));
+
 async function loadSettings() {
   const saved = await settingGet("destroyer_scan_settings_v1", null).catch(() => null);
   if (!saved) return;
@@ -91,9 +123,18 @@ async function loadSettings() {
     } else {
       const el2 = el(def.id);
       if (!el2) continue;
+      if (!acceptable(def, el2, val)) continue;
       if (def.type === "checkbox") el2.checked = val;
-      else el2.value = val;
+      else el2.value = String(val);
       restored.push(el2);
+    }
+  }
+
+  if (Array.isArray(saved._imgTypesOff)) {
+    const off = new Set(saved._imgTypesOff);
+    for (const cb of typeToggles()) {
+      const want = !off.has(cb.dataset.exts);
+      if (cb.checked !== want) { cb.checked = want; restored.push(cb); }
     }
   }
 
@@ -104,7 +145,10 @@ async function loadSettings() {
 }
 
 async function saveSettings() {
-  const out = { _sizeDefaultsVersion: SIZE_DEFAULTS_VERSION };
+  const out = {
+    _sizeDefaultsVersion: SIZE_DEFAULTS_VERSION,
+    _imgTypesOff: typeToggles().filter(cb => !cb.checked).map(cb => cb.dataset.exts),
+  };
   for (const def of PERSISTABLE) {
     if (def.type === "radio") {
       const checked = document.querySelector(`input[name="${def.name}"]:checked`);

@@ -19,7 +19,7 @@ import { confirmAction, UNDO_NOTE } from "./confirm.js";
 import { queueList, queueAdd, queueAddBatch, queueDel, queueClear } from "./db.js";
 import { batchTrash } from "./drive.js";
 import { setStatus, showSpinner, showToast, lockBodyScroll, showTrashedToast } from "./ui.js";
-import { pushUndoDeleteBatch, undoLastDelete } from "./undo.js";
+import { pushUndoDeleteBatch, undoDelete } from "./undo.js";
 
 export async function renderQueue() {
   const list = el("queueList");
@@ -138,7 +138,25 @@ export async function addToQueueBatch(files) {
   }
 }
 
+// One run at a time. Process stayed clickable while a run was going, and the
+// queue rows are only removed once it settles, so a second click trashed the
+// same files again: duplicate undo records, events and toasts.
+let processing = false;
+
 export async function processQueue() {
+  if (processing) return;
+  processing = true;
+  const btn = el("btnQueueProcess");
+  if (btn) btn.disabled = true;
+  try {
+    await runQueue();
+  } finally {
+    processing = false;
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function runQueue() {
   const items = await queueList();
   
   if (items.length === 0) {
@@ -166,6 +184,7 @@ export async function processQueue() {
   // This used to live inside the try, so that throw skipped all of it: the
   // queue still listed 250 files, 100 of them were already in the trash, and
   // Undo had no record of any of them (#81).
+  let opId = null;
   const settle = async (result) => {
     // Record BEFORE clearing the queue rows -- they are the only place the file
     // names live at this point. This was the one delete path never wired to the
@@ -173,7 +192,7 @@ export async function processQueue() {
     // deletions across many groups and run them in a single batch, which is
     // exactly the case undo.js was built for.
     const trashed = new Set(result.success);
-    pushUndoDeleteBatch(items.filter(i => trashed.has(i.id)));
+    opId = pushUndoDeleteBatch(items.filter(i => trashed.has(i.id)));
 
     for (const id of result.success) {
       // One row that will not delete must not cost us the rest of the cleanup,
@@ -206,7 +225,8 @@ export async function processQueue() {
     await settle(result);
 
     if (result.success.length > 0) {
-      showTrashedToast(result.success.length, () => undoLastDelete());
+      // Undo THIS run, not whatever was trashed most recently.
+      showTrashedToast(result.success.length, () => undoDelete(opId));
     }
 
     if (stoppedBy) {

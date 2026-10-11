@@ -600,7 +600,7 @@ export async function fetchChangesSince(pageToken, { signal = null } = {}) {
     const res = await driveFetch("changes", {
       params: {
         pageToken: token,
-        fields: "nextPageToken,newStartPageToken,changes(removed,fileId,file(id,name,mimeType,size,modifiedTime,createdTime,parents,thumbnailLink,md5Checksum,webViewLink,imageMediaMetadata(width,height)))",
+        fields: "nextPageToken,newStartPageToken,changes(removed,fileId,file(id,name,mimeType,size,modifiedTime,createdTime,parents,thumbnailLink,md5Checksum,webViewLink,trashed,imageMediaMetadata(width,height)))",
         pageSize: "1000",
         spaces: "drive"
       },
@@ -608,8 +608,14 @@ export async function fetchChangesSince(pageToken, { signal = null } = {}) {
     });
 
     for (const c of (res.changes || [])) {
-      if (c.removed) {
-        changed.push({ id: c.fileId, _removed: true });
+      // A file moved to Trash is NOT reported as removed -- `removed` means
+      // gone for good, or no longer visible to this account. Trashing arrives
+      // as an ordinary change with file.trashed set, and it was taken as an
+      // edit: every duplicate the user trashed came back on the next
+      // incremental scan, where the keep rule could even pick the trashed copy
+      // and offer the live original for deletion.
+      if (c.removed || c.file?.trashed) {
+        changed.push({ id: c.fileId || c.file?.id, _removed: true });
       } else if (c.file && isSupportedImageFile(c.file)) {
         changed.push({ ...c.file, _changed: true });
       }
