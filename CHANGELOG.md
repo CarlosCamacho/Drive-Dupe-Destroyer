@@ -10,6 +10,109 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [14.8.1] - 2026-10-11
+
+A hardening pass. Three audits of the code that deletes files, the sign-in
+and storage code, and the results screen produced 24 findings. Each one was
+checked against the code before it was fixed. `tools/hardening.mjs` drives the
+fixes through the real UI; against 14.8.0 its checks fail from the first one.
+
+### Fixed — reaching users at all
+
+- **The service worker crashed on load, so updates since v14.6.1 never
+  installed.** `sw.js` read `PRECACHE` above the line that declared it, which
+  throws as soon as the script runs. A worker that throws never installs.
+  Anyone holding an older worker was served that older build from its
+  cache-first handler, indefinitely. `test/sw-load.test.js` now runs the
+  script; `node --check` only parses it, which is why nothing caught this.
+- **The page no longer reloads itself on a first visit, or in the middle of
+  work.** The activating worker told every tab to reload, and the app always
+  obeyed. With the worker fixed, that would have happened about a second after
+  a first visit, and on every update mid-scan, mid-crop or mid-dialog, throwing
+  the work away. It now reloads only when replacing an older version, and only
+  when nothing is in progress. Otherwise it offers a Reload button.
+
+### Fixed — deleting the wrong thing
+
+- **Compare showed the wrong keeper.** It chose the keeper from the live
+  Keep-rule dropdown and ignored pinned keepers, so the file you had pinned
+  could sit on the right with no KEEP badge, one keypress from Trash.
+- **Compare deleted the keeper, or every copy, with one key.** The keeper and
+  "delete both" (key 3) now ask first, as the table does. Holding a delete key
+  no longer repeats it.
+- **Pinned keepers were ignored on every render except filter and sort.** A pin
+  restored from an earlier session, or made mid-scan, showed the rule's keeper
+  instead. The pinned file was offered for deletion and swept up by "Select all
+  duplicates". The CSV export labelled it DUPLICATE. There is now one row
+  builder, so the table, Compare and the export agree.
+- **Trash Selected deleted rows you could not see.** The selection survived a
+  filter or search that hid rows, and survived a file becoming its group's
+  keeper (unpin, pin restored, keeper deleted). The keeper row has no checkbox,
+  so that selection was invisible. The selection is now limited to visible
+  files that are not keepers.
+- **The crop modal could trash a file you did not confirm.** The arrow keys
+  still worked under "Move to Trash?", and the delete acted on whichever image
+  was showing when you clicked. A deleted file could also be reported as
+  "Delete failed".
+- **Crop then trash original announced a failed trash as a success.** The
+  original left the results while it was still in Drive.
+- **Ignore (Compare, key 4) could hide a different group.** It sent a position
+  in a list that the table rebuilds underneath it. It now sends the group's
+  files.
+
+### Fixed — deletes the app lost track of
+
+- **A bulk trash that stopped part-way forgot what it had done.** If the
+  session expired between chunks, the files already in Drive Trash got no Undo
+  record and stayed selected in the table. Every delete path now goes through
+  `js/trash.js`, which keeps a partial result. Only the queue handled this
+  before.
+- **Undo on a toast restored the latest delete, not its own.** Two identical
+  "Moved to Trash" toasts were also merged into one, keeping only the first
+  Undo button. Each toast now undoes its own delete, and toasts with an Undo
+  button are never merged.
+- **Double clicks ran things twice.** This covered Undo (which restored an
+  extra, older batch), Trash Selected, Process Queue, the Compare delete keys,
+  and Scan (two scans streaming into one table). Each now runs once at a time.
+- **A second confirmation dialog stranded the first**, whose caller then
+  waited forever.
+
+### Fixed — sign-in, storage and settings
+
+- **Closing the sign-in popup hung for 60 seconds.** Google reports a closed
+  popup only through `error_callback`, which was never set.
+- **Signing out did not end the session on the page.** A running scan kept
+  going, and could sign you straight back in. The results, the export, the
+  cached file list, the changes token, resume and folder paths all stayed for
+  the next person. A second account scanning "My Drive" reused the first
+  account's file list. The image-hash cache is kept on purpose: it is keyed by
+  file id, so another account's files never match it.
+- **A resumed scan ignored the current folder selection.** A saved resume is
+  now used only by the same folders, exclusions, depth and limit.
+- **The incremental scan brought back files you had trashed.** Drive reports a
+  trashed file as a change, not a removal, and changes to files already in the
+  cached list were skipped. Edited files kept their old checksum, and files
+  moved into an excluded folder were still scanned. The cache's age also reset
+  on every save, so it never expired. If the changes feed fails, the scan now
+  re-walks the folders instead of trusting the stale list.
+- **"Recursive: No", "check for changes" and the image-type toggles were not
+  remembered.** Restored values a control cannot hold are now ignored.
+- **Sign-in was reported as failed when only saving the Client ID failed.**
+- **Single IndexedDB writes reported success before they were committed.** A
+  quota failure arrives at commit, so the write was lost silently.
+
+### Fixed — the results screen
+
+- The row shortcuts (Space, D, the arrows, Home and End) never worked: they
+  looked for an attribute nothing renders. D marks a file for deletion, and the
+  shortcuts panel now says so rather than "Move to Trash". Ctrl+A no longer
+  selects the table from behind the Compare modal.
+- The live table dropped the filter, search and sort on every update, and the
+  similarity badge disappeared after the first filter or sort change.
+- The folder picker stuck on "Loading..." if you opened a folder while another
+  was loading.
+- A selection left by a stopped scan could reappear in the next scan's results.
+
 ## [14.8.0] - 2026-10-11
 
 ### Changed

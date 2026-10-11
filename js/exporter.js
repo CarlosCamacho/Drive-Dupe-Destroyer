@@ -36,6 +36,14 @@ export function setExportState(state) {
   exportState = state;
 }
 
+// What the table holds NOW. The groups handed over when the scan finished are
+// a snapshot: files trashed or groups ignored since were still exported, as
+// delete candidates, from a list the user had already acted on.
+function exportGroups() {
+  const live = typeof exportState?.getGroups === "function" ? exportState.getGroups() : null;
+  return Array.isArray(live) ? live : (exportState?.groups || []);
+}
+
 function download(name, blob) {
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -79,8 +87,12 @@ export function buildExportItems(groups, pathMap, idToEntry, opts = {}) {
       if (f && !f._path && pathMap?.get(f.id)) f._path = pathMap.get(f.id);
     }
 
+    // The table's own decision when it is available, so a pinned keeper is
+    // exported as KEEP. Recomputing from the rule alone labelled the file the
+    // user had pinned as a DUPLICATE -- and the export exists to be acted on.
+    const pinned = typeof opts.keeperFor === "function" ? opts.keeperFor(g) : null;
     const keepIdx = chooseKeepIndex(g, keepRule, folderPriority);
-    const keepFile = g[keepIdx] || g[0];
+    const keepFile = (pinned && g.find(f => f.id === pinned.id)) || g[keepIdx] || g[0];
     const keepEntry = idToEntry?.get(keepFile?.id);
 
     return g.map((f, fi) => {
@@ -172,13 +184,13 @@ export function wireExport() {
 
   if (btnExportJson) {
     btnExportJson.onclick = () => {
-      if (!exportState.groups.length) { showToast("No results to export", "info"); return; }
+      if (!exportGroups().length) { showToast("No results to export", "info"); return; }
       try {
-        const items = buildExportItems(exportState.groups, exportState.pathMap, exportState.idToEntry, exportState);
+        const items = buildExportItems(exportGroups(), exportState.pathMap, exportState.idToEntry, exportState);
         const blob = new Blob([JSON.stringify({
           exportedAt: new Date().toISOString(),
           version: APP_VERSION,
-          totalGroups: exportState.groups.length,
+          totalGroups: exportGroups().length,
           totalFiles: items.length,
           items
         }, null, 2)], { type: "application/json" });
@@ -192,9 +204,9 @@ export function wireExport() {
 
   if (btnExportCsv) {
     btnExportCsv.onclick = () => {
-      if (!exportState.groups.length) { showToast("No results to export", "info"); return; }
+      if (!exportGroups().length) { showToast("No results to export", "info"); return; }
       try {
-        const items = buildExportItems(exportState.groups, exportState.pathMap, exportState.idToEntry, exportState);
+        const items = buildExportItems(exportGroups(), exportState.pathMap, exportState.idToEntry, exportState);
         const blob = new Blob([CSV_BOM + itemsToCsv(items)], { type: "text/csv;charset=utf-8;" });
         download(`ddd-results-${getTimestamp()}.csv`, blob);
         showToast(`Exported ${items.length} rows as CSV`, "success");

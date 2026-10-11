@@ -152,17 +152,16 @@ export function pushUndoDeleteBatch(files) {
     .filter((f) => f && f.id)
     .map((f) => ({ fileId: f.id, fileName: f.name || f.id }));
 
-  if (entries.length === 0) return;
+  if (entries.length === 0) return null;
 
-  undoStack.push({
-    opId: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-    files: entries,
-    trashedAt: Date.now(),
-  });
+  const opId = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  undoStack.push({ opId, files: entries, trashedAt: Date.now() });
   if (undoStack.length > MAX_UNDO_OPS) undoStack.shift();
 
   persist();
   updateUndoButton();
+  // The id lets a toast undo ITS delete rather than whichever was most recent.
+  return opId;
 }
 
 /** Record a single-file trash operation. */
@@ -175,7 +174,42 @@ export function pushUndoDelete(fileId, fileName) {
 // ---------------------------------------------------------------------------
 
 /** Restore every file from the most recent trash operation. */
-export async function undoLastDelete() {
+export function undoLastDelete() {
+  return undoDelete(null);
+}
+
+// One restore at a time. A double-click on Undo, or Ctrl+Z auto-repeat, used to
+// start a second restore while the first was still working through its files
+// -- and the second popped the NEXT operation, bringing back a batch the user
+// never asked to restore. Later calls now wait for the one in flight and then
+// do nothing, which is what a repeated click means.
+let undoInFlight = null;
+
+/**
+ * Restore one trash operation: `opId`, or the most recent when null.
+ *
+ * Each "Moved to Trash" toast carries an Undo for the delete it announced. It
+ * used to call undoLastDelete, so trashing X, then Y, then pressing Undo on
+ * X's toast restored Y -- and left X in the trash behind a toast that said it
+ * had been undone.
+ */
+export function undoDelete(opId = null) {
+  if (undoInFlight) return undoInFlight;
+  setUndoBusy(true);
+  undoInFlight = runUndo(opId).finally(() => {
+    undoInFlight = null;
+    setUndoBusy(false);
+    updateUndoButton();
+  });
+  return undoInFlight;
+}
+
+function setUndoBusy(busy) {
+  const btn = typeof document !== "undefined" ? document.getElementById("btnUndo") : null;
+  if (btn && busy) btn.disabled = true;
+}
+
+async function runUndo(opId) {
   await loadUndoStack();
 
   // Drop operations that have aged out. Every entry is tested individually
@@ -184,9 +218,18 @@ export async function undoLastDelete() {
   // trashedAt, so the stack is not strictly chronological.
   undoStack = undoStack.filter(isFresh);
 
-  const op = undoStack.pop();
+  let op = null;
+  if (opId === null) {
+    op = undoStack.pop() || null;
+  } else {
+    const idx = undoStack.findIndex(o => o.opId === opId);
+    if (idx >= 0) op = undoStack.splice(idx, 1)[0];
+  }
   if (!op) {
-    showToast("Nothing to undo", "info");
+    showToast(opId === null
+      ? "Nothing to undo"
+      : "That delete can no longer be undone here: it expired or was already undone. "
+        + "The file(s) can still be restored from Google Drive Trash.", "info", opId === null ? undefined : 6000);
     updateUndoButton();
     return;
   }

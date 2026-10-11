@@ -15,16 +15,16 @@
 // Features: Stay in modal after crop, locked aspect ratio, D key delete shortcut
 
 import { el, bytesToHuman, formatDate } from "./util.js";
-import { confirmAction, UNDO_NOTE } from "./confirm.js";
+import { confirmAction, UNDO_NOTE, isConfirmOpen } from "./confirm.js";
 import {
   clamp, transformedDimensions, displayScale as computeDisplayScale, isInsideSelection as isInside,
   selectionFromDrag, movedSelection, lockedSelection, areaToFractions, fractionsToArea,
   isUsableSelection, selectionInSourcePixels, MIN_SELECTION_PX,
 } from "./cropGeometry.js";
 import { settingGet, settingSet } from "./db.js";
-import { lockBodyScroll, showToast, showTrashedToast } from "./ui.js";
-import { pushUndoDeleteBatch, undoLastDelete } from "./undo.js";
-import { batchTrash, uploadFile, downloadFileBlob } from "./drive.js";
+import { lockBodyScroll, showToast } from "./ui.js";
+import { uploadFile, downloadFileBlob } from "./drive.js";
+import { trashFiles } from "./trash.js";
 import { openCompare } from "./compare.js";
 
 let currentFile = null;
@@ -183,6 +183,11 @@ function handleCropKeyboard(e) {
   const modal = el("cropModal");
   if (!modal || modal.style.display === "none") return;
   if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+  // The confirmation on top owns the keyboard: an arrow key here used to move
+  // to another image underneath "Move to Trash?", and confirming then trashed
+  // that image instead of the one the dialog showed.
+  if (isConfirmOpen()) return;
+  if (e.repeat && (e.key === "Enter" || e.key === "d" || e.key === "D")) return;
   
   switch (e.key) {
     case "Escape":
@@ -987,52 +992,53 @@ function stopMarchingAnts() {
 
 async function handleCropDelete() {
   if (cropBusy) return;
-  if (!currentFile) return;
-  
-  if (!await confirmAction({
-    title: "Move to Trash?",
-    message: "This file will be moved to Google Drive Trash.",
-    confirmLabel: "Move to Trash",
-    note: UNDO_NOTE,
-    files: [currentFile],
-  })) return;
-  
+  // Everything below runs across awaits. Read the file ONCE: currentFile is
+  // module state that Prev/Next change, and reading it again after the
+  // confirmation or the trash call acted on whichever image was showing by
+  // then -- trashing a file nobody confirmed, or reporting a successful trash
+  // as "Delete failed" because the id no longer matched.
+  const file = currentFile;
+  if (!file) return;
+
+  cropBusy = true;
   const btnDelete = el("btnCropDelete");
-  if (btnDelete) {
-    btnDelete.disabled = true;
-    btnDelete.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Deleting...';
-  }
-  
   try {
-    const result = await batchTrash([currentFile.id]);
-    if (result.success.includes(currentFile.id)) {
-      pushUndoDeleteBatch([currentFile]);
-      showTrashedToast(1, () => undoLastDelete());
-      window.dispatchEvent(new CustomEvent("ddd:trashed", { detail: { ids: [currentFile.id] } }));
-      
-      // Navigate to next image
-      refreshGroups();
-      
-      // Remove file from current group
-      currentGroup = currentGroup.filter(f => f.id !== currentFile.id);
-      if (currentIndexInGroup >= currentGroup.length) currentIndexInGroup = Math.max(0, currentGroup.length - 1);
-      
-      if (currentGroup.length > 0) {
-        currentFile = currentGroup[currentIndexInGroup];
-        await loadImageForCrop(currentFile);
-        if (isLocked) applyLockedSize();
-        updateNavButtons();
-        updateCropInfo();
-        startMarchingAnts();
-      } else {
-        moveToNextAvailableImage();
-      }
+    if (!await confirmAction({
+      title: "Move to Trash?",
+      message: "This file will be moved to Google Drive Trash.",
+      confirmLabel: "Move to Trash",
+      note: UNDO_NOTE,
+      files: [file],
+    })) return;
+
+    if (btnDelete) {
+      btnDelete.disabled = true;
+      btnDelete.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Deleting...';
+    }
+
+    const result = await trashFiles([file]);
+    if (result.error) throw result.error;
+    if (!result.success.includes(file.id)) throw new Error("Trash operation failed");
+
+    // Navigate to the next image
+    refreshGroups();
+    currentGroup = currentGroup.filter(f => f.id !== file.id);
+    if (currentIndexInGroup >= currentGroup.length) currentIndexInGroup = Math.max(0, currentGroup.length - 1);
+
+    if (currentGroup.length > 0) {
+      currentFile = currentGroup[currentIndexInGroup];
+      await loadImageForCrop(currentFile);
+      if (isLocked) applyLockedSize();
+      updateNavButtons();
+      updateCropInfo();
+      startMarchingAnts();
     } else {
-      throw new Error("Trash operation failed");
+      moveToNextAvailableImage();
     }
   } catch (err) {
     showToast("Delete failed: " + (err?.message || err), "error");
   } finally {
+    cropBusy = false;
     if (btnDelete) {
       btnDelete.disabled = false;
       btnDelete.innerHTML = '<i class="fa-solid fa-trash"></i> Delete';
@@ -1199,27 +1205,40 @@ async function performCrop() {
     }
 
     showToast("Moving original to trash...", "info", 1500);
-    const trashResult = await batchTrash([currentFile.id]);
-    
-    if (trashResult.success.includes(currentFile.id)) {
-      // The original is now in Trash. Record it so Undo can bring it back —
-      // this path replaced a file with a re-encoded crop and left no way back.
-      pushUndoDeleteBatch([currentFile]);
-    } else {
+    // The crop is already saved, so nothing from here on may be reported as
+    // "Crop failed". And the table hears that the original is gone only when it
+    // IS gone: this used to dispatch ddd:trashed unconditionally, so a 403 on
+    // the trash removed the original from the results while it was still in
+    // Drive, under a toast that said "Image cropped and saved!".
+    const original = currentFile;
+    let originalTrashed = false;
+    try {
+      const trashResult = await trashFiles([original]);
+      originalTrashed = trashResult.success.includes(original.id);
+      if (!originalTrashed) {
+        console.warn("Original not trashed:", trashResult.error || trashResult.failed);
+      }
+    } catch (e) {
+      console.warn("Original not trashed:", e);
+    }
+
+    window.dispatchEvent(new CustomEvent("ddd:fileReplaced", { detail: { oldId: original.id, newFile: uploadedFile } }));
+
+    if (!originalTrashed) {
       // Upload succeeded but the trash did not, so Drive now holds two files
-      // with the same name in the same folder. Say so loudly: quietly creating
-      // a duplicate is the exact outcome this app exists to prevent.
+      // in that folder. Say so loudly: quietly creating a duplicate is the
+      // exact outcome this app exists to prevent.
       showToast(
-        "Cropped copy was uploaded, but the original could NOT be trashed — " +
+        `Saved "${newName}", but the original could NOT be moved to Trash — ` +
         "both files are now in that folder.",
         "error",
         8000
       );
+      resetAfterCrop();
+      redrawCanvas();
+      return;
     }
-    
-    window.dispatchEvent(new CustomEvent("ddd:fileReplaced", { detail: { oldId: currentFile.id, newFile: uploadedFile } }));
-    window.dispatchEvent(new CustomEvent("ddd:trashed", { detail: { ids: [currentFile.id] } }));
-    
+
     showToast("Image cropped and saved!", "success");
 
     resetAfterCrop();

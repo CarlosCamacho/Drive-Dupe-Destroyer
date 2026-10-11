@@ -17,13 +17,13 @@
 import { SIMILARITY_BITS, thresholdFromEasy } from "./distance.js";
 import { sizeLimitsBytes } from "./formats.js";
 import { confirmAction } from "./confirm.js";
-import { el, APP_VERSION } from "./util.js";
+import { el, APP_VERSION, anyModalOpen } from "./util.js";
 import { uiInit, setSignedInUi, setStatus, showEmptyState, setScanningState, showToast, wireErrorModal, setSelectedCountProvider, setRowCountProvider, setSizeStatsProvider, lockBodyScroll } from "./ui.js";
 import { wireAuth } from "./auth.js";
 import { runScan, setupBackgroundDetection } from "./scan.js";
 import { clearReviewState } from "./reviewState.js";
 import { clearFileList } from "./fileListCache.js";
-import { renderGroups, wireRenderControls, restoreReviewState, getSelectedCount, getRowCount, getSizeStats, beginProgressive, pushProgressiveMatch, endProgressive, mergeProgressivePaths } from "./render.js";
+import { renderGroups, clearResults, getCurrentGroups, currentKeeperFor, wireRenderControls, restoreReviewState, getSelectedCount, getRowCount, getSizeStats, beginProgressive, pushProgressiveMatch, endProgressive, mergeProgressivePaths } from "./render.js";
 import { wireCompare } from "./compare.js";
 import { wireCrop } from "./crop.js";
 import { wireFolderPicker, getIncludedFolderIds, getIncludedFolders, getExclusions } from "./folderPicker.js";
@@ -35,13 +35,14 @@ import { settingGet, settingSet, requestPersistentStorage, getStorageEstimate, s
 import { initPersistentSettings } from "./settings.js";
 import { toggleTelemetry } from "./telemetry.js";
 import { undoLastDelete, loadUndoStack } from "./undo.js";
-import { loadResumeState, clearResumeState, formatResumeDescription } from "./resume.js";
+import { loadResumeState, clearResumeState, formatResumeDescription, resumeMatchesScope } from "./resume.js";
 import { wireQueue, renderQueue } from "./queue.js";
 import { dbClearImages, dbCountImages, dbExportImages, dbImportImages, clearChangesToken } from "./db.js";
 import { releaseAllThumbBlobs } from "./hashing.js";
 import { clearPathCaches } from "./paths.js";
 
 let abortCtrl = null;
+let scanInFlight = false;   // see btnScan.onclick
 
 // Slider value maps
 const MAX_ITEMS_VALUES = [500, 1000, 2500, 5000, 10000, 15000, 0]; // 0 = infinity
@@ -249,6 +250,11 @@ function wireScanControls() {
   
   if (btnScan) {
     btnScan.onclick = async () => {
+      // One scan at a time. runScan hides this button, but only after the
+      // awaits below; a double-click or a second Enter in that window started
+      // a second scan into the same live table, and Stop could then reach only
+      // one of them.
+      if (scanInFlight) return;
       const folderIds = getIncludedFolderIds();
       
       if (folderIds.length === 0) {
@@ -258,17 +264,33 @@ function wireScanControls() {
         return;
       }
       
+      scanInFlight = true;
+      btnScan.disabled = true;
       abortCtrl = new AbortController();
       
       // Restore how far through the review we got last time, for THIS folder
       // selection (#117). Done before the scan rather than after, so the
       // keeper pins are in place by the time the first groups render.
-      await restoreReviewState({ folderIds, exclusions: getExclusions() });
+      // Outside the try below, so a failure here must not leave the scan
+      // guard set and the button disabled for the rest of the session.
+      await restoreReviewState({ folderIds, exclusions: getExclusions() })
+        .catch(e => console.warn("Review state not restored:", e));
       
       try {
         // Consume the resume offer on the first scan after boot; a later scan in
         // the same session starts clean.
-        const resume = takePendingResume();
+        let resume = takePendingResume();
+        const maxItemsEl = el("maxItems");
+        if (resume && !resumeMatchesScope(resume, {
+          folderIds,
+          exclusions: getExclusions(),
+          recursive: el("recursiveMode")?.value === "yes",
+          maxItems: parseInt(maxItemsEl?.dataset?.actualValue || maxItemsEl?.value || "0", 10) || 0,
+        })) {
+          resume = null;
+          await clearResumeState().catch(() => {});
+          showToast("The interrupted scan was for different folders or settings, so this one starts fresh.", "info", 5000);
+        }
 
         await runScan({
           folderIds,
@@ -288,7 +310,11 @@ function wireScanControls() {
               keepRule: data.keepRule,
               folderPriority: data.folderPriority,
               bitsCount: data.bitsCount,
-              withVariants: data.withVariants
+              withVariants: data.withVariants,
+              // Read at export time, so the file reflects pins, trashes and
+              // ignores made after the scan rather than the scan's snapshot.
+              getGroups: getCurrentGroups,
+              keeperFor: currentKeeperFor,
             });
             await renderGroups(data);
           },
@@ -334,10 +360,30 @@ function wireScanControls() {
       } finally {
         endProgressive();
         abortCtrl = null;
+        scanInFlight = false;
+        btnScan.disabled = false;
       }
     };
   }
   
+  // Sign-out ends this account's session on the page, not only its token
+  // (auth.js dispatches this). Stop the scan -- it would otherwise go on
+  // asking for tokens -- and drop what identifies this account's library:
+  // the results, the export, and the caches the NEXT scan would reuse. The
+  // enumeration cache and the changes token were keyed by folder scope, not
+  // by account, so a second account scanning "My Drive" on this browser
+  // reused the first account's file list. The image-hash cache is kept on
+  // purpose: it is keyed by file id, so another account's files never match
+  // it, and dropping it would re-hash the whole library on every sign-in.
+  window.addEventListener("ddd:signedOut", () => {
+    try { abortCtrl?.abort(); } catch {}
+    clearResults();
+    setExportState({ groups: [], getGroups: () => [] });
+    takePendingResume();
+    Promise.allSettled([clearFileList(), clearChangesToken(), clearResumeState(), clearPathCaches()])
+      .then(rs => { for (const r of rs) if (r.status === "rejected") console.warn("[DDD] Sign-out cleanup:", r.reason); });
+  });
+
   if (btnStop) {
     btnStop.onclick = () => {
       if (abortCtrl) {
@@ -647,21 +693,44 @@ async function checkResumeState() {
 
 // Register service worker (non-blocking)
 // Listens for SW_UPDATED message and reloads automatically so stale caches never block users
+// Whether a service worker was ALREADY serving this page when it loaded. Only
+// then is an activating worker an update. On a first visit the new worker
+// activates, claims the page and announces itself too -- and the page used to
+// reload a second after it opened, taking with it whatever the user had
+// started: a Client ID half pasted, the sign-in popup. Nobody saw this for a
+// long time only because sw.js failed to load at all (see the note in sw.js).
+const hadControllerAtLoad = typeof navigator !== "undefined" && !!navigator.serviceWorker?.controller;
+let updateReloadPending = false;
+
+/**
+ * A new version is active. Reload to pick it up -- unless that would destroy
+ * work in progress. An unconditional reload in the middle of a scan threw the
+ * scan away; in the crop modal, the crop; in a confirmation, the decision. Then
+ * the user is offered the reload instead, and takes it when they are ready.
+ */
+function onUpdateActivated(version) {
+  if (!hadControllerAtLoad || updateReloadPending) return;
+  updateReloadPending = true;
+  if (!scanInFlight && !anyModalOpen()) {
+    console.log(`[SW] Updated to v${version || "?"} — reloading for fresh files`);
+    window.location.reload();
+    return;
+  }
+  showToast(`Drive Dupe Destroyer ${version ? "v" + version + " " : ""}is ready. Reload when you have finished.`,
+    "info", null, { label: "Reload", onClick: () => window.location.reload() });
+}
+
 function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
 
   navigator.serviceWorker.register('./sw.js')
     .then((reg) => {
       console.log('[SW] Registered:', reg.scope);
-      // When a new SW activates, reload the page to get fresh files
       reg.addEventListener('updatefound', () => {
         const newSW = reg.installing;
         if (!newSW) return;
         newSW.addEventListener('statechange', () => {
-          if (newSW.state === 'activated' && navigator.serviceWorker.controller) {
-            console.log('[SW] New version activated — reloading for fresh files');
-            window.location.reload();
-          }
+          if (newSW.state === 'activated') onUpdateActivated(null);
         });
       });
     })
@@ -669,10 +738,7 @@ function registerServiceWorker() {
 
   // Also handle the SW_UPDATED postMessage from the new service worker
   navigator.serviceWorker.addEventListener('message', (ev) => {
-    if (ev.data?.type === 'SW_UPDATED') {
-      console.log('[SW] Received update signal v' + ev.data.version + ' — reloading');
-      window.location.reload();
-    }
+    if (ev.data?.type === 'SW_UPDATED') onUpdateActivated(ev.data.version);
     // The SW carries its own version literal (it cannot import util.js). If it has
     // drifted from APP_VERSION, the cache name derived from it has drifted too and
     // the app may be running against a stale precache. Surface it rather than

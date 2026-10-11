@@ -483,9 +483,13 @@ function dismissToast(toast) {
 export function showToast(message, type = 'info', duration = null, action = null) {
   const container = toastContainer();
 
-  // Collapse an identical message rather than stacking duplicates.
-  const twin = [...container.children].find(
-    (t) => t.dataset.message === message && !t.dataset.leaving
+  // Collapse an identical message rather than stacking duplicates -- unless it
+  // carries an action. Two "Moved 1 file to Trash" toasts are two different
+  // deletes, each with its own Undo; collapsing them kept only the FIRST
+  // button, so "Undo" on a toast reading ×2 restored one file and silently
+  // left the other in the trash.
+  const twin = action ? null : [...container.children].find(
+    (t) => t.dataset.message === message && !t.dataset.leaving && !t.querySelector(".toastAction")
   );
   if (twin) {
     const n = (Number(twin.dataset.count) || 1) + 1;

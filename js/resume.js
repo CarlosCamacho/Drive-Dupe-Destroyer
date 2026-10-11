@@ -77,3 +77,27 @@ export function formatResumeDescription(state) {
          `${(state.visitedFolderIds?.length || 0)} folders scanned, ` +
          `${pending} still to go (${ageStr})`;
 }
+
+/**
+ * Whether a saved resume point belongs to the scan about to start.
+ *
+ * A resume carries its own BFS frontier and the files it had already
+ * collected, and the scan follows them instead of the folder selection it is
+ * given. So taking a resume after changing the selection scanned the OLD
+ * folders and skipped the new ones -- and files already collected from a
+ * folder excluded since were offered as delete candidates. Same folders, same
+ * exclusions and same depth/limit, or it is a different scan.
+ */
+export function resumeMatchesScope(state, { folderIds, exclusions, recursive, maxItems }) {
+  if (!state) return false;
+  const sameSet = (a, b) => {
+    const A = new Set(a || []), B = new Set(b || []);
+    return A.size === B.size && [...A].every(x => B.has(x));
+  };
+  if (!sameSet(state.folderIds, folderIds)) return false;
+  if (!sameSet(state.exclusions, exclusions instanceof Set ? [...exclusions] : exclusions)) return false;
+  const o = state.options || {};
+  if (o.recursive !== undefined && o.recursive !== recursive) return false;
+  if (o.maxItems !== undefined && Number(o.maxItems) !== Number(maxItems)) return false;
+  return true;
+}

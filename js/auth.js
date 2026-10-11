@@ -194,7 +194,13 @@ function initTokenClient(clientId) {
   tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: clientId,
     scope: SCOPES_DELETE,
-    callback: () => {} // Will be set when requesting token
+    callback: () => {}, // Will be set when requesting token
+    // GIS reports a closed or blocked popup ONLY here, never through
+    // `callback`. Without it, closing the sign-in popup left the spinner up
+    // and the button disabled for the full 60 s timeout before "Sign-in timed
+    // out" -- and the popup_* entries in RECOVERABLE_AUTH_ERRORS could never
+    // match anything.
+    error_callback: (err) => { if (_onTokenError) _onTokenError(err); },
   });
   
   console.log("Token client initialized");
@@ -299,6 +305,18 @@ let _tokenGeneration = 0;
 // quietly dropping the single-flight guard for every caller after that.
 let _tokenRequestId = 0;
 
+// Where GIS's error_callback lands: the request currently in flight, if any.
+let _onTokenError = null;
+
+// Set by an explicit Sign Out, cleared by the next explicit Sign In. While set,
+// only the Sign In button may open Google's popup. A scan still running when
+// the user signed out used to call ensureToken from its next request, which
+// rebuilt the token client from the stored Client ID and asked for a token
+// with no user gesture: blocked popups made every request wait out the
+// timeout in turn, and allowed ones signed the user straight back in behind a
+// button that said "Sign In".
+let _signedOutByUser = false;
+
 function requestTokenOnce(options, { timeoutMs = CONFIG.AUTH_TIMEOUT_MS } = {}) {
   if (_tokenRequest) return _tokenRequest;
   if (!tokenClient) return Promise.reject(new Error("No token client"));
@@ -349,6 +367,18 @@ function requestTokenOnce(options, { timeoutMs = CONFIG.AUTH_TIMEOUT_MS } = {}) 
       }
     };
 
+    _onTokenError = (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const type = err?.type || "popup_failed";
+      reject(Object.assign(new Error(
+        type === "popup_closed" || type === "popup_closed_by_user"
+          ? "Sign-in cancelled."
+          : `Google sign-in could not complete (${type}). If a popup was blocked, allow popups for this site.`
+      ), { code: "AUTH", authError: type, recoverable: true }));
+    };
+
     try {
       tokenClient.requestAccessToken(options);
     } catch (e) {
@@ -359,7 +389,7 @@ function requestTokenOnce(options, { timeoutMs = CONFIG.AUTH_TIMEOUT_MS } = {}) 
       }
     }
   }).finally(() => {
-    if (_tokenRequestId === myId) _tokenRequest = null;
+    if (_tokenRequestId === myId) { _tokenRequest = null; _onTokenError = null; }
   });
 
   return _tokenRequest;
@@ -379,6 +409,12 @@ export async function ensureToken({ forcePrompt = false } = {}) {
     return accessToken;
   }
 
+  // After an explicit sign-out, only the Sign In button (forcePrompt) may
+  // start a sign-in. See _signedOutByUser.
+  if (_signedOutByUser && !forcePrompt) {
+    throw Object.assign(new Error("You are signed out."), { code: "AUTH", authError: "signed_out", recoverable: true });
+  }
+
   await waitForGis();
 
   if (!tokenClient) {
@@ -394,7 +430,12 @@ export async function ensureToken({ forcePrompt = false } = {}) {
     // Single-flight: parallel callers share this one request rather than each
     // overwriting tokenClient.callback and then timing out.
     await requestTokenOnce(forcePrompt ? { prompt: "consent" } : {});
-    await storeClientId(currentClientId);
+    _signedOutByUser = false;
+    // The token is live whether or not this save works. Awaited inside the
+    // try, a failed write (quota, a blocked upgrade) reported a successful
+    // sign-in as failed: the keepalive never started and Scan stayed disabled
+    // under a button reading "Sign Out".
+    await storeClientId(currentClientId).catch(e => console.warn("[Auth] Client ID not saved:", e));
     startKeepalive();
     return accessToken;
   } catch (e) {
@@ -524,8 +565,15 @@ export async function signOut() {
   tokenExpiresAt = 0;
   currentClientId = null;   // was left set, so the UI still showed a signed-in client
   _tokenRequest = null;     // drop any in-flight request; it belongs to the old session
+  _onTokenError = null;
+  _signedOutByUser = true;
 
   setSignedInUi(false);
+  // Everything holding this account's data listens for this: the running scan
+  // stops, and the results and the caches of file names and paths are cleared
+  // (app.js). Signing out used to leave all of it on the page and in storage
+  // for whoever signed in next on this browser.
+  window.dispatchEvent(new CustomEvent("ddd:signedOut"));
   showToast("Signed out successfully", "info");
 }
 

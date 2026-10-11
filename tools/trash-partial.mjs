@@ -81,6 +81,9 @@ const queueRun = (mode) => page.evaluate(async (mode) => {
   window.__tokenTtl = 1;
   await auth.signOut();
   window.__gisOk = true;
+  // Sign in again the way a user does -- the Sign In button (forcePrompt).
+  // After an explicit sign-out, nothing else may open Google's popup.
+  await auth.ensureToken({ forcePrompt: true });
   window.__grants = 0;
 
   const trashedForReal = [];
@@ -155,7 +158,13 @@ const s = await page.evaluate(async () => {
   await auth.signOut();
   window.__revoked = [];
 
-  const p = auth.ensureToken().catch(e => e);
+  // A background caller after sign-out -- what a scan still running would be
+  // -- is refused outright and never reaches GIS.
+  const grantsBefore = window.__grants;
+  const background = await auth.ensureToken().catch(e => e);
+  const backgroundRefused = background?.authError === 'signed_out' && window.__grants === grantsBefore;
+
+  const p = auth.ensureToken({ forcePrompt: true }).catch(e => e);
   await new Promise(r => setTimeout(r, 80));
   await auth.signOut();                         // user signs out mid-flight
   const atSignOut = { token: auth.getAccessToken(), signedIn: !!auth.isSignedIn() };
@@ -166,8 +175,9 @@ const s = await page.evaluate(async () => {
 
   // And a fresh sign-in afterwards must still work.
   window.__gisLatency = 5;
-  await auth.ensureToken();
+  await auth.ensureToken({ forcePrompt: true });
   return {
+    backgroundRefused,
     atSignOut,
     after,
     superseded: err?.authError === 'superseded',
@@ -182,6 +192,7 @@ ck(!s.after.signedIn && s.after.token === null, '#82 and the in-flight GIS callb
 ck(s.superseded && s.recoverable, '#82 the superseded request rejects recoverably, so the Client ID survives');
 ck(s.revokedSuperseded >= 1, '#82 the token minted for the ended session is revoked, not left live');
 ck(s.signsInAgain, '#82 a fresh sign-in afterwards still works');
+ck(s.backgroundRefused, 'after sign-out, a background token request is refused without opening Google sign-in');
 
 await b.close();
 console.log(fails ? `\n${fails} FAILED` : '\nALL CHECKS PASSED');

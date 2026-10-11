@@ -84,7 +84,6 @@ const selection = makeSelection();
 const included = selection.included; // id -> {id, name}
 const excluded = selection.excluded; // id -> {id, name}
 let renderSeq = 0;
-let isLoading = false;
 let scanHistory = {}; // Cache of folder scan history
 let visibleFolders = []; // Currently visible folders in the list (for Include/Exclude All)
 
@@ -175,9 +174,15 @@ function renderIncluded() {
   }
 }
 
+// Every call renders; the sequence number decides which result is shown. A
+// "loading" guard here used to drop the NEWER request: Open or Up during a
+// load bumped renderSeq and then returned at once, and the load already in
+// flight saw the bumped number and discarded its own result -- leaving
+// "Loading..." on screen with nothing coming, and Include All acting on the
+// previous folder's children.
 async function renderList(seq = 0) {
-  if (isLoading) return;
-  isLoading = true;
+  // Nothing on screen is actionable until this load lands.
+  visibleFolders = [];
   
   const folderList = el("folderList");
   const folderCurrentName = el("folderCurrentName");
@@ -202,10 +207,7 @@ async function renderList(seq = 0) {
     ]);
     scanHistory = history;
 
-    if (seq !== renderSeq) {
-      isLoading = false;
-      return;
-    }
+    if (seq !== renderSeq) return;   // superseded; the newer call renders
 
     const search = searchInput?.value.trim().toLowerCase() || "";
     const filtered = search 
@@ -302,12 +304,12 @@ async function renderList(seq = 0) {
     }
   } catch (e) {
     console.error("Failed to list folders:", e);
+    if (seq !== renderSeq) return;   // a newer listing owns the panel
     if (folderList) {
       folderList.innerHTML = `<div class="errorState">Failed to load: ${escapeHtml(e.message)}</div>`;
     }
   }
   
-  isLoading = false;
 }
 
 const debouncedSearch = debounce(() => {
