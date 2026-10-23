@@ -25,6 +25,7 @@ import { settingGet, settingSet } from "./db.js";
 import { lockBodyScroll, showToast } from "./ui.js";
 import { uploadFile, downloadFileBlob } from "./drive.js";
 import { trashFiles } from "./trash.js";
+import { undoDelete } from "./undo.js";
 import { openCompare } from "./compare.js";
 
 let currentFile = null;
@@ -1180,31 +1181,13 @@ async function performCrop() {
 
     if (!uploadedFile || !uploadedFile.id) throw new Error("Upload failed");
     
-    // Trashing the original is now the user's call, and it is stated plainly
-    // what the crop did and did not keep. This used to happen automatically,
-    // with no warning that the replacement had lost every piece of metadata.
-    const alsoTrash = await confirmAction({
-      title: `Saved the crop as "${newName}"`,
-      message: "Move the original to Google Drive Trash?",
-      confirmLabel: "Move original to Trash",
-      note: "The crop is a re-encode, so EXIF, colour profile, GPS and capture date are NOT carried over. " +
-            "Keep the original if you need them. " + UNDO_NOTE,
-      files: [currentFile],
-    });
-
-    if (!alsoTrash) {
-      showToast(`Saved "${newName}". Original kept.`, "success", 4000);
-      window.dispatchEvent(new CustomEvent("ddd:fileReplaced", { detail: { oldId: currentFile.id, newFile: uploadedFile } }));
-      resetAfterCrop();
-      // Still on the same picture. Redraw it -- resetAfterCrop undid any zoom
-      // or rotation without showing it -- which also puts the remembered area
-      // back rather than leaving the image blank, so it is visibly the one Next
-      // will carry forward.
-      redrawCanvas();
-      return;
-    }
-
-    showToast("Moving original to trash...", "info", 1500);
+    // The original goes to Trash without asking. A confirmation here, on every
+    // crop, turned a run of crops into a run of identical dialogs, and the
+    // answer was always the same: cropping IS replacing. It stays reversible --
+    // trashFiles records it, and the "Moved to Trash" toast carries an Undo
+    // that brings the original back for 30 minutes. The crop is a re-encode, so
+    // EXIF, colour profile, GPS and capture date stay with the original; that is
+    // said once, in the success toast, rather than asked every time.
     // The crop is already saved, so nothing from here on may be reported as
     // "Crop failed". And the table hears that the original is gone only when it
     // IS gone: this used to dispatch ddd:trashed unconditionally, so a 403 on
@@ -1212,9 +1195,13 @@ async function performCrop() {
     // Drive, under a toast that said "Image cropped and saved!".
     const original = currentFile;
     let originalTrashed = false;
+    let undoOpId = null;
     try {
-      const trashResult = await trashFiles([original]);
+      // One toast for the whole crop (below), carrying the Undo, rather than
+      // trashFiles' own "Moved to Trash" plus a second one saying it saved.
+      const trashResult = await trashFiles([original], { toast: false });
       originalTrashed = trashResult.success.includes(original.id);
+      undoOpId = trashResult.opId;
       if (!originalTrashed) {
         console.warn("Original not trashed:", trashResult.error || trashResult.failed);
       }
@@ -1239,7 +1226,11 @@ async function performCrop() {
       return;
     }
 
-    showToast("Image cropped and saved!", "success");
+    showToast(
+      `Saved "${newName}". Original moved to Trash (its EXIF, GPS and capture date stay with it).`,
+      "success", null,
+      undoOpId ? { label: "Undo", onClick: () => undoDelete(undoOpId) } : null
+    );
 
     resetAfterCrop();
     
