@@ -10,6 +10,20 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [14.8.2] - 2026-10-23
+
+### Changed
+
+- **Cropping replaces the original without asking.** Every crop used to stop
+  on "Move the original to Google Drive Trash?", and in practice the answer
+  was always yes, so a run of crops became a run of identical dialogs. Crop
+  now uploads the cropped copy and moves the original to Trash. One toast
+  says so, and its Undo brings the original back for 30 minutes. The crop is a
+  re-encode, so the original's EXIF, GPS and capture date are not copied to
+  it; the toast says so too. If the original cannot be trashed, an error says
+  that both files are now in the folder. `tools/crop-replace.mjs` drives this
+  through the real crop modal; against 14.8.1 it stops on the dialog.
+
 ## [14.8.1] - 2026-10-11
 
 A hardening pass. Three audits of the code that deletes files, the sign-in
