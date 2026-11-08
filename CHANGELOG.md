@@ -10,6 +10,32 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [14.8.5] - 2026-11-08
+
+### Fixed
+
+- **Opening the site from a link kept showing the previous version.** A
+  browser looks for a new version of an installed app only when the page is
+  reloaded, or on an ordinary navigation if it has not looked in about 24
+  hours. Following a link, a bookmark or the address bar is an ordinary
+  navigation, so for up to a day after a release the saved copy was served,
+  however many times the site was opened. The app now checks for a new version
+  every time it loads (one small request); when there is one it installs in the
+  background and the page reloads into it when nothing is in progress.
+- **A new version could install the old files.** The offline cache was filled
+  with plain `cache.addAll(urls)`, which goes through the browser's own HTTP
+  cache, and GitHub Pages serves every file with `max-age=600`. A visit in the
+  ten minutes before a release left the old files there, the new service
+  worker copied them into its fresh cache, and the app then reported the new
+  version number while serving the old code until the next release. The
+  precache now fetches from the server (`cache: "reload"`).
+
+### Testing
+
+- `test/sw-load.test.js` runs the service worker's install handler and checks
+  that it pre-caches the app shell and every module, each with `cache:
+  "reload"`. Against 14.8.4's `sw.js` it fails.
+
 ## [14.8.4] - 2026-11-08
 
 ### Changed
