@@ -185,6 +185,38 @@ export function toastDurationMs(type = "info", duration = null, action = null) {
   return action ? 10000 : 4000;
 }
 
+/**
+ * What to do when a new version of the app has activated.
+ *
+ *   "ignore" -- nothing: this page never had a service worker (a first visit),
+ *               or it has already dealt with this update.
+ *   "reload" -- take it now, because nothing would be lost.
+ *   "offer"  -- say so and let the user choose, because a reload would destroy
+ *               something: a scan in progress, an open dialog or crop, or the
+ *               duplicates on screen that were found and are being reviewed.
+ *
+ * The results were not protected before: an update that landed while you were
+ * reviewing reloaded the page and the whole list went with it.
+ */
+export function updateReloadAction({ hadController, alreadyHandled, scanning, modalOpen, resultRows }) {
+  if (!hadController || alreadyHandled) return "ignore";
+  if (scanning || modalOpen || resultRows > 0) return "offer";
+  return "reload";
+}
+
+/**
+ * Whether a tab should go and look for a new version now.
+ *
+ * A browser checks for a changed sw.js when a page loads, and otherwise about
+ * once a day. A tab left open never loads, so it kept the version it opened
+ * with for as long as it stayed open -- which is how dialogs removed releases
+ * ago were still being shown. Asking when the tab comes back into view, no more
+ * than every `minGapMs`, costs one small request.
+ */
+export function shouldCheckForUpdate(now, lastCheckAt, minGapMs = 10 * 60 * 1000) {
+  return !Number.isFinite(lastCheckAt) || now - lastCheckAt >= minGapMs;
+}
+
 /** Errors interrupt; everything else waits its turn. */
 export function toastRole(type) {
   return type === "error" ? "alert" : "status";

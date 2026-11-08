@@ -10,6 +10,38 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [14.8.4] - 2026-11-08
+
+### Changed
+
+- **Trash is one click.** Clicking Trash on a row, on the keep file, in
+  Compare (including delete-both and the keeper) or in the crop window now
+  trashes at once, with no "Move to Trash?" or "This is the file the scan chose
+  to keep" dialog. The click is the decision. The way back is unchanged: every
+  delete shows a toast with Undo, and Ctrl+Z restores for 30 minutes. The keep
+  file's button is still drawn as a warning. Bulk **Trash Selected** and
+  **Process Queue** still ask once, because they act on many files at a time.
+
+### Fixed
+
+- **Dialogs removed releases ago were still appearing, because the tab was
+  running an old version.** A browser looks for a new version only when a page
+  loads (and about once a day), so a tab left open never found out about
+  updates. It now checks when the tab comes back into view (at most every ten
+  minutes) and every 30 minutes. And when an update arrives while a scan, a
+  dialog or the crop window is open, the notice is a toast with a Reload button
+  that stays until dismissed; it used to vanish after ten seconds and was never
+  shown again, so the update was simply lost. An update also no longer reloads
+  the page while there are duplicates on screen being reviewed, which would
+  have discarded the list.
+
+### Testing
+
+- `tools/hardening.mjs` and `tools/crop-replace.mjs` now check that the keep
+  file's Trash button, a row's Trash button, Compare's delete keys and the crop
+  window's Delete ask nothing and trash at once. `test/update-reload.test.js`
+  covers when an update reloads, when it only offers, and when a tab checks.
+
 ## [14.8.3] - 2026-11-07
 
 ### Fixed

@@ -5,7 +5,7 @@
 ### A browser-based Google Drive duplicate image finder with safe review, side-by-side comparison, export, and undo support.
 
 <p>
-  <img alt="Version" src="https://img.shields.io/badge/version-14.8.3-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-14.8.4-blue">
   <img alt="App Type" src="https://img.shields.io/badge/app-static%20web%20app-brightgreen">
   <img alt="Google Drive" src="https://img.shields.io/badge/API-Google%20Drive-orange">
   <img alt="Privacy" src="https://img.shields.io/badge/privacy-browser%20local-lightgrey">
@@ -77,7 +77,7 @@ Google Drive makes it easy to accumulate duplicate images across folders, backup
 - **Per-format scan selection** — an Image Types panel lets you include or exclude specific formats from a scan.
 - **Folder-based scanning** with optional recursive traversal.
 - **Side-by-side compare modal** for reviewing duplicate candidates before trashing files.
-- **Download or delete any image** directly from the results table — including the keep file (with confirmation).
+- **Download or delete any image** directly from the results table — including the keep file. Trash is one click; every delete shows an Undo toast, and Ctrl+Z restores for 30 minutes.
 - **Clickable File Location** — open the file's containing Google Drive folder in a new tab from the table or the compare modal.
 - **Graceful image placeholders** instead of broken-image icons while thumbnails load or if an image fails to load.
 - **Undo delete support** for recently trashed files, covering every delete path
@@ -313,7 +313,7 @@ When scan results appear, review duplicate groups before trashing anything.
 | Size | Shows file size. |
 | Sim | Shows similarity score. |
 | Group / Match | Shows the duplicate group number and a similarity band badge (identical / near / similar / loose). |
-| Action | **Download** or **Trash** this specific file. The keep file can also be downloaded or deleted (deletion asks for confirmation). |
+| Action | **Download** or **Trash** this specific file. The keep file can also be downloaded or deleted. Trash happens on the click, with Undo (toast or Ctrl+Z) for 30 minutes; **Trash Selected** and **Process Queue** ask once, as they act on many files. |
 
 Keyboard shortcuts in the comparison view:
 
