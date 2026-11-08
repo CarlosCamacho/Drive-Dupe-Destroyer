@@ -741,11 +741,17 @@ function registerServiceWorker() {
       // Go and look. See shouldCheckForUpdate: a tab that stays open never
       // navigates, so the browser never asks, and it kept running whatever it
       // opened with.
-      let lastUpdateCheck = Date.now();
+      let lastUpdateCheck = 0;
       const checkForUpdate = () => {
         lastUpdateCheck = Date.now();
         reg.update().catch(() => { /* offline, or the host is down: try later */ });
       };
+      // Now, on every load. A browser checks for a new service worker on a
+      // reload, or on a plain navigation only if it has not looked in the last
+      // ~24 hours -- so opening the site from a link (or a bookmark, or the
+      // address bar) served the saved copy for up to a day after a release,
+      // however many times it was opened. One small request per visit.
+      checkForUpdate();
       setInterval(checkForUpdate, 30 * 60 * 1000);
       document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible' && shouldCheckForUpdate(Date.now(), lastUpdateCheck)) {

@@ -20,7 +20,7 @@
 // against APP_VERSION at boot and warns if they diverge -- a mismatch means a
 // release bumped util.js without bumping the cache, which would serve stale JS.
 // Keep SW_VERSION in step with APP_VERSION in js/util.js.
-const SW_VERSION = "14.8.4";
+const SW_VERSION = "14.8.5";
 // Deriving the cache name from the version means every release gets a fresh
 // cache and the activate handler evicts the old one. Bumping the version is
 // now sufficient to invalidate; it is no longer a separate thing to remember.
@@ -105,9 +105,19 @@ self.addEventListener("install", (ev) => {
     self.skipWaiting();
     return;
   }
+  // cache: "reload" -- fetch from the SERVER, not the browser's HTTP cache.
+  // addAll with plain URLs goes through that cache, and GitHub Pages serves
+  // every file with max-age=600. A visit in the ten minutes before a release
+  // therefore left the old index.html and scripts in the HTTP cache, the new
+  // service worker copied THEM into its brand-new cache, and the app reported
+  // the new version number while serving the old files -- until the next
+  // release replaced the cache again.
+  const requests = PRECACHE.map(
+    (url) => new Request(new URL(url, self.location.href).href, { cache: "reload" })
+  );
   ev.waitUntil(
     caches.open(CACHE_NAME).then(cache =>
-      cache.addAll(PRECACHE).catch(e => console.warn("[SW] Pre-cache partial failure:", e))
+      cache.addAll(requests).catch(e => console.warn("[SW] Pre-cache partial failure:", e))
     ).then(() => self.skipWaiting())
   );
 });
