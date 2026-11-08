@@ -120,6 +120,17 @@ await page.waitForTimeout(800);
 const restored = await page.evaluate(() => window.__restored.slice());
 ck(JSON.stringify(restored) === JSON.stringify(['orig']), `Undo on that toast restores the original (${JSON.stringify(restored)})`);
 
+// The crop window's own Delete button is one click too.
+await page.evaluate(() => { window.__trashed = []; document.querySelectorAll('.toast').forEach(t => t.remove()); });
+await page.waitForSelector('#btnCropDelete', { state: 'visible', timeout: 5000 });
+await page.waitForTimeout(800);
+await page.click('#btnCropDelete');
+const askedDelete = await page.waitForSelector('#confirmModal', { state: 'visible', timeout: 1500 }).then(() => true).catch(() => false);
+await page.waitForTimeout(800);
+const deleted = await page.evaluate(() => window.__trashed.slice());
+ck(!askedDelete, "the crop window's Delete button asks nothing");
+ck(deleted.length === 1, `and trashes the file on screen (${JSON.stringify(deleted)})`);
+
 await b.close();
 console.log(fails ? `\n${fails} FAILED` : '\nALL CHECKS PASSED');
 process.exit(fails ? 1 : 0);

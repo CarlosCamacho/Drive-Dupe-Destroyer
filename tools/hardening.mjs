@@ -181,20 +181,37 @@ await page.keyboard.press('Control+a');
 await settle();
 ck(await selectedCount() === 0, 'Ctrl+A inside Compare does not select the table behind it');
 
-// "3" (delete both) asks first; Cancel trashes nothing.
-const trashedBefore = await page.evaluate(() => window.__trashed.length);
-await page.keyboard.press('3');
-await answerConfirm(false);
-await settle();
-ck(await page.evaluate(() => window.__trashed.length) === trashedBefore,
-   'Compare "3" asks before deleting both copies, and Cancel deletes nothing');
+// Deleting from Compare is immediate -- the keypress is the decision, and the
+// toast's Undo is the way back. Neither "3" (both) nor the keeper's key asks.
+const askedWithin = (ms) => page.waitForSelector('#confirmModal', { state: 'visible', timeout: ms }).then(() => true).catch(() => false);
+const newTrashes = (since) => page.evaluate((n) => window.__trashed.slice(n), since);
 
-// "2" on the KEEP side asks too. Find which key targets the keeper.
+// The keeper's key first (the pinned keeper, g0f1).
 const keeperKey = badges.leftKeep ? '1' : '2';
+let since = await page.evaluate(() => window.__trashed.length);
 await page.keyboard.press(keeperKey);
-const askedForKeeper = await page.waitForSelector('#confirmModal', { state: 'visible', timeout: 1500 }).then(() => true).catch(() => false);
-if (askedForKeeper) await answerConfirm(false);
-ck(askedForKeeper, 'Compare asks before deleting the KEEP file');
+const askedKeeper = await askedWithin(1000);
+await page.waitForTimeout(700);
+const keeperTrashed = await newTrashes(since);
+ck(!askedKeeper && keeperTrashed.includes('g0f1'),
+   `Compare deletes the KEEP file at once, with no dialog (${JSON.stringify(keeperTrashed)})`);
+ck(await page.evaluate(() => document.querySelectorAll('.toast .toastAction').length) >= 1,
+   'and offers Undo in a toast');
+await page.keyboard.press('Escape');
+await settle();
+
+// "3": both copies.
+await render(1);
+await page.evaluate(() => document.querySelectorAll('.toast').forEach(t => t.remove()));
+await page.click('#resultsTbody tr[data-file-id="g0f0"] [data-action="compare"]');
+await page.waitForSelector('#compareModal', { state: 'visible' });
+since = await page.evaluate(() => window.__trashed.length);
+await page.keyboard.press('3');
+const asked3 = await askedWithin(1000);
+await page.waitForTimeout(700);
+const bothTrashed = await newTrashes(since);
+ck(!asked3 && bothTrashed.includes('g0f0') && bothTrashed.includes('g0f1'),
+   `Compare "3" trashes both copies at once, with no dialog (${JSON.stringify(bothTrashed)})`);
 await page.keyboard.press('Escape');
 await settle();
 
@@ -209,6 +226,18 @@ await page.keyboard.press('ArrowUp');
 const focusedAfterUp = await page.evaluate(() => document.activeElement?.dataset?.fileId);
 ck(focusedAfterUp === 'g1f0', `the arrow keys move between rows (${focusedAfterUp})`);
 
+// --- the keep file's Trash button (the "This is the file the scan chose to keep"
+// dialog) is one click as well -------------------------------------------------
+await render(1);
+await page.evaluate(() => { window.__trashed = []; });
+const keepId = await page.evaluate(() => document.querySelector('#resultsTbody tr.keepRow')?.dataset.fileId);
+await page.click(`#resultsTbody tr[data-file-id="${keepId}"] [data-action="delete-keep"]`);
+const askedKeepRow = await askedWithin(800);
+await page.waitForTimeout(500);
+ck(!askedKeepRow, 'the keep file\'s Trash button asks nothing');
+ck(JSON.stringify(await page.evaluate(() => window.__trashed)) === JSON.stringify([keepId]),
+   `and trashes it (${keepId})`);
+
 // --- per-toast Undo -----------------------------------------------------------
 await render(2);
 await page.evaluate(() => document.querySelectorAll('.toast').forEach(t => t.remove()));
@@ -216,12 +245,13 @@ await page.evaluate(() => document.querySelectorAll('.toast').forEach(t => t.rem
 const dupOf = (g) => page.evaluate((g) =>
   document.querySelector(`#resultsTbody tr[data-group-id="${g}"]:not(.keepRow)`)?.dataset.fileId, g);
 const firstDup = await dupOf(1);
+// One click on a row's Trash button trashes it -- no dialog.
 await page.click(`#resultsTbody tr[data-file-id="${firstDup}"] [data-action="delete"]`);
-await answerConfirm(true);
+const askedRow = await askedWithin(800);
 await page.waitForTimeout(400);
+ck(!askedRow, "a row's Trash button trashes with one click, no dialog");
 const secondDup = await dupOf(1);
 await page.click(`#resultsTbody tr[data-file-id="${secondDup}"] [data-action="delete"]`);
-await answerConfirm(true);
 await page.waitForTimeout(400);
 const toastCount = await page.evaluate(() => document.querySelectorAll('.toast .toastAction').length);
 ck(toastCount === 2, `two deletes give two Undo toasts, not one merged "×2" (${toastCount})`);

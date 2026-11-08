@@ -15,7 +15,7 @@
 // Features: Stay in modal after crop, locked aspect ratio, D key delete shortcut
 
 import { el, bytesToHuman, formatDate } from "./util.js";
-import { confirmAction, UNDO_NOTE, isConfirmOpen } from "./confirm.js";
+import { isConfirmOpen } from "./confirm.js";
 import {
   clamp, transformedDimensions, displayScale as computeDisplayScale, isInsideSelection as isInside,
   selectionFromDrag, movedSelection, lockedSelection, areaToFractions, fractionsToArea,
@@ -994,24 +994,15 @@ function stopMarchingAnts() {
 async function handleCropDelete() {
   if (cropBusy) return;
   // Everything below runs across awaits. Read the file ONCE: currentFile is
-  // module state that Prev/Next change, and reading it again after the
-  // confirmation or the trash call acted on whichever image was showing by
-  // then -- trashing a file nobody confirmed, or reporting a successful trash
-  // as "Delete failed" because the id no longer matched.
+  // module state that Prev/Next change, and reading it again after the trash
+  // call acted on whichever image was showing by then -- reporting a
+  // successful trash as "Delete failed" because the id no longer matched.
   const file = currentFile;
   if (!file) return;
 
   cropBusy = true;
   const btnDelete = el("btnCropDelete");
   try {
-    if (!await confirmAction({
-      title: "Move to Trash?",
-      message: "This file will be moved to Google Drive Trash.",
-      confirmLabel: "Move to Trash",
-      note: UNDO_NOTE,
-      files: [file],
-    })) return;
-
     if (btnDelete) {
       btnDelete.disabled = true;
       btnDelete.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Deleting...';
