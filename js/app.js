@@ -31,6 +31,7 @@ import { wireKeyboard, wireKeyboardHelp } from "./keyboard.js";
 import { wireActions } from "./actions.js";
 import { wireExport, setExportState } from "./exporter.js";
 import { applyAllSecurityPolicies } from "./security.js";
+import { updateReloadAction, shouldCheckForUpdate } from "./uiText.js";
 import { settingGet, settingSet, requestPersistentStorage, getStorageEstimate, setDbBlockedNotifier } from "./db.js";
 import { initPersistentSettings } from "./settings.js";
 import { toggleTelemetry } from "./telemetry.js";
@@ -709,15 +710,25 @@ let updateReloadPending = false;
  * the user is offered the reload instead, and takes it when they are ready.
  */
 function onUpdateActivated(version) {
-  if (!hadControllerAtLoad || updateReloadPending) return;
+  const action = updateReloadAction({
+    hadController: hadControllerAtLoad,
+    alreadyHandled: updateReloadPending,
+    scanning: scanInFlight,
+    modalOpen: anyModalOpen(),
+    resultRows: getRowCount(),
+  });
+  if (action === "ignore") return;
   updateReloadPending = true;
-  if (!scanInFlight && !anyModalOpen()) {
+  if (action === "reload") {
     console.log(`[SW] Updated to v${version || "?"} — reloading for fresh files`);
     window.location.reload();
     return;
   }
-  showToast(`Drive Dupe Destroyer ${version ? "v" + version + " " : ""}is ready. Reload when you have finished.`,
-    "info", null, { label: "Reload", onClick: () => window.location.reload() });
+  // Until dismissed (duration 0). This used to vanish after ten seconds and was
+  // never shown again, so an update that arrived while a dialog was open was
+  // simply lost, and the tab ran the old version indefinitely.
+  showToast(`A new version${version ? " (v" + version + ")" : ""} is ready. Reload when you have finished.`,
+    "info", 0, { label: "Reload now", onClick: () => window.location.reload() });
 }
 
 function registerServiceWorker() {
@@ -726,6 +737,22 @@ function registerServiceWorker() {
   navigator.serviceWorker.register('./sw.js')
     .then((reg) => {
       console.log('[SW] Registered:', reg.scope);
+
+      // Go and look. See shouldCheckForUpdate: a tab that stays open never
+      // navigates, so the browser never asks, and it kept running whatever it
+      // opened with.
+      let lastUpdateCheck = Date.now();
+      const checkForUpdate = () => {
+        lastUpdateCheck = Date.now();
+        reg.update().catch(() => { /* offline, or the host is down: try later */ });
+      };
+      setInterval(checkForUpdate, 30 * 60 * 1000);
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && shouldCheckForUpdate(Date.now(), lastUpdateCheck)) {
+          checkForUpdate();
+        }
+      });
+
       reg.addEventListener('updatefound', () => {
         const newSW = reg.installing;
         if (!newSW) return;

@@ -21,7 +21,7 @@ import {
   nextReviewable as nextReviewableFrom, anyReviewable, resolvePair, progressLabel,
 } from "./compareNav.js";
 import { trashFiles, stoppedMessage } from "./trash.js";
-import { confirmAction, UNDO_NOTE, isConfirmOpen } from "./confirm.js";
+import { isConfirmOpen } from "./confirm.js";
 import { el, bytesToHuman, formatDate, IMAGE_PLACEHOLDER } from "./util.js";
 import { getThumbUrlForFile } from "./hashing.js";
 import { lockBodyScroll, showToast } from "./ui.js";
@@ -382,6 +382,10 @@ async function runDelete(files, buttons) {
   }
 }
 
+// Deleting from here is immediate, whichever file it is and however many: the
+// keypress or click is the decision, and the toast's Undo (or Ctrl+Z) brings it
+// back for 30 minutes. It used to ask before deleting the keep file or both
+// copies; for a quick review that was a dialog per delete.
 async function handleDeleteBoth() {
   if (deleteInFlight) return;
   const files = [leftFile, rightFile].filter(Boolean);
@@ -389,22 +393,6 @@ async function handleDeleteBoth() {
 
   deleteInFlight = true;
   try {
-    // Always ask. One keypress used to trash both sides with nothing but a
-    // two-second toast -- and in a two-file group "both" is every copy there is.
-    const group = allGroups[currentGroupIndex] || [];
-    const survivors = group.filter(f => !files.some(d => d.id === f.id)).length;
-    const keeperInvolved = leftIsKeep || rightIsKeep;
-    if (!await confirmAction({
-      title: survivors === 0 ? "Delete every copy of this image?" : "Delete both files?",
-      message: survivors === 0
-        ? "These are the only copies in this group. Nothing will be left."
-        : (keeperInvolved
-          ? "One of these is the file the scan chose to keep."
-          : "Both files will be moved to Google Drive Trash."),
-      confirmLabel: survivors === 0 ? "Delete every copy" : "Delete both",
-      note: UNDO_NOTE,
-      files,
-    })) return;
     await runDelete(files, [el('btnCompareLeftDelete'), el('btnCompareRightDelete')]);
   } finally {
     deleteInFlight = false;
@@ -414,21 +402,10 @@ async function handleDeleteBoth() {
 async function handleDelete(side) {
   if (deleteInFlight) return;
   const file = side === 'left' ? leftFile : rightFile;
-  const isKeep = side === 'left' ? leftIsKeep : rightIsKeep;
   if (!file) return;
 
   deleteInFlight = true;
   try {
-    // The keeper gets the same confirmation as the table's delete-keep button.
-    // Deleting a candidate stays a single keypress: that is the quick review
-    // this modal is for, and it is undoable.
-    if (isKeep && !await confirmAction({
-      title: "This is the file the scan chose to keep",
-      message: "It is the best copy in its group by your keep rule. Deleting it leaves the ones you were offered to delete.",
-      confirmLabel: "Delete the keep file",
-      note: UNDO_NOTE,
-      files: [file],
-    })) return;
     await runDelete([file], [el(side === 'left' ? 'btnCompareLeftDelete' : 'btnCompareRightDelete')]);
   } finally {
     deleteInFlight = false;

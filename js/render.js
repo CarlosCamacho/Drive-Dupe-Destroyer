@@ -16,7 +16,6 @@
 // Added: delete button on all rows, pathMap access for compare modal
 
 import { el, bytesToHuman, escapeHtml, throttle, debounce, IMAGE_PLACEHOLDER } from "./util.js";
-import { confirmAction, UNDO_NOTE } from "./confirm.js";
 import { setStatus, refreshActionButtons, showEmptyState, showToast, updateFilterStats, setEmptyState } from "./ui.js";
 import { releaseAllThumbBlobs, getThumbUrlForFile } from "./hashing.js";
 import { openCompare, setCompareCallbacks } from "./compare.js";
@@ -593,32 +592,14 @@ async function handleTableClick(e) {
     return;
   }
 
-  if (target.matches('[data-action="delete"]') || target.closest('[data-action="delete"]')) {
+  // Trash is one click, for the keep file as well as the duplicates. Clicking
+  // the button is the decision: asking again on every row made quick clean-up
+  // slow, and the delete is not final -- the "Moved to Trash" toast carries an
+  // Undo, and Ctrl+Z restores for 30 minutes. The keep file's button is still
+  // drawn as a warning (btnDangerKeep) so it is not mistaken for a duplicate.
+  if (target.matches('[data-action="delete"]') || target.closest('[data-action="delete"]')
+      || target.matches('[data-action="delete-keep"]') || target.closest('[data-action="delete-keep"]')) {
     e.stopPropagation();
-    // Rows are ~58px tall and the trash button sits next to Download, so a
-    // misclick is easy. Confirm here as the KEEP row already does — the two are
-    // the same irreversible action from the user's point of view.
-    if (!await confirmAction({
-      title: "Move to Trash?",
-      message: "This file will be moved to Google Drive Trash.",
-      confirmLabel: "Move to Trash",
-      note: UNDO_NOTE,
-      files: [file],
-    })) return;
-    handleSingleDelete(file, tr);
-    return;
-  }
-
-  if (target.matches('[data-action="delete-keep"]') || target.closest('[data-action="delete-keep"]')) {
-    e.stopPropagation();
-    const btn = tr.querySelector('[data-action="delete-keep"]');
-    if (btn && !await confirmAction({
-      title: "This is the file the scan chose to keep",
-      message: "It is the best copy in its group by your keep rule. Deleting it leaves the ones you were offered to delete.",
-      confirmLabel: "Delete the keep file",
-      note: UNDO_NOTE,
-      files: [file],
-    })) return;
     handleSingleDelete(file, tr);
     return;
   }
