@@ -1086,6 +1086,7 @@ button:disabled {
 .modalFooter {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 10px;
   padding: 14px 18px;
   border-top: 1px solid var(--border-color);
@@ -1180,13 +1181,24 @@ button:disabled {
   font-size: 0.65rem;
   font-family: monospace;
   color: var(--text-muted);
+  /* A Drive folder ID is 33 characters with no break opportunity. Unclipped it
+     ran straight under the Include / Exclude buttons on a phone. It is a
+     reference, not something read in full, so it ellipsizes. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .folderMeta {
   display: flex;
   align-items: center;
   gap: 10px;
-  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.folderMeta .scanHistory {
+  flex-shrink: 0;
 }
 
 .scanHistory {
@@ -1199,6 +1211,7 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 5px;
+  flex-shrink: 0;
 }
 
 .btnInclude, .btnExclude, .btnOpen {
@@ -2736,4 +2749,105 @@ kbd {
 }
 .statsBar .statReclaim .muted {
   font-weight: 400;
+}
+
+/* ============================================================
+   Phones and small tablets (14.8.3)
+
+   The app is a fixed-height shell: the header, the settings panel, the scan
+   controls and the results all share one 100vh, each scrolling on its own. On
+   a 412x915 phone the header (161px), settings (240px) and scan controls
+   (383px) took 784px of it, leaving the results table a 66px window -- about
+   one row, with the duplicates found by a scan scrolled inside a slot you
+   could barely see. Measured, not guessed.
+
+   Below 900px the page scrolls like any page instead, and the table is given a
+   window worth looking at. Desktop is untouched.
+   ============================================================ */
+@media (max-width: 900px) {
+  html, body {
+    height: auto;
+    overflow: visible;
+  }
+
+  .app {
+    height: auto;
+    min-height: 100vh;
+    min-height: 100dvh;
+    overflow: visible;
+  }
+
+  .main {
+    flex: none;
+    overflow: visible;
+  }
+
+  .rightPanel {
+    flex: none;
+    overflow: visible;
+  }
+
+  /* A fixed window the rows virtualize against. 75% of the screen, so the
+     table fills the view once the page is scrolled to it. */
+  .tableWrap {
+    flex: none;
+    height: 75vh;
+    height: 75dvh;
+    min-height: 320px;
+  }
+}
+
+@media (max-width: 600px) {
+  .header {
+    padding: 8px 12px;
+    gap: 6px;
+  }
+
+  .headerRight {
+    gap: 8px;
+  }
+
+  /* Folder picker. The icon and name take the first line; the three buttons
+     drop to a line of their own, sharing it evenly, instead of squeezing the
+     name and ID to nothing beside them. */
+  /* Taller rows need a taller list: 260px showed two of them. */
+  .folderList {
+    max-height: 38vh;
+    min-height: 200px;
+  }
+
+  .folderRow {
+    flex-wrap: wrap;
+  }
+
+  .folderInfo {
+    flex: 1 1 0;
+  }
+
+  .folderActions {
+    flex: 1 1 100%;
+  }
+
+  .folderActions button {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  /* Five buttons in one row do not fit, and "Include All", "Exclude All" and
+     "Done" were clipped at the edge. Two to a line, with Done across the
+     bottom. */
+  #folderModal .modalFooter {
+    justify-content: stretch;
+    gap: 8px;
+    padding: 12px;
+  }
+
+  #folderModal .modalFooter button {
+    flex: 1 1 calc(50% - 8px);
+    min-width: 0;
+  }
+
+  #folderModal .modalFooter .btnBlue {
+    flex-basis: 100%;
+  }
 }

@@ -10,6 +10,33 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [14.8.3] - 2026-11-07
+
+### Fixed
+
+- **On a phone, the duplicates a scan found were squeezed into a slot you could
+  barely see.** The app is a fixed-height shell, and on a 412x915 screen the
+  header, settings panel and scan controls took 784px of it, leaving the
+  results table 66px: about one row, scrolling inside itself. On a smaller
+  phone it was 0px. Below 900px wide the page now scrolls like any page, and
+  the table gets a window of 75% of the screen, so scrolling down puts five or
+  more duplicate rows in view at once. The header is also tighter. Desktop is
+  unchanged: still one fixed-height shell with the sidebar.
+- **Folder picker text overflowed on a phone.** A Drive folder ID (33
+  characters, no break points) ran underneath the Include and Exclude buttons,
+  and "Include All", "Exclude All" and "Done" were clipped at the edge of the
+  dialog. The ID now truncates with an ellipsis, the three row buttons sit on
+  their own line sharing it evenly, the list is taller so more than two folders
+  show, and the footer buttons wrap two to a line with Done across the bottom.
+
+### Testing
+
+- `tools/mobile-layout.mjs` measures both on 412x915 and 360x640 phones, and
+  that desktop did not move. The folder check measures where the text actually
+  paints, not its box: the first version compared boxes and passed on the
+  broken layout. Against 14.8.2 the layout checks fail (66px and 0px
+  windows) and so does the overlap check.
+
 ## [14.8.2] - 2026-10-23
 
 ### Changed
